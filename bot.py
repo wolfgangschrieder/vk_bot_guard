@@ -36,6 +36,52 @@ def send_message(vk, peer_id: int, text: str) -> None:
     )
 
 
+def send_direct_message(vk, user_id: int, text: str) -> bool:
+    """Send a moderation notice to the offending user's private messages."""
+    try:
+        send_message(vk, user_id, text)
+        log.info("Уведомление отправлено в ЛС: user=%s", user_id)
+        return True
+    except ApiError as err:
+        log.warning(
+            "Не удалось отправить уведомление в ЛС user=%s: %s",
+            user_id,
+            err,
+        )
+        return False
+
+
+def delete_message(vk, message) -> bool:
+    """Delete the offending message from the conversation for everyone."""
+    message_id = message_field(message, "id")
+
+    if message_id <= 0:
+        log.warning("Не удалось удалить сообщение: отсутствует id")
+        return False
+
+    peer_id = message_field(message, "peer_id")
+
+    try:
+        vk.messages.delete(
+            message_ids=str(message_id),
+            delete_for_all=1,
+        )
+        log.info(
+            "Сообщение удалено: message_id=%s peer_id=%s",
+            message_id,
+            peer_id,
+        )
+        return True
+    except ApiError as err:
+        log.error(
+            "Не удалось удалить сообщение message_id=%s peer_id=%s: %s",
+            message_id,
+            peer_id,
+            err,
+        )
+        return False
+
+
 def apply_mute(vk, peer_id: int, user_id: int) -> bool:
     """Restrict a user from writing in the conversation for MUTE_SECONDS."""
     try:
@@ -101,7 +147,6 @@ def handle_new_message(vk, conn, message) -> None:
         else getattr(message, "text", "") or ""
     )
 
-    # Log before filtering so we can prove VK delivered the message event.
     log.info(
         "MESSAGE_NEW получен: from_id=%s peer_id=%s text=%r",
         from_id,
@@ -133,8 +178,7 @@ def handle_new_message(vk, conn, message) -> None:
     result = db.register_message(conn, from_id, peer_id, now)
 
     if result["already_muted"]:
-        # VK normally blocks delivery while the restriction is active.
-        # Re-applying is a safety net if an event still reaches the bot.
+        delete_message(vk, message)
         apply_mute(vk, peer_id, from_id)
         return
 
@@ -142,33 +186,35 @@ def handle_new_message(vk, conn, message) -> None:
         log.info("Сообщение принято: user=%s peer=%s", from_id, peer_id)
         return
 
+    # The second message is removed from the chat before the restriction is applied.
+    deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
 
     if muted:
-        text = (
-            f"[id{from_id}|Пользователь], слишком часто пишете.\n"
-            "Лимит: 1 сообщение в 1 час.\n"
-            f"Мут на {config.MUTE_SECONDS // 3600} часов."
+        dm_text = (
+            "Вы получили ограничение на отправку сообщений в беседе на 1 час.\n"
+            "Причина: превышен лимит — не более 1 сообщения в час.\n"
+            "Ваше второе сообщение было удалено."
         )
     else:
-        text = (
-            f"[id{from_id}|Пользователь], превышен лимит: "
-            "не чаще 1 сообщения в 1 час.\n"
-            "Мут не применён: проверьте права сообщества в беседе."
+        dm_text = (
+            "Ваше второе сообщение было удалено: превышен лимит — "
+            "не более 1 сообщения в час.\n"
+            "Автоматически применить ограничение не удалось."
         )
 
-    try:
-        send_message(vk, peer_id, text)
-    except ApiError as err:
-        log.error("Не удалось отправить уведомление: %s", err)
+    dm_sent = send_direct_message(vk, from_id, dm_text)
 
     log.warning(
-        "Нарушение: user=%s peer=%s warnings=%s mute_until=%s vk_ok=%s",
+        "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
+        "vk_mute=%s message_deleted=%s dm_sent=%s",
         from_id,
         peer_id,
         result["warnings"],
         result["mute_until"],
         muted,
+        deleted,
+        dm_sent,
     )
 
 
@@ -180,7 +226,7 @@ def run_forever() -> None:
     vk = session.get_api()
 
     log.info(
-        "Бот запущен: GROUP_ID=%s, limit=1/hour, mute=24h",
+        "Бот запущен: GROUP_ID=%s, limit=1/hour, mute=1h",
         config.GROUP_ID,
     )
     log.info("Ожидаются сообщения из VK-бесед: peer_id >= %s", CHAT_PEER_START)
@@ -201,8 +247,6 @@ def run_forever() -> None:
                     if event.type != VkBotEventType.MESSAGE_NEW:
                         continue
 
-                    # vk_api exposes the actual MESSAGE_NEW payload as event.message
-                    # and also as event.obj.message.
                     message = getattr(event, "message", None)
 
                     if message is None:
