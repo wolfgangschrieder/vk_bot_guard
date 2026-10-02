@@ -37,15 +37,13 @@ def send_message(vk, peer_id: int, text: str) -> None:
 
 
 def apply_mute(vk, peer_id: int, user_id: int) -> bool:
+    """Restrict a user from writing in the conversation for MUTE_SECONDS."""
     try:
-        vk.method(
-            "messages.changeConversationMemberRestrictions",
-            {
-                "peer_id": peer_id,
-                "member_ids": str(user_id),
-                "action": "ro",
-                "for": config.MUTE_SECONDS,
-            },
+        vk.messages.changeConversationMemberRestrictions(
+            peer_id=peer_id,
+            member_ids=str(user_id),
+            action="ro",
+            **{"for": config.MUTE_SECONDS},
         )
         return True
     except ApiError as err:
@@ -59,14 +57,12 @@ def apply_mute(vk, peer_id: int, user_id: int) -> bool:
 
 
 def lift_mute(vk, peer_id: int, user_id: int) -> None:
+    """Restore a user's ability to write in the conversation."""
     try:
-        vk.method(
-            "messages.changeConversationMemberRestrictions",
-            {
-                "peer_id": peer_id,
-                "member_ids": str(user_id),
-                "action": "rw",
-            },
+        vk.messages.changeConversationMemberRestrictions(
+            peer_id=peer_id,
+            member_ids=str(user_id),
+            action="rw",
         )
         log.info("Мут снят: user=%s peer=%s", user_id, peer_id)
     except ApiError as err:
@@ -99,7 +95,11 @@ def message_field(message, name: str, default: int = 0) -> int:
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
-    text = message.get("text", "") if isinstance(message, dict) else getattr(message, "text", "") or ""
+    text = (
+        message.get("text", "")
+        if isinstance(message, dict)
+        else getattr(message, "text", "") or ""
+    )
 
     # Log before filtering so we can prove VK delivered the message event.
     log.info(
@@ -207,7 +207,11 @@ def run_forever() -> None:
 
                     if message is None:
                         obj = getattr(event, "obj", None)
-                        nested = obj.get("message") if isinstance(obj, dict) else getattr(obj, "message", None)
+                        nested = (
+                            obj.get("message")
+                            if isinstance(obj, dict)
+                            else getattr(obj, "message", None)
+                        )
                         message = nested if nested is not None else obj
 
                     if message is None:
