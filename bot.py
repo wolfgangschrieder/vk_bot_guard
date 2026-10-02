@@ -99,11 +99,30 @@ def message_field(message, name: str, default: int = 0) -> int:
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
+    text = message.get("text", "") if isinstance(message, dict) else getattr(message, "text", "") or ""
 
-    if from_id <= 0 or not is_chat(peer_id):
+    # Log before filtering so we can prove VK delivered the message event.
+    log.info(
+        "MESSAGE_NEW получен: from_id=%s peer_id=%s text=%r",
+        from_id,
+        peer_id,
+        text[:200],
+    )
+
+    if from_id <= 0:
+        log.warning("MESSAGE_NEW пропущен: некорректный from_id=%s", from_id)
+        return
+
+    if not is_chat(peer_id):
+        log.warning(
+            "MESSAGE_NEW пропущен: peer_id=%s не похож на беседу (ожидался >= %s)",
+            peer_id,
+            CHAT_PEER_START,
+        )
         return
 
     if from_id in config.ADMIN_IDS:
+        log.info("MESSAGE_NEW пропущен: user=%s находится в ADMIN_IDS", from_id)
         return
 
     now = int(time.time())
@@ -164,6 +183,7 @@ def run_forever() -> None:
         "Бот запущен: GROUP_ID=%s, limit=1/hour, mute=24h",
         config.GROUP_ID,
     )
+    log.info("Ожидаются сообщения из VK-бесед: peer_id >= %s", CHAT_PEER_START)
 
     try:
         while True:
@@ -172,16 +192,30 @@ def run_forever() -> None:
                 log.info("Long Poll подключён")
 
                 for event in longpoll.listen():
+                    log.info(
+                        "VK event: type=%s group_id=%s",
+                        getattr(event, "type", None),
+                        getattr(event, "group_id", None),
+                    )
+
                     if event.type != VkBotEventType.MESSAGE_NEW:
                         continue
 
+                    # vk_api exposes the actual MESSAGE_NEW payload as event.message
+                    # and also as event.obj.message.
                     message = getattr(event, "message", None)
+
                     if message is None:
                         obj = getattr(event, "obj", None)
-                        if isinstance(obj, dict):
-                            message = obj.get("message", obj)
-                        else:
-                            message = {}
+                        nested = obj.get("message") if isinstance(obj, dict) else getattr(obj, "message", None)
+                        message = nested if nested is not None else obj
+
+                    if message is None:
+                        log.warning(
+                            "MESSAGE_NEW получен, но payload сообщения отсутствует: %r",
+                            getattr(event, "raw", event),
+                        )
+                        continue
 
                     handle_new_message(vk, conn, message)
 
