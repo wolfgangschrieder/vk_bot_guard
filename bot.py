@@ -24,8 +24,8 @@ log = logging.getLogger("vk_bot_guard")
 CHAT_PEER_START = 2_000_000_000
 
 
-def is_chat(peer_id: int) -> bool:
-    return peer_id >= CHAT_PEER_START
+def is_target_chat(peer_id: int) -> bool:
+    return peer_id == config.CHAT_PEER_ID
 
 
 def send_message(vk, peer_id: int, text: str) -> None:
@@ -158,11 +158,11 @@ def handle_new_message(vk, conn, message) -> None:
         log.warning("MESSAGE_NEW пропущен: некорректный from_id=%s", from_id)
         return
 
-    if not is_chat(peer_id):
-        log.warning(
-            "MESSAGE_NEW пропущен: peer_id=%s не похож на беседу (ожидался >= %s)",
+    if not is_target_chat(peer_id):
+        log.info(
+            "MESSAGE_NEW пропущен: peer_id=%s не является целевой беседой %s",
             peer_id,
-            CHAT_PEER_START,
+            config.CHAT_PEER_ID,
         )
         return
 
