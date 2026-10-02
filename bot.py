@@ -52,30 +52,59 @@ def send_direct_message(vk, user_id: int, text: str) -> bool:
 
 
 def delete_message(vk, message) -> bool:
-    """Delete the offending message from the conversation for everyone."""
+    """Delete the offending message from the conversation for everyone.
+
+    VK Bot Long Poll payloads can expose the message as either the global
+    message id (id) or the conversation-local id
+    (conversation_message_id). Prefer the global id when available;
+    otherwise use the conversation id together with peer_id.
+    """
     message_id = message_field(message, "id")
-
-    if message_id <= 0:
-        log.warning("Не удалось удалить сообщение: отсутствует id")
-        return False
-
+    conversation_message_id = message_field(
+        message, "conversation_message_id"
+    )
     peer_id = message_field(message, "peer_id")
 
     try:
-        vk.messages.delete(
-            message_ids=str(message_id),
-            delete_for_all=1,
-        )
-        log.info(
-            "Сообщение удалено: message_id=%s peer_id=%s",
+        if message_id > 0:
+            vk.messages.delete(
+                message_ids=str(message_id),
+                delete_for_all=1,
+            )
+            log.info(
+                "Сообщение удалено: message_id=%s peer_id=%s",
+                message_id,
+                peer_id,
+            )
+            return True
+
+        if conversation_message_id > 0 and peer_id > 0:
+            vk.messages.delete(
+                peer_id=peer_id,
+                conversation_message_ids=str(conversation_message_id),
+                delete_for_all=1,
+            )
+            log.info(
+                "Сообщение удалено: conversation_message_id=%s peer_id=%s",
+                conversation_message_id,
+                peer_id,
+            )
+            return True
+
+        log.warning(
+            "Не удалось удалить сообщение: отсутствуют id "
+            "(id=%s, conversation_message_id=%s, peer_id=%s)",
             message_id,
+            conversation_message_id,
             peer_id,
         )
-        return True
+        return False
     except ApiError as err:
         log.error(
-            "Не удалось удалить сообщение message_id=%s peer_id=%s: %s",
+            "Не удалось удалить сообщение id=%s conversation_message_id=%s "
+            "peer_id=%s: %s",
             message_id,
+            conversation_message_id,
             peer_id,
             err,
         )
