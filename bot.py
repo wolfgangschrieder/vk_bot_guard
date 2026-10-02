@@ -36,21 +36,6 @@ def send_message(vk, peer_id: int, text: str) -> None:
     )
 
 
-def send_direct_message(vk, user_id: int, text: str) -> bool:
-    """Send a moderation notice to the offending user's private messages."""
-    try:
-        send_message(vk, user_id, text)
-        log.info("Уведомление отправлено в ЛС: user=%s", user_id)
-        return True
-    except ApiError as err:
-        log.warning(
-            "Не удалось отправить уведомление в ЛС user=%s: %s",
-            user_id,
-            err,
-        )
-        return False
-
-
 def delete_message(vk, message) -> bool:
     """Delete the offending message from the conversation for everyone.
 
@@ -219,22 +204,17 @@ def handle_new_message(vk, conn, message) -> None:
     deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
 
-    if muted:
-        dm_text = (
-            "Вы получили ограничение на отправку сообщений в беседе на 1 час.\n"
-            "Причина: превышен лимит — не более 1 сообщения в час.\n"
-            "Ваше второе сообщение было удалено."
-        )
-    else:
-        dm_text = (
-            "Ваше второе сообщение было удалено: превышен лимит — "
-            "не более 1 сообщения в час.\n"
-            "Автоматически применить ограничение не удалось."
-        )
-
-    dm_sent = send_direct_message(vk, from_id, dm_text)
-
     log.warning(
+        "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
+        "vk_mute=%s message_deleted=%s",
+        from_id,
+        peer_id,
+        result["warnings"],
+        result["mute_until"],
+        muted,
+        deleted,
+    )
+
         "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
         "vk_mute=%s message_deleted=%s dm_sent=%s",
         from_id,
