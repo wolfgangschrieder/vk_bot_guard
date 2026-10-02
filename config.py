@@ -23,6 +23,16 @@ try:
 except ValueError as exc:
     raise SystemExit("GROUP_ID должен быть целым числом.") from exc
 
+try:
+    CHAT_PEER_ID = int(_required("CHAT_PEER_ID"))
+except ValueError as exc:
+    raise SystemExit("CHAT_PEER_ID должен быть целым числом.") from exc
+
+if CHAT_PEER_ID < 2_000_000_000:
+    raise SystemExit(
+        "CHAT_PEER_ID должен быть peer_id VK-беседы (обычно начинается с 2000000000)."
+    )
+
 ADMIN_IDS = {
     int(part.strip())
     for part in os.getenv("ADMIN_IDS", "").split(",")
