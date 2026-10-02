@@ -215,18 +215,6 @@ def handle_new_message(vk, conn, message) -> None:
         deleted,
     )
 
-        "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
-        "vk_mute=%s message_deleted=%s dm_sent=%s",
-        from_id,
-        peer_id,
-        result["warnings"],
-        result["mute_until"],
-        muted,
-        deleted,
-        dm_sent,
-    )
-
-
 def run_forever() -> None:
     conn = db.connect()
     log.info("База готова: %s", config.DB_PATH)
