@@ -59,7 +59,21 @@ def register_message(
         mute_until = int(row["mute_until"])
 
         if mute_until > now:
-            conn.commit()
+            # If the configuration was changed from a longer mute period,
+            # never keep an active restriction longer than the current policy.
+            max_mute_until = now + config.MUTE_SECONDS
+            if mute_until > max_mute_until:
+                mute_until = max_mute_until
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET mute_until = ?
+                    WHERE user_id = ? AND peer_id = ?
+                    """,
+                    (mute_until, user_id, peer_id),
+                )
+                conn.commit()
+
             return {
                 "should_mute": False,
                 "already_muted": True,
