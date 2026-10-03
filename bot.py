@@ -270,7 +270,7 @@ def handle_new_message(vk, conn, message) -> None:
     if not is_target_chat(peer_id):
         log.info(
             "MESSAGE_NEW пропущен: peer_id=%s не является целевой беседой %s",
-            from_id,
+            peer_id,
             config.CHAT_PEER_ID,
         )
         return
