@@ -39,6 +39,12 @@ ADMIN_IDS = {
     if part.strip().isdigit()
 }
 
+BLOCKED_USER_IDS = {
+    int(part.strip())
+    for part in os.getenv("BLOCKED_USER_IDS", "").split(",")
+    if part.strip().isdigit()
+}
+
 RATE_LIMIT_SECONDS = 60 * 60
 MUTE_SECONDS = 60 * 60
 API_VERSION = "5.199"
