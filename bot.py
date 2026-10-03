@@ -1,5 +1,4 @@
 import logging
-import random
 import sys
 import time
 import traceback
@@ -28,22 +27,8 @@ def is_target_chat(peer_id: int) -> bool:
     return peer_id == config.CHAT_PEER_ID
 
 
-def send_message(vk, peer_id: int, text: str) -> None:
-    vk.messages.send(
-        peer_id=peer_id,
-        message=text,
-        random_id=random.randint(1, 2_147_483_647),
-    )
-
-
 def delete_message(vk, message) -> bool:
-    """Delete the offending message from the conversation for everyone.
-
-    VK Bot Long Poll payloads can expose the message as either the global
-    message id (id) or the conversation-local id
-    (conversation_message_id). Prefer the global id when available;
-    otherwise use the conversation id together with peer_id.
-    """
+    """Delete the offending message from the conversation for everyone."""
     message_id = message_field(message, "id")
     conversation_message_id = message_field(
         message, "conversation_message_id"
@@ -189,7 +174,6 @@ def event_object(event):
     obj = getattr(event, "obj", None)
     if obj is not None:
         return obj
-
     return getattr(event, "object", None)
 
 
@@ -207,7 +191,7 @@ def event_field(event_obj, name: str, default=None):
 
 
 def handle_chat_update(vk, event) -> None:
-    """Remove configured users immediately when they join the target chat."""
+    """Remove configured users immediately when they join the blocklist chat."""
     obj = event_object(event)
 
     if not obj:
@@ -217,13 +201,10 @@ def handle_chat_update(vk, event) -> None:
         )
         return
 
-    peer_id = message_field(obj, "peer_id")
-    if peer_id <= 0:
-        chat_id = message_field(obj, "chat_id")
-        if chat_id > 0:
-            peer_id = CHAT_PEER_START + chat_id
+    chat_id = message_field(obj, "chat_id")
+    peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
 
-    if not is_target_chat(peer_id):
+    if peer_id != config.BLOCKLIST_CHAT_PEER_ID:
         return
 
     action = event_field(obj, "action")
@@ -289,7 +270,7 @@ def handle_new_message(vk, conn, message) -> None:
     if not is_target_chat(peer_id):
         log.info(
             "MESSAGE_NEW пропущен: peer_id=%s не является целевой беседой %s",
-            peer_id,
+            from_id,
             config.CHAT_PEER_ID,
         )
         return
@@ -314,7 +295,6 @@ def handle_new_message(vk, conn, message) -> None:
         log.info("Сообщение принято: user=%s peer=%s", from_id, peer_id)
         return
 
-    # The second message is removed from the chat before the restriction is applied.
     deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
 
@@ -338,16 +318,16 @@ def run_forever() -> None:
     vk = session.get_api()
 
     log.info(
-        "Бот запущен: GROUP_ID=%s, target_chat=%s, limit=1/hour, mute=1h",
+        "Бот запущен: GROUP_ID=%s, moderation_chat=%s, blocklist_chat=%s",
         config.GROUP_ID,
         config.CHAT_PEER_ID,
+        config.BLOCKLIST_CHAT_PEER_ID,
     )
     log.info(
-        "Будет обрабатываться только peer_id=%s; остальные беседы игнорируются",
-        config.CHAT_PEER_ID,
+        "Лимит: 1 сообщение в час; второе удаляется и пользователь получает мут на 1 час"
     )
     log.info(
-        "Автоудаление при входе включено для %s пользователей",
+        "Автоудаление из blocklist-чата включено для %s пользователей",
         len(config.BLOCKED_USER_IDS),
     )
 
