@@ -134,6 +134,39 @@ def lift_mute(vk, peer_id: int, user_id: int) -> None:
         )
 
 
+def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
+    """Remove a user from a VK conversation."""
+    chat_id = peer_id - CHAT_PEER_START
+
+    if chat_id <= 0:
+        log.warning(
+            "Не удалось удалить user=%s: некорректный peer_id=%s",
+            user_id,
+            peer_id,
+        )
+        return False
+
+    try:
+        vk.messages.removeChatUser(
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+        log.warning(
+            "Заблокированный пользователь удалён из беседы: user=%s peer=%s",
+            user_id,
+            peer_id,
+        )
+        return True
+    except ApiError as err:
+        log.error(
+            "Не удалось удалить пользователя user=%s peer=%s: %s",
+            user_id,
+            peer_id,
+            err,
+        )
+        return False
+
+
 def message_field(message, name: str, default: int = 0) -> int:
     if not message:
         return default
@@ -150,6 +183,87 @@ def message_field(message, name: str, default: int = 0) -> int:
         return int(value or default)
     except (TypeError, ValueError):
         return default
+
+
+def event_object(event):
+    obj = getattr(event, "obj", None)
+    if obj is not None:
+        return obj
+
+    return getattr(event, "object", None)
+
+
+def event_field(event_obj, name: str, default=None):
+    if not event_obj:
+        return default
+
+    if isinstance(event_obj, dict):
+        return event_obj.get(name, default)
+
+    try:
+        return event_obj[name]
+    except Exception:
+        return getattr(event_obj, name, default)
+
+
+def handle_chat_update(vk, event) -> None:
+    """Remove configured users immediately when they join the target chat."""
+    obj = event_object(event)
+
+    if not obj:
+        log.warning(
+            "CHAT_UPDATE получен, но payload отсутствует: %r",
+            getattr(event, "raw", event),
+        )
+        return
+
+    peer_id = message_field(obj, "peer_id")
+    if peer_id <= 0:
+        chat_id = message_field(obj, "chat_id")
+        if chat_id > 0:
+            peer_id = CHAT_PEER_START + chat_id
+
+    if not is_target_chat(peer_id):
+        return
+
+    action = event_field(obj, "action")
+    if isinstance(action, dict):
+        action_type = action.get("type")
+        member_id = action.get("member_id") or action.get("user_id")
+    else:
+        action_type = action
+        member_id = (
+            event_field(obj, "member_id")
+            or event_field(obj, "user_id")
+        )
+
+    if action_type not in {"chat_invite_user", "chat_invite_user_by_link"}:
+        return
+
+    try:
+        member_id = int(member_id or 0)
+    except (TypeError, ValueError):
+        member_id = 0
+
+    if member_id <= 0:
+        log.warning(
+            "Не удалось определить добавленного пользователя: peer=%s action=%r",
+            peer_id,
+            action,
+        )
+        return
+
+    log.info(
+        "Пользователь добавлен в беседу: user=%s peer=%s action=%s",
+        member_id,
+        peer_id,
+        action_type,
+    )
+
+    if member_id not in config.BLOCKED_USER_IDS:
+        return
+
+    remove_user_from_chat(vk, peer_id, member_id)
 
 
 def handle_new_message(vk, conn, message) -> None:
@@ -215,6 +329,7 @@ def handle_new_message(vk, conn, message) -> None:
         deleted,
     )
 
+
 def run_forever() -> None:
     conn = db.connect()
     log.info("База готова: %s", config.DB_PATH)
@@ -223,10 +338,18 @@ def run_forever() -> None:
     vk = session.get_api()
 
     log.info(
-        "Бот запущен: GROUP_ID=%s, limit=1/hour, mute=1h",
+        "Бот запущен: GROUP_ID=%s, target_chat=%s, limit=1/hour, mute=1h",
         config.GROUP_ID,
+        config.CHAT_PEER_ID,
     )
-    log.info("Ожидаются сообщения из VK-бесед: peer_id >= %s", CHAT_PEER_START)
+    log.info(
+        "Будет обрабатываться только peer_id=%s; остальные беседы игнорируются",
+        config.CHAT_PEER_ID,
+    )
+    log.info(
+        "Автоудаление при входе включено для %s пользователей",
+        len(config.BLOCKED_USER_IDS),
+    )
 
     try:
         while True:
@@ -240,6 +363,10 @@ def run_forever() -> None:
                         getattr(event, "type", None),
                         getattr(event, "group_id", None),
                     )
+
+                    if event.type == VkBotEventType.CHAT_UPDATE:
+                        handle_chat_update(vk, event)
+                        continue
 
                     if event.type != VkBotEventType.MESSAGE_NEW:
                         continue
