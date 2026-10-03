@@ -201,8 +201,12 @@ def handle_chat_update(vk, event) -> None:
         )
         return
 
-    chat_id = message_field(obj, "chat_id")
-    peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
+    # VK can provide peer_id directly in the CHAT_UPDATE payload.
+    # Fall back to chat_id for compatibility with older payload formats.
+    peer_id = message_field(obj, "peer_id")
+    if peer_id <= 0:
+        chat_id = message_field(obj, "chat_id")
+        peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
 
     if peer_id != config.BLOCKLIST_CHAT_PEER_ID:
         return
@@ -344,11 +348,16 @@ def run_forever() -> None:
                         getattr(event, "group_id", None),
                     )
 
-                    if event.type == VkBotEventType.CHAT_UPDATE:
+                    # vk_api 11.9.9 does not expose CHAT_UPDATE in
+                    # VkBotEventType, while VK Long Poll sends it as "chat_update".
+                    event_type = getattr(event, "type", None)
+                    event_type_value = getattr(event_type, "value", event_type)
+
+                    if event_type_value == "chat_update":
                         handle_chat_update(vk, event)
                         continue
 
-                    if event.type != VkBotEventType.MESSAGE_NEW:
+                    if event_type != VkBotEventType.MESSAGE_NEW and event_type_value != "message_new":
                         continue
 
                     message = getattr(event, "message", None)
