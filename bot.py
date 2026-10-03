@@ -1,5 +1,6 @@
 import logging
 import sys
+import threading
 import time
 import traceback
 
@@ -251,6 +252,67 @@ def handle_chat_update(vk, event) -> None:
     remove_user_from_chat(vk, peer_id, member_id)
 
 
+def scan_blocklist_chat(vk) -> None:
+    """Find configured blocked users currently present in the blocklist chat and remove them."""
+    if not config.BLOCKED_USER_IDS:
+        return
+
+    try:
+        response = vk.messages.getConversationMembers(
+            peer_id=config.BLOCKLIST_CHAT_PEER_ID,
+            count=1000,
+        )
+        members = response.get("items", []) if isinstance(response, dict) else []
+        present_ids = set()
+
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            try:
+                member_id = int(member.get("member_id", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if member_id > 0:
+                present_ids.add(member_id)
+
+        blocked_present = present_ids & config.BLOCKED_USER_IDS
+        for user_id in blocked_present:
+            remove_user_from_chat(
+                vk,
+                config.BLOCKLIST_CHAT_PEER_ID,
+                user_id,
+            )
+
+    except ApiError as err:
+        log.warning(
+            "Не удалось проверить участников blocklist-чата peer=%s: %s",
+            config.BLOCKLIST_CHAT_PEER_ID,
+            err,
+        )
+    except Exception:
+        log.error(
+            "Ошибка проверки участников blocklist-чата:\\n%s",
+            traceback.format_exc(),
+        )
+
+
+def blocklist_watchdog(vk) -> None:
+    """Continuously enforce the blocklist independently of CHAT_UPDATE events."""
+    log.info(
+        "Watchdog blocklist-чата запущен: peer=%s, интервал=5 сек.",
+        config.BLOCKLIST_CHAT_PEER_ID,
+    )
+    while True:
+        try:
+            scan_blocklist_chat(vk)
+        except Exception:
+            log.error(
+                "Ошибка blocklist watchdog:\\n%s",
+                traceback.format_exc(),
+            )
+        time.sleep(5)
+
+
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
@@ -334,6 +396,14 @@ def run_forever() -> None:
         "Автоудаление из blocklist-чата включено для %s пользователей",
         len(config.BLOCKED_USER_IDS),
     )
+
+    if config.BLOCKED_USER_IDS:
+        threading.Thread(
+            target=blocklist_watchdog,
+            args=(vk,),
+            name="blocklist-watchdog",
+            daemon=True,
+        ).start()
 
     try:
         while True:
