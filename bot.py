@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import traceback
+from datetime import datetime
 
 import vk_api
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
@@ -408,6 +409,70 @@ def handle_content_violation(vk, message, from_id: int) -> bool:
     return False
 
 
+
+def classify_media(message):
+    counters = {"audio": 0, "voice": 0, "video": 0, "image": 0}
+    for attachment in message_attachments(message):
+        attachment_type = str(attachment.get("type", "") if isinstance(attachment, dict) else getattr(attachment, "type", "")).lower()
+        if attachment_type == "audio": counters["audio"] = 1
+        elif attachment_type == "audio_message": counters["voice"] = 1
+        elif attachment_type == "video": counters["video"] = 1
+        elif attachment_type == "photo": counters["image"] = 1
+    return counters
+
+
+def format_delta(current, baseline):
+    if baseline <= 0: return "→ 0%"
+    delta = (current - baseline) / baseline * 100
+    arrow = "↑" if delta > 0.05 else "↓" if delta < -0.05 else "→"
+    return f"{arrow} {abs(delta):.0f}%"
+
+
+def publish_hourly_activity(vk, conn, hour_start):
+    stats = db.build_hourly_stats(conn, hour_start)
+    user_ids = [uid for uid, _ in stats["top_users"]]
+    names = {}
+    if user_ids:
+        try:
+            profiles = vk.users.get(user_ids=",".join(str(x) for x in user_ids))
+            names = {int(p["id"]): f"{p.get('first_name','')} {p.get('last_name','')}".strip() for p in profiles}
+        except ApiError:
+            pass
+    start = datetime.fromtimestamp(hour_start).strftime("%H:%M")
+    end = datetime.fromtimestamp(hour_start + 3600).strftime("%H:%M")
+    medals = ("🥇", "🥈", "🥉")
+    top = "\n".join(f"{medals[i]} {names.get(uid, f'ID {uid}')} — {count} сообщ." for i,(uid,count) in enumerate(stats["top_users"])) or "Пока нет сообщений"
+    report = (
+        f"📊 АКТИВНОСТЬ ЧАСА\n{start} — {end}\n\n"
+        f"🔥 Сообщения — {stats['activity_score']:.0f}/100 {format_delta(stats['total_messages'], stats['baseline_messages'])}\n"
+        f"Всего: {stats['total_messages']}\n"
+        f"🎵 Аудио: {stats['audio_messages']}\n"
+        f"🎙 Голосовые: {stats['voice_messages']}\n"
+        f"🎬 Видео: {stats['video_messages']}\n"
+        f"🖼 Изображения: {stats['image_messages']}\n\n"
+        f"💬 Активность — {stats['user_activity_score']:.0f}/100 {format_delta(stats['unique_users'], stats['baseline_users'])}\n"
+        f"Уникальных пользователей: {stats['unique_users']}\n\n"
+        f"🏆 ТОП-3 ЗА ЧАС\n{top}"
+    )
+    try:
+        vk.messages.send(peer_id=config.BLOCKLIST_CHAT_PEER_ID, random_id=0, message=report)
+        log.info("Опубликована статистика часа: %s", hour_start)
+    except ApiError as err:
+        log.warning("Не удалось отправить статистику часа: %s", err)
+
+
+def activity_watchdog(vk, conn):
+    db.ensure_hourly_stats_table(conn)
+    last = None
+    while True:
+        now = int(time.time())
+        current = now - now % 3600
+        completed = current - 3600
+        if completed != last:
+            publish_hourly_activity(vk, conn, completed)
+            last = completed
+        time.sleep(20)
+
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
@@ -426,6 +491,15 @@ def handle_new_message(vk, conn, message) -> None:
 
     if from_id <= 0:
         log.warning("MESSAGE_NEW пропущен: некорректный from_id=%s", from_id)
+        return
+
+    if peer_id == config.BLOCKLIST_CHAT_PEER_ID and from_id > 0:
+        media = classify_media(message)
+        db.record_hourly_message(
+            conn, from_id, int(message_field(message, "date") or time.time()),
+            audio=media["audio"], voice=media["voice"],
+            video=media["video"], image=media["image"],
+        )
         return
 
     if not is_target_chat(peer_id):
@@ -509,6 +583,8 @@ def run_forever() -> None:
             name="blocklist-watchdog",
             daemon=True,
         ).start()
+
+    threading.Thread(target=activity_watchdog, args=(vk, conn), name="activity-watchdog", daemon=True).start()
 
     try:
         while True:
