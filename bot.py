@@ -414,10 +414,10 @@ def classify_media(message):
     counters = {"audio": 0, "voice": 0, "video": 0, "image": 0}
     for attachment in message_attachments(message):
         attachment_type = str(attachment.get("type", "") if isinstance(attachment, dict) else getattr(attachment, "type", "")).lower()
-        if attachment_type == "audio": counters["audio"] = 1
-        elif attachment_type == "audio_message": counters["voice"] = 1
-        elif attachment_type == "video": counters["video"] = 1
-        elif attachment_type == "photo": counters["image"] = 1
+        if attachment_type == "audio": counters["audio"] += 1
+        elif attachment_type == "audio_message": counters["voice"] += 1
+        elif attachment_type == "video": counters["video"] += 1
+        elif attachment_type == "photo": counters["image"] += 1
     return counters
 
 
