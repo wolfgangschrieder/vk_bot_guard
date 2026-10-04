@@ -151,18 +151,34 @@ def clear_expired_mutes(
 
         return expired
 
+
+def ensure_hourly_statistics_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS hourly_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_time INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        audio INTEGER NOT NULL DEFAULT 0,
+        voice INTEGER NOT NULL DEFAULT 0,
+        video INTEGER NOT NULL DEFAULT 0,
+        image INTEGER NOT NULL DEFAULT 0
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hourly_stats (
+        hour_start INTEGER PRIMARY KEY,
+        total_messages INTEGER NOT NULL,
+        audio_messages INTEGER NOT NULL,
+        voice_messages INTEGER NOT NULL,
+        video_messages INTEGER NOT NULL,
+        image_messages INTEGER NOT NULL,
+        unique_users INTEGER NOT NULL,
+        activity_score REAL NOT NULL,
+        user_activity_score REAL NOT NULL
+    )""")
+
+
 def record_hourly_message(conn, user_id, message_time=None, audio=0, voice=0, video=0, image=0):
     message_time = int(time.time()) if message_time is None else int(message_time)
     with _lock:
-        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            message_time INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            audio INTEGER NOT NULL DEFAULT 0,
-            voice INTEGER NOT NULL DEFAULT 0,
-            video INTEGER NOT NULL DEFAULT 0,
-            image INTEGER NOT NULL DEFAULT 0
-        )""")
+        ensure_hourly_statistics_tables(conn)
         conn.execute(
             """INSERT INTO hourly_messages
             (message_time, user_id, audio, voice, video, image)
@@ -171,24 +187,17 @@ def record_hourly_message(conn, user_id, message_time=None, audio=0, voice=0, vi
         )
         conn.commit()
 
+
 def ensure_hourly_stats_table(conn):
     with _lock:
-        conn.execute("""CREATE TABLE IF NOT EXISTS hourly_stats (
-            hour_start INTEGER PRIMARY KEY,
-            total_messages INTEGER NOT NULL,
-            audio_messages INTEGER NOT NULL,
-            voice_messages INTEGER NOT NULL,
-            video_messages INTEGER NOT NULL,
-            image_messages INTEGER NOT NULL,
-            unique_users INTEGER NOT NULL,
-            activity_score REAL NOT NULL,
-            user_activity_score REAL NOT NULL
-        )""")
+        ensure_hourly_statistics_tables(conn)
         conn.commit()
+
 
 def build_hourly_stats(conn, hour_start):
     hour_end = hour_start + 3600
     with _lock:
+        ensure_hourly_statistics_tables(conn)
         rows = conn.execute(
             """SELECT user_id, COUNT(*) AS messages,
                       SUM(audio) AS audio, SUM(voice) AS voice,
@@ -230,29 +239,3 @@ def build_hourly_stats(conn, hour_start):
             "baseline_messages": avg_messages, "baseline_users": avg_users,
             "top_users": [(int(r["user_id"]), int(r["messages"])) for r in rows[:3]],
         }
-
-
-
-def record_hourly_message(conn, user_id, message_time, audio=0, voice=0, video=0, image=0):
-    with _lock:
-        conn.execute("CREATE TABLE IF NOT EXISTS hourly_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, message_time INTEGER NOT NULL, user_id INTEGER NOT NULL, audio INTEGER NOT NULL DEFAULT 0, voice INTEGER NOT NULL DEFAULT 0, video INTEGER NOT NULL DEFAULT 0, image INTEGER NOT NULL DEFAULT 0)")
-        conn.execute("INSERT INTO hourly_messages (message_time,user_id,audio,voice,video,image) VALUES (?,?,?,?,?,?)", (message_time,user_id,audio,voice,video,image))
-        conn.commit()
-
-
-def ensure_hourly_stats_table(conn):
-    with _lock:
-        conn.execute("CREATE TABLE IF NOT EXISTS hourly_stats (hour_start INTEGER PRIMARY KEY, total_messages INTEGER NOT NULL, audio_messages INTEGER NOT NULL, voice_messages INTEGER NOT NULL, video_messages INTEGER NOT NULL, image_messages INTEGER NOT NULL, unique_users INTEGER NOT NULL, activity_score REAL NOT NULL, user_activity_score REAL NOT NULL)")
-        conn.commit()
-
-
-def build_hourly_stats(conn, hour_start):
-    hour_end = hour_start + 3600
-    with _lock:
-        rows = conn.execute("SELECT user_id,COUNT(*) messages,SUM(audio) audio,SUM(voice) voice,SUM(video) video,SUM(image) image FROM hourly_messages WHERE message_time>=? AND message_time<? GROUP BY user_id ORDER BY messages DESC,user_id ASC", (hour_start,hour_end)).fetchall()
-        total=sum(int(r["messages"]) for r in rows); audio=sum(int(r["audio"] or 0) for r in rows); voice=sum(int(r["voice"] or 0) for r in rows); video=sum(int(r["video"] or 0) for r in rows); image=sum(int(r["image"] or 0) for r in rows); users=len(rows)
-        base=conn.execute("SELECT AVG(total_messages) avg_messages,AVG(unique_users) avg_users FROM hourly_stats").fetchone()
-        avg_messages=float(base["avg_messages"] or 0); avg_users=float(base["avg_users"] or 0)
-        score=50.0 if avg_messages<=0 else min(100.0,max(0.0,50.0*total/avg_messages)); user_score=50.0 if avg_users<=0 else min(100.0,max(0.0,50.0*users/avg_users))
-        conn.execute("INSERT OR REPLACE INTO hourly_stats VALUES (?,?,?,?,?,?,?,?,?)", (hour_start,total,audio,voice,video,image,users,score,user_score)); conn.commit()
-        return {"total_messages":total,"audio_messages":audio,"voice_messages":voice,"video_messages":video,"image_messages":image,"unique_users":users,"activity_score":score,"user_activity_score":user_score,"baseline_messages":avg_messages,"baseline_users":avg_users,"top_users":[(int(r["user_id"]),int(r["messages"])) for r in rows[:3]]}
