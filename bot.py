@@ -1,4 +1,5 @@
 import logging
+import re
 import sys
 import threading
 import time
@@ -313,6 +314,100 @@ def blocklist_watchdog(vk) -> None:
         time.sleep(5)
 
 
+def message_text(message) -> str:
+    if isinstance(message, dict):
+        return str(message.get("text", "") or "")
+    return str(getattr(message, "text", "") or "")
+
+
+def message_attachments(message):
+    if isinstance(message, dict):
+        return message.get("attachments") or []
+    return getattr(message, "attachments", None) or []
+
+
+def has_media_attachment(message) -> bool:
+    for attachment in message_attachments(message):
+        if isinstance(attachment, dict):
+            attachment_type = str(attachment.get("type", "") or "").lower()
+        else:
+            attachment_type = str(getattr(attachment, "type", "") or "").lower()
+        if attachment_type in {"audio", "video"}:
+            return True
+    return False
+
+
+def normalized_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
+
+
+def contains_any_prohibited_term(text: str) -> bool:
+    normalized = normalized_text(text)
+    for term in config.PROHIBITED_LEXICON:
+        if term in normalized:
+            return True
+    return any(re.search(pattern, normalized) for pattern in config.PRICE_PATTERNS)
+
+
+def contains_porn_sale_term(text: str) -> bool:
+    normalized = normalized_text(text)
+    return "порновидео" in normalized or "домашнее видео" in normalized or "продам видео" in normalized
+
+
+def send_mute_reason(vk, user_id: int, reason: str) -> None:
+    try:
+        vk.messages.send(
+            peer_id=config.CHAT_PEER_ID,
+            random_id=0,
+            message=f"[id{user_id}|Пользователь], {reason}",
+        )
+    except ApiError as err:
+        log.warning(
+            "Не удалось отправить причину мута user=%s peer=%s: %s",
+            user_id,
+            config.CHAT_PEER_ID,
+            err,
+        )
+
+
+def handle_content_violation(vk, message, from_id: int) -> bool:
+    """Apply content rules. Returns True when a message was handled as a violation."""
+    text = message_text(message)
+
+    # More specific porn-sale wording gets its dedicated message.
+    if contains_porn_sale_term(text):
+        deleted = delete_message(vk, message)
+        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
+        send_mute_reason(vk, from_id, config.PORN_SALE_MUTE_REASON)
+        log.warning(
+            "Нарушение: продажа порно user=%s deleted=%s muted=%s",
+            from_id, deleted, muted,
+        )
+        return True
+
+    if has_media_attachment(message):
+        deleted = delete_message(vk, message)
+        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
+        send_mute_reason(vk, from_id, config.MEDIA_MUTE_REASON)
+        log.warning(
+            "Нарушение: музыка/видео user=%s deleted=%s muted=%s",
+            from_id, deleted, muted,
+        )
+        return True
+
+    if contains_any_prohibited_term(text):
+        deleted = delete_message(vk, message)
+        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
+        send_mute_reason(vk, from_id, config.PROSTITUTION_MUTE_REASON)
+        log.warning(
+            "Нарушение: запрещённая лексика user=%s deleted=%s muted=%s",
+            from_id, deleted, muted,
+        )
+        return True
+
+    return False
+
+
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
@@ -345,6 +440,11 @@ def handle_new_message(vk, conn, message) -> None:
         log.info("MESSAGE_NEW пропущен: user=%s находится в ADMIN_IDS", from_id)
         return
 
+    # Content rules are intentionally limited to the main moderation chat.
+    # They take priority over the generic one-message-per-hour rule.
+    if handle_content_violation(vk, message, from_id):
+        return
+
     now = int(time.time())
 
     for expired_user, expired_peer in db.clear_expired_mutes(conn, now):
@@ -354,7 +454,9 @@ def handle_new_message(vk, conn, message) -> None:
 
     if result["already_muted"]:
         delete_message(vk, message)
-        apply_mute(vk, peer_id, from_id)
+        muted = apply_mute(vk, peer_id, from_id)
+        if muted:
+            send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON)
         return
 
     if not result["should_mute"]:
@@ -363,6 +465,9 @@ def handle_new_message(vk, conn, message) -> None:
 
     deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
+
+    if muted:
+        send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON)
 
     log.warning(
         "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
