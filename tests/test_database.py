@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import date
@@ -83,6 +84,47 @@ class DatabaseTests(unittest.TestCase):
     def test_scheduler_event_is_idempotent(self):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
+
+    def test_legacy_database_survives_migration(self):
+        self.conn.close()
+        path = Path(self.tmp.name) / "legacy.db"
+
+        legacy = sqlite3.connect(path)
+        legacy.execute(
+            """
+            CREATE TABLE users (
+                user_id INTEGER NOT NULL,
+                peer_id INTEGER NOT NULL,
+                last_message_time INTEGER NOT NULL DEFAULT 0,
+                warnings INTEGER NOT NULL DEFAULT 0,
+                mute_until INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, peer_id)
+            )
+            """
+        )
+        legacy.execute(
+            "INSERT INTO users(user_id, peer_id, last_message_time, warnings, mute_until) "
+            "VALUES (77, 2000000002, 1000, 3, 2000)"
+        )
+        legacy.commit()
+        legacy.close()
+
+        migrated = db.connect(str(path))
+        row = migrated.execute(
+            "SELECT user_id, peer_id, warnings, mute_until "
+            "FROM users WHERE user_id = 77 AND peer_id = 2000000002"
+        ).fetchone()
+
+        self.assertEqual(tuple(row), (77, 2000000002, 3, 2000))
+        self.assertEqual(
+            migrated.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()[0],
+            2,
+        )
+        self.assertTrue((Path(self.tmp.name) / "backups").exists())
+
+        self.conn = migrated
 
 
 if __name__ == "__main__":
