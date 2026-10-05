@@ -19,7 +19,7 @@ def connect(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
+def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None:
     with _lock:
         conn.execute(
             """
