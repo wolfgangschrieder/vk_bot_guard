@@ -742,9 +742,6 @@ def handle_new_message(vk, conn, message) -> None:
     if from_id <= 0:
         return
 
-    if peer_id == config.BLOCKLIST_CHAT_PEER_ID:
-        return
-
     if not is_target_chat(peer_id):
         return
 
@@ -811,7 +808,10 @@ def run_forever() -> None:
     )
     vk = session.get_api()
 
-    if config.BLOCKED_USER_IDS:
+    if (
+        config.BLOCKED_USER_IDS
+        and config.BLOCKLIST_CHAT_PEER_ID != config.CHAT_PEER_ID
+    ):
         threading.Thread(
             target=blocklist_watchdog,
             args=(vk,),
