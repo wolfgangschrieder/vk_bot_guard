@@ -65,6 +65,11 @@ class DatabaseTests(unittest.TestCase):
             )
         )
         self.assertEqual(db.get_reputation(self.conn, 2), 1)
+        self.assertFalse(
+            db.add_reputation_vote(
+                self.conn, 1, 3, 1, "2026-10-05", now=1002
+            )
+        )
 
         self.assertTrue(
             db.add_reputation_vote(
