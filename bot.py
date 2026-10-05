@@ -204,7 +204,10 @@ def handle_chat_update(vk, event) -> None:
         chat_id = message_field(obj, "chat_id")
         peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
 
-    if peer_id != config.BLOCKLIST_CHAT_PEER_ID:
+    if (
+        peer_id != config.BLOCKLIST_CHAT_PEER_ID
+        or peer_id == config.CHAT_PEER_ID
+    ):
         return
 
     action = event_field(obj, "action")
