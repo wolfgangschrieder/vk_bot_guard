@@ -413,12 +413,12 @@ def handle_content_violation(vk, conn, message, from_id: int) -> bool:
         reason = config.PORN_SALE_MUTE_REASON
     elif has_media_attachment(message):
         reason = config.MEDIA_MUTE_REASON
-    elif contains_any_prohibited_term(text):
-        reason = config.PROSTITUTION_MUTE_REASON
     elif contains_card_or_phone(text):
         reason = config.CARD_PHONE_MUTE_REASON
     elif contains_political_term(text):
         reason = config.POLITICAL_MUTE_REASON
+    elif contains_any_prohibited_term(text):
+        reason = config.PROSTITUTION_MUTE_REASON
     else:
         return False
 
