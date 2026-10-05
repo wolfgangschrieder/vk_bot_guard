@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -56,13 +57,27 @@ BLOCKED_USER_IDS = {
 
 RATE_LIMIT_SECONDS = 60 * 60
 MUTE_SECONDS = 60 * 60
+PROFILE_SELF_COOLDOWN_SECONDS = 30 * 60
+PROFILE_OTHER_COOLDOWN_SECONDS = 60 * 60
+BOT_REASON_DELETE_SECONDS = 10 * 60
+SCHEDULER_INTERVAL_SECONDS = 20
+
 API_VERSION = "5.199"
 RECONNECT_DELAY = 5
 DB_PATH = BASE_DIR / "moderator.db"
 LOG_PATH = BASE_DIR / "bot.log"
 
+CHAT_TIMEZONE = os.getenv("CHAT_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow"
+try:
+    CHAT_TZ = ZoneInfo(CHAT_TIMEZONE)
+except Exception as exc:
+    raise SystemExit(
+        f"Некорректный CHAT_TIMEZONE={CHAT_TIMEZONE!r}. "
+        "Используйте IANA timezone, например Europe/Moscow."
+    ) from exc
 
-# Content moderation rules — applied ONLY to CHAT_PEER_ID.
+
+# Existing content moderation rules — applied only to CHAT_PEER_ID.
 PROHIBITED_LEXICON = (
     "дорого",
     "мп",
@@ -76,33 +91,55 @@ PROHIBITED_LEXICON = (
     "домашнее видео",
 )
 
-# Price expressions commonly used in the same prohibited context:
-# "10 тыщ", "20 тыщ", "10к", etc.
 PRICE_PATTERNS = (
     r"\b\d{1,3}\s*(?:тыс|тыщ|тысячи|тысяч|к)\b",
 )
 
+POLITICAL_TERMS = (
+    "украина",
+    "хохлы",
+    "ауе",
+)
+
 LIMIT_MUTE_REASON = (
-    "⏳ Лимит: 1 сообщение в час.\n"
-    "Второе сообщение удалено. Доступ ограничен на 1 час.\n"
-    "Увидимся позже 👋"
+    "⏳ Лимит: 1 сообщение в час. Сообщение удалено, доступ ограничен на 1 час."
 )
 
 PROSTITUTION_MUTE_REASON = (
-    "🚫 Проституция запрещена.\n"
-    "Сообщение удалено из-за запрещённой лексики: «дорого», «мп», "
-    "«деньги», «не бюджет», «без предоплаты», «скидки», «10 тыщ», «20 тыщ», «10к».\n"
-    "Доступ ограничен."
+    "🚫 Запрещённая лексика. Сообщение удалено, доступ ограничен на 1 час."
 )
 
 MEDIA_MUTE_REASON = (
-    "🎬 Музыка и видео в чате запрещены.\n"
-    "Контент удалён. Доступ ограничен на 1 час.\n"
-    "Спасибо за понимание 🙌"
+    "🎬 Музыка и видео в чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
 )
 
 PORN_SALE_MUTE_REASON = (
-    "🔞 Продажа порно запрещена.\n"
-    "Сообщение удалено из-за запрещённых слов: «порновидео», «домашнее видео».\n"
-    "Доступ ограничен."
+    "🔞 Продажа порно запрещена. Сообщение удалено, доступ ограничен на 1 час."
+)
+
+CARD_PHONE_MUTE_REASON = (
+    "💳 Публикация банковских карт и номеров телефонов запрещена. "
+    "Сообщение удалено, доступ ограничен на 1 час."
+)
+
+POLITICAL_MUTE_REASON = (
+    "🚫 Политические высказывания в чате запрещены. "
+    "Сообщение удалено, доступ ограничен на 1 час."
+)
+
+KING_MUTE_MESSAGE = "👑 Король чата выдал мут пользователю {mention} на 1 час."
+
+MONTH_NAMES = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
 )
