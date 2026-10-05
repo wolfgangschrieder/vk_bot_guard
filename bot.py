@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import vk_api
 from vk_api.bot_longpoll import VkBotEventType, VkBotLongPoll
@@ -31,11 +31,9 @@ def is_target_chat(peer_id: int) -> bool:
 
 
 def delete_message(vk, message) -> bool:
-    """Delete the offending message from the conversation for everyone."""
+    """Delete a message from the conversation for everyone."""
     message_id = message_field(message, "id")
-    conversation_message_id = message_field(
-        message, "conversation_message_id"
-    )
+    conversation_message_id = message_field(message, "conversation_message_id")
     peer_id = message_field(message, "peer_id")
 
     try:
@@ -64,18 +62,10 @@ def delete_message(vk, message) -> bool:
             )
             return True
 
-        log.warning(
-            "Не удалось удалить сообщение: отсутствуют id "
-            "(id=%s, conversation_message_id=%s, peer_id=%s)",
-            message_id,
-            conversation_message_id,
-            peer_id,
-        )
         return False
     except ApiError as err:
         log.error(
-            "Не удалось удалить сообщение id=%s conversation_message_id=%s "
-            "peer_id=%s: %s",
+            "Не удалось удалить сообщение id=%s conversation_message_id=%s peer_id=%s: %s",
             message_id,
             conversation_message_id,
             peer_id,
@@ -84,8 +74,29 @@ def delete_message(vk, message) -> bool:
         return False
 
 
+def delete_bot_message(vk, message_id: int, peer_id: int) -> bool:
+    try:
+        vk.messages.delete(
+            message_ids=str(message_id),
+            delete_for_all=1,
+        )
+        log.info(
+            "Сообщение бота удалено: message_id=%s peer_id=%s",
+            message_id,
+            peer_id,
+        )
+        return True
+    except ApiError as err:
+        log.warning(
+            "Не удалось удалить сообщение бота message_id=%s peer_id=%s: %s",
+            message_id,
+            peer_id,
+            err,
+        )
+        return False
+
+
 def apply_mute(vk, peer_id: int, user_id: int) -> bool:
-    """Restrict a user from writing in the conversation for MUTE_SECONDS."""
     try:
         vk.messages.changeConversationMemberRestrictions(
             peer_id=peer_id,
@@ -105,7 +116,6 @@ def apply_mute(vk, peer_id: int, user_id: int) -> bool:
 
 
 def lift_mute(vk, peer_id: int, user_id: int) -> None:
-    """Restore a user's ability to write in the conversation."""
     try:
         vk.messages.changeConversationMemberRestrictions(
             peer_id=peer_id,
@@ -123,22 +133,12 @@ def lift_mute(vk, peer_id: int, user_id: int) -> None:
 
 
 def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
-    """Remove a user from a VK conversation."""
     chat_id = peer_id - CHAT_PEER_START
-
     if chat_id <= 0:
-        log.warning(
-            "Не удалось удалить user=%s: некорректный peer_id=%s",
-            user_id,
-            peer_id,
-        )
         return False
 
     try:
-        vk.messages.removeChatUser(
-            chat_id=chat_id,
-            user_id=user_id,
-        )
+        vk.messages.removeChatUser(chat_id=chat_id, user_id=user_id)
         log.warning(
             "Заблокированный пользователь удалён из беседы: user=%s peer=%s",
             user_id,
@@ -196,16 +196,9 @@ def event_field(event_obj, name: str, default=None):
 def handle_chat_update(vk, event) -> None:
     """Remove configured users immediately when they join the blocklist chat."""
     obj = event_object(event)
-
     if not obj:
-        log.warning(
-            "CHAT_UPDATE получен, но payload отсутствует: %r",
-            getattr(event, "raw", event),
-        )
         return
 
-    # VK can provide peer_id directly in the CHAT_UPDATE payload.
-    # Fall back to chat_id for compatibility with older payload formats.
     peer_id = message_field(obj, "peer_id")
     if peer_id <= 0:
         chat_id = message_field(obj, "chat_id")
@@ -220,10 +213,7 @@ def handle_chat_update(vk, event) -> None:
         member_id = action.get("member_id") or action.get("user_id")
     else:
         action_type = action
-        member_id = (
-            event_field(obj, "member_id")
-            or event_field(obj, "user_id")
-        )
+        member_id = event_field(obj, "member_id") or event_field(obj, "user_id")
 
     if action_type not in {"chat_invite_user", "chat_invite_user_by_link"}:
         return
@@ -233,29 +223,11 @@ def handle_chat_update(vk, event) -> None:
     except (TypeError, ValueError):
         member_id = 0
 
-    if member_id <= 0:
-        log.warning(
-            "Не удалось определить добавленного пользователя: peer=%s action=%r",
-            peer_id,
-            action,
-        )
-        return
-
-    log.info(
-        "Пользователь добавлен в беседу: user=%s peer=%s action=%s",
-        member_id,
-        peer_id,
-        action_type,
-    )
-
-    if member_id not in config.BLOCKED_USER_IDS:
-        return
-
-    remove_user_from_chat(vk, peer_id, member_id)
+    if member_id in config.BLOCKED_USER_IDS:
+        remove_user_from_chat(vk, peer_id, member_id)
 
 
 def scan_blocklist_chat(vk) -> None:
-    """Find configured blocked users currently present in the blocklist chat and remove them."""
     if not config.BLOCKED_USER_IDS:
         return
 
@@ -265,53 +237,23 @@ def scan_blocklist_chat(vk) -> None:
             count=1000,
         )
         members = response.get("items", []) if isinstance(response, dict) else []
-        present_ids = set()
-
-        for member in members:
-            if not isinstance(member, dict):
-                continue
-            try:
-                member_id = int(member.get("member_id", 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            if member_id > 0:
-                present_ids.add(member_id)
-
-        blocked_present = present_ids & config.BLOCKED_USER_IDS
-        for user_id in blocked_present:
-            remove_user_from_chat(
-                vk,
-                config.BLOCKLIST_CHAT_PEER_ID,
-                user_id,
-            )
-
-    except ApiError as err:
-        log.warning(
-            "Не удалось проверить участников blocklist-чата peer=%s: %s",
-            config.BLOCKLIST_CHAT_PEER_ID,
-            err,
-        )
+        present_ids = {
+            int(member.get("member_id", 0))
+            for member in members
+            if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
+        }
+        for user_id in present_ids & config.BLOCKED_USER_IDS:
+            remove_user_from_chat(vk, config.BLOCKLIST_CHAT_PEER_ID, user_id)
     except Exception:
-        log.error(
-            "Ошибка проверки участников blocklist-чата:\\n%s",
-            traceback.format_exc(),
-        )
+        log.error("Ошибка проверки blocklist-чата:\n%s", traceback.format_exc())
 
 
 def blocklist_watchdog(vk) -> None:
-    """Continuously enforce the blocklist independently of CHAT_UPDATE events."""
-    log.info(
-        "Watchdog blocklist-чата запущен: peer=%s, интервал=5 сек.",
-        config.BLOCKLIST_CHAT_PEER_ID,
-    )
     while True:
         try:
             scan_blocklist_chat(vk)
         except Exception:
-            log.error(
-                "Ошибка blocklist watchdog:\\n%s",
-                traceback.format_exc(),
-            )
+            log.error("Ошибка blocklist watchdog:\n%s", traceback.format_exc())
         time.sleep(5)
 
 
@@ -329,10 +271,11 @@ def message_attachments(message):
 
 def has_media_attachment(message) -> bool:
     for attachment in message_attachments(message):
-        if isinstance(attachment, dict):
-            attachment_type = str(attachment.get("type", "") or "").lower()
-        else:
-            attachment_type = str(getattr(attachment, "type", "") or "").lower()
+        attachment_type = str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower()
         if attachment_type in {"audio", "video"}:
             return True
     return False
@@ -344,182 +287,479 @@ def normalized_text(text: str) -> str:
 
 def contains_any_prohibited_term(text: str) -> bool:
     normalized = normalized_text(text)
-    for term in config.PROHIBITED_LEXICON:
-        if term in normalized:
-            return True
-    return any(re.search(pattern, normalized) for pattern in config.PRICE_PATTERNS)
+    return any(term in normalized for term in config.PROHIBITED_LEXICON) or any(
+        re.search(pattern, normalized) for pattern in config.PRICE_PATTERNS
+    )
 
 
 def contains_porn_sale_term(text: str) -> bool:
     normalized = normalized_text(text)
-    return "порновидео" in normalized or "домашнее видео" in normalized or "продам видео" in normalized
+    return (
+        "порновидео" in normalized
+        or "домашнее видео" in normalized
+        or "продам видео" in normalized
+    )
 
 
-def send_mute_reason(vk, user_id: int, reason: str) -> None:
-    try:
-        vk.messages.send(
-            peer_id=config.CHAT_PEER_ID,
-            random_id=0,
-            message=f"[id{user_id}|Пользователь], {reason}",
-        )
-    except ApiError as err:
-        log.warning(
-            "Не удалось отправить причину мута user=%s peer=%s: %s",
-            user_id,
-            config.CHAT_PEER_ID,
-            err,
-        )
+def contains_political_term(text: str) -> bool:
+    normalized = normalized_text(text)
+    return any(
+        re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized)
+        for term in config.POLITICAL_TERMS
+    )
 
 
-def handle_content_violation(vk, message, from_id: int) -> bool:
-    """Apply content rules. Returns True when a message was handled as a violation."""
-    text = message_text(message)
+def contains_phone_number(text: str) -> bool:
+    patterns = (
+        r"(?<!\d)(?:\+7|8|7)[\s().-]*(?:\d[\s().-]*){10}(?!\d)",
+        r"(?<!\d)\+\d[\s().-]*(?:\d[\s().-]*){9,14}(?!\d)",
+    )
+    return any(re.search(pattern, text) for pattern in patterns)
 
-    # More specific porn-sale wording gets its dedicated message.
-    if contains_porn_sale_term(text):
-        deleted = delete_message(vk, message)
-        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
-        send_mute_reason(vk, from_id, config.PORN_SALE_MUTE_REASON)
-        log.warning(
-            "Нарушение: продажа порно user=%s deleted=%s muted=%s",
-            from_id, deleted, muted,
-        )
-        return True
 
-    if has_media_attachment(message):
-        deleted = delete_message(vk, message)
-        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
-        send_mute_reason(vk, from_id, config.MEDIA_MUTE_REASON)
-        log.warning(
-            "Нарушение: музыка/видео user=%s deleted=%s muted=%s",
-            from_id, deleted, muted,
-        )
-        return True
+def card_luhn(number: str) -> bool:
+    digits = re.sub(r"\D", "", number)
+    if not 13 <= len(digits) <= 19:
+        return False
 
-    if contains_any_prohibited_term(text):
-        deleted = delete_message(vk, message)
-        muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
-        send_mute_reason(vk, from_id, config.PROSTITUTION_MUTE_REASON)
-        log.warning(
-            "Нарушение: запрещённая лексика user=%s deleted=%s muted=%s",
-            from_id, deleted, muted,
-        )
-        return True
+    total = 0
+    parity = len(digits) % 2
+    for index, char in enumerate(digits):
+        value = int(char)
+        if index % 2 == parity:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0
 
+
+def contains_card_number(text: str) -> bool:
+    for match in re.finditer(r"(?<!\d)(?:\d[\s-]?){13,19}\d(?!\d)", text):
+        if card_luhn(match.group(0)):
+            return True
     return False
 
+
+def contains_card_or_phone(text: str) -> bool:
+    return contains_card_number(text) or contains_phone_number(text)
 
 
 def classify_media(message):
     counters = {"audio": 0, "voice": 0, "video": 0, "image": 0}
     for attachment in message_attachments(message):
-        attachment_type = str(attachment.get("type", "") if isinstance(attachment, dict) else getattr(attachment, "type", "")).lower()
-        if attachment_type == "audio": counters["audio"] += 1
-        elif attachment_type == "audio_message": counters["voice"] += 1
-        elif attachment_type == "video": counters["video"] += 1
-        elif attachment_type == "photo": counters["image"] += 1
+        attachment_type = str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower()
+        if attachment_type == "audio":
+            counters["audio"] += 1
+        elif attachment_type == "audio_message":
+            counters["voice"] += 1
+        elif attachment_type == "video":
+            counters["video"] += 1
+        elif attachment_type == "photo":
+            counters["image"] += 1
     return counters
 
 
-def format_delta(current, baseline):
-    if baseline <= 0: return "→ 0%"
-    delta = (current - baseline) / baseline * 100
-    arrow = "↑" if delta > 0.05 else "↓" if delta < -0.05 else "→"
-    return f"{arrow} {abs(delta):.0f}%"
-
-
-def publish_hourly_activity(vk, conn, hour_start):
-    stats = db.build_hourly_stats(conn, hour_start)
-    user_ids = [uid for uid, _ in stats["top_users"]]
-    names = {}
-    if user_ids:
-        try:
-            profiles = vk.users.get(user_ids=",".join(str(x) for x in user_ids))
-            names = {int(p["id"]): f"{p.get('first_name','')} {p.get('last_name','')}".strip() for p in profiles}
-        except ApiError:
-            pass
-    start = datetime.fromtimestamp(hour_start).strftime("%H:%M")
-    end = datetime.fromtimestamp(hour_start + 3600).strftime("%H:%M")
-    medals = ("🥇", "🥈", "🥉")
-    top = "\n".join(f"{medals[i]} {names.get(uid, f'ID {uid}')} — {count} сообщ." for i,(uid,count) in enumerate(stats["top_users"])) or "Пока нет сообщений"
-    report = (
-        f"📊 АКТИВНОСТЬ ЧАСА\n{start} — {end}\n\n"
-        f"🔥 Сообщения — {stats['activity_score']:.0f}/100 {format_delta(stats['total_messages'], stats['baseline_messages'])}\n"
-        f"Всего: {stats['total_messages']}\n"
-        f"🎵 Аудио: {stats['audio_messages']}\n"
-        f"🎙 Голосовые: {stats['voice_messages']}\n"
-        f"🎬 Видео: {stats['video_messages']}\n"
-        f"🖼 Изображения: {stats['image_messages']}\n\n"
-        f"💬 Активность — {stats['user_activity_score']:.0f}/100 {format_delta(stats['unique_users'], stats['baseline_users'])}\n"
-        f"Уникальных пользователей: {stats['unique_users']}\n\n"
-        f"🏆 ТОП-3 ЗА ЧАС\n{top}"
-    )
+def send_bot_message(
+    vk,
+    message: str,
+    *,
+    temporary: bool = False,
+    peer_id: int | None = None,
+) -> int:
+    target_peer = peer_id or config.CHAT_PEER_ID
     try:
-        vk.messages.send(peer_id=config.BLOCKLIST_CHAT_PEER_ID, random_id=0, message=report)
-        log.info("Опубликована статистика часа: %s", hour_start)
+        message_id = int(
+            vk.messages.send(
+                peer_id=target_peer,
+                random_id=0,
+                message=message,
+            )
+            or 0
+        )
+        if temporary and message_id > 0:
+            db.queue_bot_message(
+                ACTIVE_CONN,
+                message_id,
+                target_peer,
+                int(time.time()) + config.BOT_REASON_DELETE_SECONDS,
+            )
+        return message_id
     except ApiError as err:
-        log.warning("Не удалось отправить статистику часа: %s", err)
+        log.warning("Не удалось отправить сообщение бота: %s", err)
+        return 0
 
 
-def activity_watchdog(vk, conn):
-    db.ensure_hourly_stats_table(conn)
-    last = None
+def send_mute_reason(vk, user_id: int, reason: str) -> None:
+    send_bot_message(
+        vk,
+        f"[id{user_id}|Пользователь], {reason}",
+        temporary=True,
+    )
+
+
+def record_successful_mute(conn, user_id: int) -> None:
+    db.record_mute(conn, user_id)
+
+
+def handle_content_violation(vk, conn, message, from_id: int) -> bool:
+    text = message_text(message)
+
+    if contains_porn_sale_term(text):
+        reason = config.PORN_SALE_MUTE_REASON
+    elif has_media_attachment(message):
+        reason = config.MEDIA_MUTE_REASON
+    elif contains_any_prohibited_term(text):
+        reason = config.PROSTITUTION_MUTE_REASON
+    elif contains_card_or_phone(text):
+        reason = config.CARD_PHONE_MUTE_REASON
+    elif contains_political_term(text):
+        reason = config.POLITICAL_MUTE_REASON
+    else:
+        return False
+
+    deleted = delete_message(vk, message)
+    muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
+    if muted:
+        record_successful_mute(conn, from_id)
+        send_mute_reason(vk, from_id, reason)
+
+    log.warning(
+        "Автоматическое нарушение: user=%s deleted=%s muted=%s",
+        from_id,
+        deleted,
+        muted,
+    )
+    return True
+
+
+def mention(user_id: int, name: str | None = None) -> str:
+    label = name or f"ID {user_id}"
+    return f"[id{user_id}|{label}]"
+
+
+def get_user_names(vk, user_ids: list[int]) -> dict[int, str]:
+    if not user_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(int(uid) for uid in user_ids if int(uid) > 0))
+    try:
+        profiles = vk.users.get(user_ids=",".join(map(str, unique_ids)))
+    except ApiError as err:
+        log.warning("Не удалось получить имена пользователей: %s", err)
+        return {}
+
+    return {
+        int(profile["id"]): f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip()
+        for profile in profiles
+    }
+
+
+def format_top(vk, rows, medals: tuple[str, ...]) -> str:
+    names = get_user_names(vk, [uid for uid, _ in rows])
+    lines = []
+    for index, (user_id, messages) in enumerate(rows):
+        prefix = medals[index] if index < len(medals) else f"{index + 1}."
+        lines.append(
+            f"{prefix} {mention(user_id, names.get(user_id))} — {messages}"
+        )
+    return "\n".join(lines) if lines else "Пока нет сообщений."
+
+
+def publish_daily_stats(vk, conn, stat_date: date) -> None:
+    stats = db.get_daily_stats(conn, stat_date)
+    top3 = stats["top_users"][:3]
+    month = config.MONTH_NAMES[stat_date.month - 1]
+
+    report = (
+        f"📊 СТАТИСТИКА ЧАТА\n"
+        f"#{stat_date.day}{month}\n\n"
+        f"💬 Сообщений сегодня: {stats['messages']}\n\n"
+        f"🏆 ТОП-3 АКТИВНЫХ\n"
+        f"{format_top(vk, top3, ('🥇', '🥈', '🥉'))}"
+    )
+    send_bot_message(vk, report)
+
+
+def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
+    stats = db.get_weekly_stats(conn, start_date, end_date)
+    month = config.MONTH_NAMES[start_date.month - 1]
+
+    report = (
+        f"📊 ИТОГИ НЕДЕЛИ\n"
+        f"#{start_date.day}{month}\n\n"
+        f"💬 Сообщений: {stats['messages']}\n"
+        f"🔇 Мутов: {stats['mutes']}\n\n"
+        f"🏆 ТОП-5 АКТИВНЫХ\n"
+        f"{format_top(vk, stats['top_users'], ('🥇', '🥈', '🥉', '4️⃣', '5️⃣'))}"
+    )
+    send_bot_message(vk, report)
+
+
+def publish_king(vk, conn, stat_date: date) -> None:
+    stats = db.get_daily_stats(conn, stat_date)
+    if not stats["top_users"]:
+        log.info("Король не назначен: %s — нет сообщений", stat_date)
+        return
+
+    user_id, messages = stats["top_users"][0]
+    if not db.save_king(conn, stat_date, user_id, messages):
+        return
+
+    names = get_user_names(vk, [user_id])
+    text = (
+        f"👑 КОРОЛЬ ЧАТА\n\n"
+        f"{mention(user_id, names.get(user_id))}\n"
+        f"Сообщений за день: {messages}\n\n"
+        f"Сегодня у Короля есть право выдать один или несколько мутов "
+        f"через команду /мут @пользователь."
+    )
+    send_bot_message(vk, text)
+    log.info(
+        "Король чата: date=%s user=%s messages=%s",
+        stat_date,
+        user_id,
+        messages,
+    )
+
+
+def current_week_key(local_date: date) -> str:
+    return (local_date - timedelta(days=local_date.weekday())).isoformat()
+
+
+def parse_target_user_id(text: str) -> int:
+    match = re.search(r"(?:@id|@|\[id)(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    target_id = parse_target_user_id(match.group(1) or "") or from_id
+    is_self = target_id == from_id
+    command_key = "profile_self" if is_self else "profile_other"
+    last_used = db.get_command_cooldown(conn, from_id, command_key)
+
+    cooldown = (
+        config.PROFILE_SELF_COOLDOWN_SECONDS
+        if is_self
+        else config.PROFILE_OTHER_COOLDOWN_SECONDS
+    )
+    if last_used and now - last_used < cooldown:
+        remaining = cooldown - (now - last_used)
+        minutes = max(1, (remaining + 59) // 60)
+        send_bot_message(
+            vk,
+            f"⏳ Профиль можно посмотреть снова через {minutes} мин.",
+            temporary=True,
+        )
+        return True
+
+    db.set_command_cooldown(conn, from_id, command_key, 0, now)
+    reputation = db.get_reputation(conn, target_id)
+    names = get_user_names(vk, [target_id])
+    profile = (
+        f"👤 ПРОФИЛЬ\n\n"
+        f"{mention(target_id, names.get(target_id))}\n"
+        f"⭐ Репутация: {reputation:+d}"
+    )
+    send_bot_message(vk, profile)
+    return True
+
+
+def handle_reputation_command(
+    vk,
+    conn,
+    from_id: int,
+    text: str,
+    now: int,
+) -> bool:
+    match = re.match(r"^/(?:rep|реп)\s+([+-])\s+(.+)$", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    target_id = parse_target_user_id(match.group(2))
+    if target_id <= 0:
+        send_bot_message(vk, "❗ Укажи пользователя через @id.", temporary=True)
+        return True
+
+    value = 1 if match.group(1) == "+" else -1
+    week_key = current_week_key(
+        datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    )
+    if not db.add_reputation_vote(
+        conn,
+        from_id,
+        target_id,
+        value,
+        week_key,
+        now,
+    ):
+        send_bot_message(
+            vk,
+            "⏳ Этому пользователю ты уже выдавал репутацию на этой неделе.",
+            temporary=True,
+        )
+        return True
+
+    sign = "+1" if value > 0 else "-1"
+    names = get_user_names(vk, [target_id])
+    send_bot_message(
+        vk,
+        f"⭐ Репутация {sign} для {mention(target_id, names.get(target_id))}.",
+        temporary=True,
+    )
+    return True
+
+
+def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    if not re.match(r"^/мут(?:\s+.+)?$", text.strip(), re.IGNORECASE):
+        return False
+
+    local_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    yesterday = local_date - timedelta(days=1)
+    king = db.get_king(conn, yesterday)
+
+    if not king or king[0] != from_id:
+        send_bot_message(
+            vk,
+            "👑 Эта команда доступна только Королю чата.",
+            temporary=True,
+        )
+        return True
+
+    target_id = parse_target_user_id(text)
+    if target_id <= 0:
+        send_bot_message(
+            vk,
+            "❗ Укажи пользователя через @id.",
+            temporary=True,
+        )
+        return True
+
+    if target_id == from_id:
+        send_bot_message(
+            vk,
+            "👑 Себя мутить нельзя.",
+            temporary=True,
+        )
+        return True
+
+    if target_id in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Администратора Король замутить не может.",
+            temporary=True,
+        )
+        return True
+
+    if apply_mute(vk, config.CHAT_PEER_ID, target_id):
+        record_successful_mute(conn, target_id)
+        names = get_user_names(vk, [target_id])
+        send_bot_message(
+            vk,
+            config.KING_MUTE_MESSAGE.format(
+                mention=mention(target_id, names.get(target_id))
+            ),
+        )
+    return True
+
+
+def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return False
+
+    if handle_profile_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_reputation_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_king_mute_command(vk, conn, from_id, stripped, now):
+        return True
+    return False
+
+
+def bot_message_cleanup_watchdog(vk, conn) -> None:
     while True:
-        now = int(time.time())
-        current = now - now % 3600
-        completed = current - 3600
-        if completed != last:
-            publish_hourly_activity(vk, conn, completed)
-            last = completed
+        try:
+            due = db.get_due_bot_messages(conn)
+            for message_id, peer_id in due:
+                delete_bot_message(vk, message_id, peer_id)
+                db.remove_bot_message(conn, message_id)
+        except Exception:
+            log.error("Ошибка автоудаления сообщений бота:\n%s", traceback.format_exc())
         time.sleep(20)
+
+
+def scheduler_watchdog(vk, conn) -> None:
+    """Publish daily/weekly reports and elect the daily king at fixed local times."""
+    while True:
+        try:
+            now = datetime.now(config.CHAT_TZ)
+            local_date = now.date()
+
+            # 23:59 — elect the king for the day.
+            if now.hour == 23 and now.minute == 59:
+                key = f"king:{local_date.isoformat()}"
+                if db.claim_scheduler_event(conn, key):
+                    publish_king(vk, conn, local_date)
+
+            # 00:00 is the report for the just-finished day.
+            if now.minute == 0 and now.hour in {0, 6, 12, 18}:
+                stat_date = local_date - timedelta(days=1) if now.hour == 0 else local_date
+                key = f"daily:{now.strftime('%Y-%m-%d-%H')}"
+                if db.claim_scheduler_event(conn, key):
+                    publish_daily_stats(vk, conn, stat_date)
+
+            # Monday 12:00 — previous Monday-Sunday.
+            if now.weekday() == 0 and now.hour == 12 and now.minute == 0:
+                end_date = local_date
+                start_date = end_date - timedelta(days=7)
+                key = f"weekly:{start_date.isoformat()}"
+                if db.claim_scheduler_event(conn, key):
+                    publish_weekly_stats(vk, conn, start_date, end_date)
+
+        except Exception:
+            log.error("Ошибка scheduler:\n%s", traceback.format_exc())
+
+        time.sleep(config.SCHEDULER_INTERVAL_SECONDS)
+
 
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
-    text = (
-        message.get("text", "")
-        if isinstance(message, dict)
-        else getattr(message, "text", "") or ""
-    )
-
-    log.info(
-        "MESSAGE_NEW получен: from_id=%s peer_id=%s text=%r",
-        from_id,
-        peer_id,
-        text[:200],
-    )
+    text = message_text(message)
 
     if from_id <= 0:
-        log.warning("MESSAGE_NEW пропущен: некорректный from_id=%s", from_id)
         return
 
-    if peer_id == config.BLOCKLIST_CHAT_PEER_ID and from_id > 0:
-        media = classify_media(message)
-        db.record_hourly_message(
-            conn, from_id, int(message_field(message, "date") or time.time()),
-            audio=media["audio"], voice=media["voice"],
-            video=media["video"], image=media["image"],
-        )
+    if peer_id == config.BLOCKLIST_CHAT_PEER_ID:
         return
 
     if not is_target_chat(peer_id):
-        log.info(
-            "MESSAGE_NEW пропущен: peer_id=%s не является целевой беседой %s",
-            peer_id,
-            config.CHAT_PEER_ID,
-        )
-        return
-
-    if from_id in config.ADMIN_IDS:
-        log.info("MESSAGE_NEW пропущен: user=%s находится в ADMIN_IDS", from_id)
-        return
-
-    # Content rules are intentionally limited to the main moderation chat.
-    # They take priority over the generic one-message-per-hour rule.
-    if handle_content_violation(vk, message, from_id):
         return
 
     now = int(time.time())
+
+    # Every real incoming message in the active chat contributes to statistics.
+    db.record_message(conn, from_id, message_field(message, "date", now) or now)
+
+    if from_id in config.ADMIN_IDS:
+        return
+
+    # Commands have their own cooldowns and must not be blocked by the
+    # generic one-message-per-hour moderation rule.
+    if handle_command(vk, conn, from_id, text, now):
+        return
+
+    if handle_content_violation(vk, conn, message, from_id):
+        return
 
     for expired_user, expired_peer in db.clear_expired_mutes(conn, now):
         lift_mute(vk, expired_peer, expired_user)
@@ -528,53 +768,45 @@ def handle_new_message(vk, conn, message) -> None:
 
     if result["already_muted"]:
         delete_message(vk, message)
-        muted = apply_mute(vk, peer_id, from_id)
-        if muted:
-            send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON)
+        apply_mute(vk, peer_id, from_id)
         return
 
     if not result["should_mute"]:
-        log.info("Сообщение принято: user=%s peer=%s", from_id, peer_id)
         return
 
     deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
 
     if muted:
+        record_successful_mute(conn, from_id)
         send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON)
 
     log.warning(
-        "Нарушение: user=%s peer=%s warnings=%s mute_until=%s "
-        "vk_mute=%s message_deleted=%s",
+        "Лимит: user=%s peer=%s deleted=%s muted=%s",
         from_id,
         peer_id,
-        result["warnings"],
-        result["mute_until"],
-        muted,
         deleted,
+        muted,
     )
 
 
 def run_forever() -> None:
+    global ACTIVE_CONN
     conn = db.connect()
+    ACTIVE_CONN = conn
+
     log.info("База готова: %s", config.DB_PATH)
-
-    session = vk_api.VkApi(token=config.VK_TOKEN, api_version=config.API_VERSION)
-    vk = session.get_api()
-
     log.info(
-        "Бот запущен: GROUP_ID=%s, moderation_chat=%s, blocklist_chat=%s",
-        config.GROUP_ID,
+        "Бот запущен: moderation_chat=%s, timezone=%s",
         config.CHAT_PEER_ID,
-        config.BLOCKLIST_CHAT_PEER_ID,
+        config.CHAT_TIMEZONE,
     )
-    log.info(
-        "Лимит: 1 сообщение в час; второе удаляется и пользователь получает мут на 1 час"
+
+    session = vk_api.VkApi(
+        token=config.VK_TOKEN,
+        api_version=config.API_VERSION,
     )
-    log.info(
-        "Автоудаление из blocklist-чата включено для %s пользователей",
-        len(config.BLOCKED_USER_IDS),
-    )
+    vk = session.get_api()
 
     if config.BLOCKED_USER_IDS:
         threading.Thread(
@@ -584,67 +816,55 @@ def run_forever() -> None:
             daemon=True,
         ).start()
 
-    threading.Thread(target=activity_watchdog, args=(vk, conn), name="activity-watchdog", daemon=True).start()
+    threading.Thread(
+        target=bot_message_cleanup_watchdog,
+        args=(vk, conn),
+        name="bot-message-cleanup",
+        daemon=True,
+    ).start()
 
-    try:
-        while True:
-            try:
-                longpoll = VkBotLongPoll(session, config.GROUP_ID, wait=25)
-                log.info("Long Poll подключён")
+    threading.Thread(
+        target=scheduler_watchdog,
+        args=(vk, conn),
+        name="scheduler-watchdog",
+        daemon=True,
+    ).start()
 
-                for event in longpoll.listen():
-                    log.info(
-                        "VK event: type=%s group_id=%s",
-                        getattr(event, "type", None),
-                        getattr(event, "group_id", None),
+    while True:
+        try:
+            longpoll = VkBotLongPoll(session, config.GROUP_ID)
+
+            for event in longpoll.listen():
+                if event.type == VkBotEventType.MESSAGE_NEW:
+                    obj = event_object(event)
+                    nested = (
+                        event_field(obj, "message")
+                        if obj is not None
+                        else None
                     )
+                    message = nested if nested is not None else obj
 
-                    # vk_api 11.9.9 does not expose CHAT_UPDATE in
-                    # VkBotEventType, while VK Long Poll sends it as "chat_update".
-                    event_type = getattr(event, "type", None)
-                    event_type_value = getattr(event_type, "value", event_type)
+                    if message is not None:
+                        handle_new_message(vk, conn, message)
 
-                    if event_type_value == "chat_update":
-                        handle_chat_update(vk, event)
-                        continue
+                elif str(getattr(event, "type", "")) == "chat_update":
+                    handle_chat_update(vk, event)
 
-                    if event_type != VkBotEventType.MESSAGE_NEW and event_type_value != "message_new":
-                        continue
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except (VkApiError, OSError, ConnectionError) as err:
+            log.error(
+                "Сбой Long Poll/API: %s. Повтор через %s сек.",
+                err,
+                config.RECONNECT_DELAY,
+            )
+            time.sleep(config.RECONNECT_DELAY)
+        except Exception:
+            log.error("Неожиданная ошибка:\n%s", traceback.format_exc())
+            time.sleep(config.RECONNECT_DELAY)
 
-                    message = getattr(event, "message", None)
 
-                    if message is None:
-                        obj = getattr(event, "obj", None)
-                        nested = (
-                            obj.get("message")
-                            if isinstance(obj, dict)
-                            else getattr(obj, "message", None)
-                        )
-                        message = nested if nested is not None else obj
-
-                    if message is None:
-                        log.warning(
-                            "MESSAGE_NEW получен, но payload сообщения отсутствует: %r",
-                            getattr(event, "raw", event),
-                        )
-                        continue
-
-                    handle_new_message(vk, conn, message)
-
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except (VkApiError, OSError, ConnectionError) as err:
-                log.error(
-                    "Сбой Long Poll/API: %s. Повтор через %s сек.",
-                    err,
-                    config.RECONNECT_DELAY,
-                )
-                time.sleep(config.RECONNECT_DELAY)
-            except Exception:
-                log.error("Неожиданная ошибка:\n%s", traceback.format_exc())
-                time.sleep(config.RECONNECT_DELAY)
-    finally:
-        conn.close()
+ACTIVE_CONN = None
 
 
 if __name__ == "__main__":
