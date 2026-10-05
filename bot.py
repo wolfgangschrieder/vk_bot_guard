@@ -810,6 +810,7 @@ def run_forever() -> None:
 
     if (
         config.BLOCKED_USER_IDS
+        and config.BLOCKLIST_CHAT_PEER_ID > 0
         and config.BLOCKLIST_CHAT_PEER_ID != config.CHAT_PEER_ID
     ):
         threading.Thread(
