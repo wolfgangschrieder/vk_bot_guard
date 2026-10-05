@@ -488,6 +488,13 @@ def add_reputation_vote(
 
     timestamp = int(time.time()) if now is None else int(now)
     with _lock:
+        existing = conn.execute(
+            "SELECT 1 FROM reputation_votes WHERE giver_id = ? AND week_key = ? LIMIT 1",
+            (giver_id, week_key),
+        ).fetchone()
+        if existing:
+            return False
+
         try:
             conn.execute(
                 """
