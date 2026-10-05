@@ -1,7 +1,9 @@
+import shutil
 import sqlite3
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import config
@@ -12,15 +14,40 @@ SCHEMA_VERSION = 2
 
 def connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or str(config.DB_PATH)
+    existed = Path(path).exists()
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
-    _ensure_schema(conn)
+    _ensure_schema(conn, path if existed else None)
     return conn
+
+
+def _backup_before_migration(path: str) -> None:
+    source = Path(path)
+    backup_dir = source.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    destination = backup_dir / f"{source.stem}_{stamp}.db"
+    shutil.copy2(source, destination)
 
 
 def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None:
     with _lock:
+        migration_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+
+        if migration_table:
+            row = conn.execute(
+                "SELECT MAX(version) AS version FROM schema_migrations"
+            ).fetchone()
+            current = int((row["version"] if row else 0) or 0)
+        else:
+            current = 0
+
+        if db_path and current < SCHEMA_VERSION:
+            _backup_before_migration(db_path)
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -41,13 +68,7 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             )
             """
         )
-        current = conn.execute(
-            "SELECT MAX(version) AS version FROM schema_migrations"
-        ).fetchone()["version"]
-        current = int(current or 0)
 
-        # Existing installations already had the users table before migrations
-        # were introduced. Treat that structure as schema version 1.
         if current == 0:
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
@@ -55,7 +76,7 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             )
             current = 1
 
-        if current < 2:
+        if current < SCHEMA_VERSION:
             _migration_2(conn)
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
