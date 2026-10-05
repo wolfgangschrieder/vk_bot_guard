@@ -338,7 +338,7 @@ def card_luhn(number: str) -> bool:
 
 
 def contains_card_number(text: str) -> bool:
-    for match in re.finditer(r"(?<!\d)(?:\d[\s-]?){13,19}\d(?!\d)", text):
+    for match in re.finditer(r"(?<!\d)(?:\d[\s-]?){12,18}\d(?!\d)", text):
         if card_luhn(match.group(0)):
             return True
     return False
