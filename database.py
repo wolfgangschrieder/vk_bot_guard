@@ -124,7 +124,7 @@ def _migration_2(conn: sqlite3.Connection) -> None:
             week_key TEXT NOT NULL,
             value INTEGER NOT NULL CHECK(value IN (-1, 1)),
             created_at INTEGER NOT NULL,
-            PRIMARY KEY (giver_id, receiver_id, week_key)
+            PRIMARY KEY (giver_id, week_key)
         )
         """
     )
