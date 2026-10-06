@@ -30,6 +30,11 @@ except ValueError as exc:
     raise SystemExit("CHAT_PEER_ID должен быть целым числом.") from exc
 
 try:
+    MODERATION_CHAT_PEER_ID = int(_required("MODERATION_CHAT_PEER_ID"))
+except ValueError as exc:
+    raise SystemExit("MODERATION_CHAT_PEER_ID должен быть целым числом.") from exc
+
+try:
     BLOCKLIST_CHAT_PEER_ID = int(os.getenv("BLOCKLIST_CHAT_PEER_ID", "0").strip() or "0")
 except ValueError as exc:
     raise SystemExit("BLOCKLIST_CHAT_PEER_ID должен быть целым числом.") from exc
@@ -37,6 +42,15 @@ except ValueError as exc:
 if CHAT_PEER_ID < 2_000_000_000:
     raise SystemExit(
         "CHAT_PEER_ID должен быть peer_id VK-беседы (обычно начинается с 2000000000)."
+    )
+
+if MODERATION_CHAT_PEER_ID < 2_000_000_000:
+    raise SystemExit(
+        "MODERATION_CHAT_PEER_ID должен быть peer_id VK-беседы."
+    )
+if MODERATION_CHAT_PEER_ID == CHAT_PEER_ID:
+    raise SystemExit(
+        "CHAT_PEER_ID и MODERATION_CHAT_PEER_ID должны быть разными чатами."
     )
 
 if BLOCKLIST_CHAT_PEER_ID and BLOCKLIST_CHAT_PEER_ID < 2_000_000_000:
