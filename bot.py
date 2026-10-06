@@ -27,7 +27,18 @@ CHAT_PEER_START = 2_000_000_000
 
 
 def is_target_chat(peer_id: int) -> bool:
+    return peer_id in {
+        config.CHAT_PEER_ID,
+        config.MODERATION_CHAT_PEER_ID,
+    }
+
+
+def is_bot_feature_chat(peer_id: int) -> bool:
     return peer_id == config.CHAT_PEER_ID
+
+
+def is_moderation_chat(peer_id: int) -> bool:
+    return peer_id == config.MODERATION_CHAT_PEER_ID
 
 
 def delete_message(vk, message) -> bool:
@@ -409,24 +420,30 @@ def record_successful_mute(conn, user_id: int) -> None:
     db.record_mute(conn, user_id)
 
 
-def handle_content_violation(vk, conn, message, from_id: int) -> bool:
+def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> bool:
     text = message_text(message)
 
-    if contains_porn_sale_term(text):
-        reason = config.PORN_SALE_MUTE_REASON
-    elif has_media_attachment(message):
-        reason = config.MEDIA_MUTE_REASON
-    elif contains_card_or_phone(text):
-        reason = config.CARD_PHONE_MUTE_REASON
-    elif contains_political_term(text):
-        reason = config.POLITICAL_MUTE_REASON
-    elif contains_any_prohibited_term(text):
-        reason = config.PROSTITUTION_MUTE_REASON
+    if is_moderation_chat(peer_id):
+        if contains_porn_sale_term(text):
+            reason = config.PORN_SALE_MUTE_REASON
+        elif has_media_attachment(message):
+            reason = config.MEDIA_MUTE_REASON
+        elif contains_any_prohibited_term(text):
+            reason = config.PROSTITUTION_MUTE_REASON
+        else:
+            return False
+    elif is_bot_feature_chat(peer_id):
+        if contains_card_or_phone(text):
+            reason = config.CARD_PHONE_MUTE_REASON
+        elif contains_any_prohibited_term(text):
+            reason = config.PROSTITUTION_MUTE_REASON
+        else:
+            return False
     else:
         return False
 
     deleted = delete_message(vk, message)
-    muted = apply_mute(vk, config.CHAT_PEER_ID, from_id)
+    muted = apply_mute(vk, peer_id, from_id)
     if muted:
         record_successful_mute(conn, from_id)
         send_mute_reason(vk, from_id, reason)
@@ -739,26 +756,26 @@ def handle_new_message(vk, conn, message) -> None:
     peer_id = message_field(message, "peer_id")
     text = message_text(message)
 
-    if from_id <= 0:
-        return
-
-    if not is_target_chat(peer_id):
+    if from_id <= 0 or not is_target_chat(peer_id):
         return
 
     now = int(time.time())
 
-    # Every real incoming message in the active chat contributes to statistics.
-    db.record_message(conn, from_id, message_field(message, "date", now) or now)
+    # Statistics and bot commands belong only to the feature chat (2000000002).
+    if is_bot_feature_chat(peer_id):
+        db.record_message(conn, from_id, message_field(message, "date", now) or now)
 
     if from_id in config.ADMIN_IDS:
         return
 
-    # Commands have their own cooldowns and must not be blocked by the
-    # generic one-message-per-hour moderation rule.
-    if handle_command(vk, conn, from_id, text, now):
+    if is_bot_feature_chat(peer_id) and handle_command(vk, conn, from_id, text, now):
         return
 
-    if handle_content_violation(vk, conn, message, from_id):
+    if handle_content_violation(vk, conn, message, from_id, peer_id):
+        return
+
+    # The one-message-per-hour rule exists only in the strict moderation chat.
+    if not is_moderation_chat(peer_id):
         return
 
     for expired_user, expired_peer in db.clear_expired_mutes(conn, now):
