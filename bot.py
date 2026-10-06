@@ -408,11 +408,12 @@ def send_bot_message(
         return 0
 
 
-def send_mute_reason(vk, user_id: int, reason: str) -> None:
+def send_mute_reason(vk, user_id: int, reason: str, peer_id: int) -> None:
     send_bot_message(
         vk,
         f"[id{user_id}|Пользователь], {reason}",
         temporary=True,
+        peer_id=peer_id,
     )
 
 
@@ -446,7 +447,7 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
     muted = apply_mute(vk, peer_id, from_id)
     if muted:
         record_successful_mute(conn, from_id)
-        send_mute_reason(vk, from_id, reason)
+        send_mute_reason(vk, from_id, reason, peer_id)
 
     log.warning(
         "Автоматическое нарушение: user=%s deleted=%s muted=%s",
@@ -796,7 +797,7 @@ def handle_new_message(vk, conn, message) -> None:
 
     if muted:
         record_successful_mute(conn, from_id)
-        send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON)
+        send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON, peer_id)
 
     log.warning(
         "Лимит: user=%s peer=%s deleted=%s muted=%s",
