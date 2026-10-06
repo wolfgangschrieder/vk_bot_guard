@@ -537,7 +537,7 @@ def publish_king(vk, conn, stat_date: date) -> None:
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Короля есть право выдать один или несколько мутов "
-        f"через команду /мут @пользователь."
+        f"через команду /мут @username."
     )
     send_bot_message(vk, text)
     log.info(
@@ -555,6 +555,29 @@ def current_week_key(local_date: date) -> str:
 def parse_target_user_id(text: str) -> int:
     match = re.search(r"(?:@id|@|\[id)(\d+)", text)
     return int(match.group(1)) if match else 0
+
+
+def resolve_target_user_id(vk, text: str) -> int:
+    """Resolve a VK numeric mention or @screen_name to a user id."""
+    target_id = parse_target_user_id(text)
+    if target_id > 0:
+        return target_id
+
+    match = re.search(r"@([A-Za-z0-9_.]+)", text)
+    if not match:
+        return 0
+
+    screen_name = match.group(1)
+    try:
+        profiles = vk.users.get(user_ids=screen_name)
+    except ApiError as err:
+        log.warning("Не удалось найти пользователя @%s: %s", screen_name, err)
+        return 0
+
+    if not profiles:
+        return 0
+
+    return int(profiles[0].get("id", 0) or 0)
 
 
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
@@ -605,9 +628,9 @@ def handle_reputation_command(
     if not match:
         return False
 
-    target_id = parse_target_user_id(match.group(2))
+    target_id = resolve_target_user_id(vk, match.group(2))
     if target_id <= 0:
-        send_bot_message(vk, "❗ Укажи пользователя через @id.", temporary=True)
+        send_bot_message(vk, "❗ Укажи пользователя через @username или @id.", temporary=True)
         return True
 
     value = 1 if match.group(1) == "+" else -1
@@ -630,11 +653,13 @@ def handle_reputation_command(
         return True
 
     sign = "+1" if value > 0 else "-1"
-    names = get_user_names(vk, [target_id])
+    action = "повысил" if value > 0 else "понизил"
+    giver_names = get_user_names(vk, [from_id])
+    target_names = get_user_names(vk, [target_id])
     send_bot_message(
         vk,
-        f"⭐ Репутация {sign} для {mention(target_id, names.get(target_id))}.",
-        temporary=True,
+        f"⭐ {mention(from_id, giver_names.get(from_id))} {action} репутацию "
+        f"{mention(target_id, target_names.get(target_id))} ({sign}).",
     )
     return True
 
@@ -655,11 +680,11 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         )
         return True
 
-    target_id = parse_target_user_id(text)
+    target_id = resolve_target_user_id(vk, text)
     if target_id <= 0:
         send_bot_message(
             vk,
-            "❗ Укажи пользователя через @id.",
+            "❗ Укажи пользователя через @username или @id.",
             temporary=True,
         )
         return True
@@ -725,18 +750,21 @@ def scheduler_watchdog(vk, conn) -> None:
             now = datetime.now(config.CHAT_TZ)
             local_date = now.date()
 
-            # 23:59 — elect the king for the day.
-            if now.hour == 23 and now.minute == 59:
-                key = f"king:{local_date.isoformat()}"
-                if db.claim_scheduler_event(conn, key):
-                    publish_king(vk, conn, local_date)
+                    # 00:00: finish yesterday, publish its stats, and appoint today's king.
+            if now.minute == 0 and now.hour == 0:
+                stat_date = local_date - timedelta(days=1)
+                king_key = f"king:{stat_date.isoformat()}"
+                if db.claim_scheduler_event(conn, king_key):
+                    publish_king(vk, conn, stat_date)
 
-            # 00:00 is the report for the just-finished day.
-            if now.minute == 0 and now.hour in {0, 6, 12, 18}:
-                stat_date = local_date - timedelta(days=1) if now.hour == 0 else local_date
+                daily_key = f"daily:{stat_date.isoformat()}"
+                if db.claim_scheduler_event(conn, daily_key):
+                    publish_daily_stats(vk, conn, stat_date)
+
+            if now.minute == 0 and now.hour in {6, 12, 18}:
                 key = f"daily:{now.strftime('%Y-%m-%d-%H')}"
                 if db.claim_scheduler_event(conn, key):
-                    publish_daily_stats(vk, conn, stat_date)
+                    publish_daily_stats(vk, conn, local_date)
 
             # Monday 12:00 — previous Monday-Sunday.
             if now.weekday() == 0 and now.hour == 12 and now.minute == 0:
@@ -815,8 +843,10 @@ def run_forever() -> None:
 
     log.info("База готова: %s", config.DB_PATH)
     log.info(
-        "Бот запущен: moderation_chat=%s, timezone=%s",
+        "Бот запущен: feature_chat=%s, moderation_chat=%s, timezone=%s",
         config.CHAT_PEER_ID,
+        config.MODERATION_CHAT_PEER_ID,
+        config.MODERATION_CHAT_PEER_ID,
         config.CHAT_TIMEZONE,
     )
 
