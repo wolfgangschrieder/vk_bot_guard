@@ -750,7 +750,7 @@ def scheduler_watchdog(vk, conn) -> None:
             now = datetime.now(config.CHAT_TZ)
             local_date = now.date()
 
-                    # 00:00: finish yesterday, publish its stats, and appoint today's king.
+            # 00:00: finish yesterday, publish its stats, and appoint today's king.
             if now.minute == 0 and now.hour == 0:
                 stat_date = local_date - timedelta(days=1)
                 king_key = f"king:{stat_date.isoformat()}"
@@ -845,7 +845,6 @@ def run_forever() -> None:
     log.info(
         "Бот запущен: feature_chat=%s, moderation_chat=%s, timezone=%s",
         config.CHAT_PEER_ID,
-        config.MODERATION_CHAT_PEER_ID,
         config.MODERATION_CHAT_PEER_ID,
         config.CHAT_TIMEZONE,
     )
