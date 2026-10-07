@@ -821,28 +821,6 @@ def scheduler_watchdog(vk, conn) -> None:
         time.sleep(config.SCHEDULER_INTERVAL_SECONDS)
 
 
-def handle_all_command(vk, conn, from_id: int, text: str, peer_id: int) -> bool:
-    if not is_bot_feature_chat(peer_id):
-        return False
-    if not re.search(r"(?<!\w)@all(?!\w)", text, re.IGNORECASE):
-        return False
-
-    deleted = delete_message(vk, {"id": 0, "conversation_message_id": 0, "peer_id": peer_id})
-    # The real triggering message is deleted by the caller; this helper only
-    # decides whether the special @all rule applies.
-    muted = apply_mute(vk, peer_id, from_id)
-    if muted:
-        record_successful_mute(conn, from_id)
-        send_bot_message(
-            vk,
-            config.ALL_COMMAND_MUTE_REASON,
-            temporary=True,
-            peer_id=peer_id,
-            delete_after_seconds=config.ALL_COMMAND_DELETE_SECONDS,
-        )
-    return True
-
-
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
