@@ -9,7 +9,7 @@ from typing import Optional
 import config
 
 _lock = threading.Lock()
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def connect(db_path: str | None = None) -> sqlite3.Connection:
@@ -76,11 +76,19 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             )
             current = 1
 
-        if current < SCHEMA_VERSION:
+        if current < 2:
             _migration_2(conn)
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (2, int(time.time())),
+            )
+            current = 2
+
+        if current < SCHEMA_VERSION:
+            _migration_3(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (3, int(time.time())),
             )
 
         conn.commit()
@@ -153,6 +161,19 @@ def _migration_2(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS scheduler_state (
             event_key TEXT PRIMARY KEY,
             created_at INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _migration_3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS processed_messages (
+            peer_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            processed_at INTEGER NOT NULL,
+            PRIMARY KEY (peer_id, message_id)
         )
         """
     )
@@ -462,6 +483,19 @@ def save_king(
         return True
 
 
+def has_reputation_vote(
+    conn: sqlite3.Connection,
+    giver_id: int,
+    week_key: str,
+) -> bool:
+    with _lock:
+        row = conn.execute(
+            "SELECT 1 FROM reputation_votes WHERE giver_id = ? AND week_key = ? LIMIT 1",
+            (giver_id, week_key),
+        ).fetchone()
+    return row is not None
+
+
 def get_reputation(conn: sqlite3.Connection, user_id: int) -> int:
     with _lock:
         row = conn.execute(
@@ -503,6 +537,31 @@ def add_reputation_vote(
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (giver_id, receiver_id, week_key, value, timestamp),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def claim_processed_message(
+    conn: sqlite3.Connection,
+    peer_id: int,
+    message_id: int,
+    processed_at: Optional[int] = None,
+) -> bool:
+    if peer_id <= 0 or message_id <= 0:
+        return True
+
+    timestamp = int(time.time()) if processed_at is None else int(processed_at)
+    with _lock:
+        try:
+            conn.execute(
+                """
+                INSERT INTO processed_messages(peer_id, message_id, processed_at)
+                VALUES (?, ?, ?)
+                """,
+                (peer_id, message_id, timestamp),
             )
             conn.commit()
             return True
