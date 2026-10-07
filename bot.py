@@ -426,11 +426,17 @@ def send_bot_message(
 
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int) -> None:
+    delete_after = (
+        config.MODERATION_REASON_DELETE_SECONDS
+        if is_moderation_chat(peer_id)
+        else config.BOT_REASON_DELETE_SECONDS
+    )
     send_bot_message(
         vk,
         f"[id{user_id}|Пользователь], {reason}",
         temporary=True,
         peer_id=peer_id,
+        delete_after_seconds=delete_after,
     )
 
 
@@ -606,6 +612,75 @@ def resolve_target_user_id(vk, text: str) -> int:
     return int(profiles[0].get("id", 0) or 0)
 
 
+def format_user_stats_report(vk, conn, user_ids: list[int], stat_date: date) -> str:
+    rows = db.get_daily_user_stats(conn, stat_date, user_ids)
+    names = get_user_names(vk, user_ids)
+    month = config.MONTH_NAMES[stat_date.month - 1]
+
+    lines = [
+        "📊 СТАТИСТИКА ЗА СЕГОДНЯ",
+        f"#{stat_date.day}{month}",
+        "",
+    ]
+    total_messages = 0
+    total_mutes = 0
+    for user_id in user_ids:
+        messages = rows.get(user_id, {}).get("messages", 0)
+        mutes = rows.get(user_id, {}).get("mutes", 0)
+        total_messages += messages
+        total_mutes += mutes
+        lines.append(
+            f"{mention(user_id, names.get(user_id))} — {messages} сообщ."
+            + (f", {mutes} мутов" if mutes else "")
+        )
+
+    lines.extend([
+        "",
+        f"💬 Всего сообщений: {total_messages}",
+        f"🔇 Всего мутов: {total_mutes}",
+    ])
+    return "\n".join(lines)
+
+
+def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    match = re.match(r"^/stat(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    raw_targets = (match.group(1) or "").strip()
+    if not raw_targets:
+        send_bot_message(vk, "❗ Укажи до 3 пользователей через @username или @id.", temporary=True)
+        return True
+
+    parts = [part.strip() for part in re.split(r"[,;]+", raw_targets) if part.strip()]
+    if not 1 <= len(parts) <= 3:
+        send_bot_message(vk, "❗ Команда /stat принимает от 1 до 3 пользователей.", temporary=True)
+        return True
+
+    user_ids = []
+    for part in parts:
+        target_id = resolve_target_user_id(vk, part)
+        if target_id <= 0:
+            send_bot_message(
+                vk,
+                f"❗ Не удалось найти пользователя: {part}",
+                temporary=True,
+            )
+            return True
+        if target_id not in user_ids:
+            user_ids.append(target_id)
+
+    if not user_ids:
+        return True
+
+    stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    send_bot_message(
+        vk,
+        format_user_stats_report(vk, conn, user_ids, stat_date),
+    )
+    return True
+
+
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
@@ -762,6 +837,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     if not stripped.startswith("/"):
         return False
 
+    if handle_stat_command(vk, conn, from_id, stripped, now):
+        return True
     if handle_profile_command(vk, conn, from_id, stripped, now):
         return True
     if handle_reputation_command(vk, conn, from_id, stripped, now):
@@ -791,7 +868,7 @@ def scheduler_watchdog(vk, conn) -> None:
             local_date = now.date()
 
             # 00:00: finish yesterday, publish its stats, and appoint today's king.
-            if now.minute == 0 and now.hour == 0:
+            if now.minute <= 1 and now.hour == 0:
                 stat_date = local_date - timedelta(days=1)
                 king_key = f"king:{stat_date.isoformat()}"
                 if db.claim_scheduler_event(conn, king_key):
@@ -801,13 +878,13 @@ def scheduler_watchdog(vk, conn) -> None:
                 if db.claim_scheduler_event(conn, daily_key):
                     publish_daily_stats(vk, conn, stat_date)
 
-            if now.minute == 0 and now.hour in {6, 12, 18}:
+            if now.minute <= 1 and now.hour in {6, 12, 18}:
                 key = f"daily:{now.strftime('%Y-%m-%d-%H')}"
                 if db.claim_scheduler_event(conn, key):
                     publish_daily_stats(vk, conn, local_date)
 
             # Monday 12:00 — previous Monday-Sunday.
-            if now.weekday() == 0 and now.hour == 12 and now.minute == 0:
+            if now.weekday() == 0 and now.hour == 12 and now.minute <= 1:
                 end_date = local_date
                 start_date = end_date - timedelta(days=7)
                 key = f"weekly:{start_date.isoformat()}"
