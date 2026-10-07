@@ -290,9 +290,20 @@ def has_media_attachment(message) -> bool:
             if isinstance(attachment, dict)
             else getattr(attachment, "type", "")
         ).lower()
-        if attachment_type in {"audio", "video"}:
+        if attachment_type in {"audio", "audio_message", "video", "sticker"}:
             return True
     return False
+
+
+def has_sticker_attachment(message) -> bool:
+    return any(
+        str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower() == "sticker"
+        for attachment in message_attachments(message)
+    )
 
 
 def normalized_text(text: str) -> str:
@@ -384,6 +395,7 @@ def send_bot_message(
     *,
     temporary: bool = False,
     peer_id: int | None = None,
+    delete_after_seconds: int | None = None,
 ) -> int:
     target_peer = peer_id or config.CHAT_PEER_ID
     try:
@@ -396,11 +408,16 @@ def send_bot_message(
             or 0
         )
         if temporary and message_id > 0:
+            delay = (
+                config.BOT_REASON_DELETE_SECONDS
+                if delete_after_seconds is None
+                else max(1, int(delete_after_seconds))
+            )
             db.queue_bot_message(
                 ACTIVE_CONN,
                 message_id,
                 target_peer,
-                int(time.time()) + config.BOT_REASON_DELETE_SECONDS,
+                int(time.time()) + delay,
             )
         return message_id
     except ApiError as err:
@@ -427,6 +444,8 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
     if is_moderation_chat(peer_id):
         if contains_porn_sale_term(text):
             reason = config.PORN_SALE_MUTE_REASON
+        elif has_sticker_attachment(message):
+            reason = config.STICKER_MUTE_REASON
         elif has_media_attachment(message):
             reason = config.MEDIA_MUTE_REASON
         elif contains_any_prohibited_term(text):
@@ -499,7 +518,11 @@ def publish_daily_stats(vk, conn, stat_date: date) -> None:
     report = (
         f"📊 СТАТИСТИКА ЧАТА\n"
         f"#{stat_date.day}{month}\n\n"
-        f"💬 Сообщений сегодня: {stats['messages']}\n\n"
+        f"💬 Сообщений сегодня: {stats['messages']}\n"
+        f"📷 Фото: {stats['photos']}\n"
+        f"🎬 Видео: {stats['videos']}\n"
+        f"🎵 Музыка: {stats['music']}\n"
+        f"🎙 Голосовые: {stats['voices']}\n\n"
         f"🏆 ТОП-3 АКТИВНЫХ\n"
         f"{format_top(vk, top3, ('🥇', '🥈', '🥉'))}"
     )
@@ -514,6 +537,10 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
         f"📊 ИТОГИ НЕДЕЛИ\n"
         f"#{start_date.day}{month}\n\n"
         f"💬 Сообщений: {stats['messages']}\n"
+        f"📷 Фото: {stats['photos']}\n"
+        f"🎬 Видео: {stats['videos']}\n"
+        f"🎵 Музыка: {stats['music']}\n"
+        f"🎙 Голосовые: {stats['voices']}\n"
         f"🔇 Мутов: {stats['mutes']}\n\n"
         f"🏆 ТОП-5 АКТИВНЫХ\n"
         f"{format_top(vk, stats['top_users'], ('🥇', '🥈', '🥉', '4️⃣', '5️⃣'))}"
@@ -524,7 +551,7 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
 def publish_king(vk, conn, stat_date: date) -> None:
     stats = db.get_daily_stats(conn, stat_date)
     if not stats["top_users"]:
-        log.info("Король не назначен: %s — нет сообщений", stat_date)
+        log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return
 
     user_id, messages = stats["top_users"][0]
@@ -533,14 +560,14 @@ def publish_king(vk, conn, stat_date: date) -> None:
 
     names = get_user_names(vk, [user_id])
     text = (
-        f"👑 КОРОЛЬ ЧАТА\n\n"
+        f"🦸 ГЕРОЙ ЧАТА\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
-        f"Сегодня у Короля есть право выдать один мут через команду /мут @username."
+        f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
     send_bot_message(vk, text)
     log.info(
-        "Король чата: date=%s user=%s messages=%s",
+        "Герой чата: date=%s user=%s messages=%s",
         stat_date,
         user_id,
         messages,
@@ -586,20 +613,21 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
 
     target_id = parse_target_user_id(match.group(1) or "") or from_id
     is_self = target_id == from_id
-    command_key = "profile_self" if is_self else "profile_other"
+    command_key = "profile"
     last_used = db.get_command_cooldown(conn, from_id, command_key)
 
-    cooldown = (
-        config.PROFILE_SELF_COOLDOWN_SECONDS
-        if is_self
-        else config.PROFILE_OTHER_COOLDOWN_SECONDS
-    )
+    cooldown = config.PROFILE_COOLDOWN_SECONDS
     if last_used and now - last_used < cooldown:
         remaining = cooldown - (now - last_used)
-        minutes = max(1, (remaining + 59) // 60)
+        days = remaining // (24 * 60 * 60)
+        hours = (remaining % (24 * 60 * 60) + 3599) // 3600
+        if days > 0:
+            remaining_text = f"{days} дн."
+        else:
+            remaining_text = f"{max(1, hours)} ч."
         send_bot_message(
             vk,
-            f"⏳ Профиль можно посмотреть снова через {minutes} мин.",
+            f"⏳ Профиль можно посмотреть снова через {remaining_text}.",
             temporary=True,
         )
         return True
@@ -674,7 +702,7 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
     if not king or king[0] != from_id:
         send_bot_message(
             vk,
-            "👑 Эта команда доступна только Королю чата.",
+            "🦸 Эта команда доступна только Герою чата.",
             temporary=True,
         )
         return True
@@ -691,7 +719,7 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
     if target_id == from_id:
         send_bot_message(
             vk,
-            "👑 Себя мутить нельзя.",
+            "🦸 Себя мутить нельзя.",
             temporary=True,
         )
         return True
@@ -712,7 +740,7 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         if last_date == local_date:
             send_bot_message(
                 vk,
-                "👑 Ты уже использовал свой мут сегодня. Следующий будет доступен завтра.",
+                "🦸 Ты уже использовал свой мут сегодня. Следующий будет доступен завтра.",
                 temporary=True,
             )
             return True
@@ -793,6 +821,28 @@ def scheduler_watchdog(vk, conn) -> None:
         time.sleep(config.SCHEDULER_INTERVAL_SECONDS)
 
 
+def handle_all_command(vk, conn, from_id: int, text: str, peer_id: int) -> bool:
+    if not is_bot_feature_chat(peer_id):
+        return False
+    if not re.search(r"(?<!\w)@all(?!\w)", text, re.IGNORECASE):
+        return False
+
+    deleted = delete_message(vk, {"id": 0, "conversation_message_id": 0, "peer_id": peer_id})
+    # The real triggering message is deleted by the caller; this helper only
+    # decides whether the special @all rule applies.
+    muted = apply_mute(vk, peer_id, from_id)
+    if muted:
+        record_successful_mute(conn, from_id)
+        send_bot_message(
+            vk,
+            config.ALL_COMMAND_MUTE_REASON,
+            temporary=True,
+            peer_id=peer_id,
+            delete_after_seconds=config.ALL_COMMAND_DELETE_SECONDS,
+        )
+    return True
+
+
 def handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
@@ -814,12 +864,37 @@ def handle_new_message(vk, conn, message) -> None:
 
     # Statistics and bot commands belong only to the feature chat (2000000002).
     if is_bot_feature_chat(peer_id):
-        db.record_message(conn, from_id, message_field(message, "date", now) or now)
+        db.record_message(
+            conn,
+            from_id,
+            message_field(message, "date", now) or now,
+            classify_media(message),
+        )
 
     if from_id in config.ADMIN_IDS:
         return
 
     if is_bot_feature_chat(peer_id) and handle_command(vk, conn, from_id, text, now):
+        return
+
+    if is_bot_feature_chat(peer_id) and re.search(r"(?<!\w)@all(?!\w)", text, re.IGNORECASE):
+        deleted = delete_message(vk, message)
+        muted = apply_mute(vk, peer_id, from_id)
+        if muted:
+            record_successful_mute(conn, from_id)
+            send_bot_message(
+                vk,
+                config.ALL_COMMAND_MUTE_REASON,
+                temporary=True,
+                peer_id=peer_id,
+                delete_after_seconds=config.ALL_COMMAND_DELETE_SECONDS,
+            )
+        log.warning(
+            "Запрещённая @all-команда: user=%s deleted=%s muted=%s",
+            from_id,
+            deleted,
+            muted,
+        )
         return
 
     if handle_content_violation(vk, conn, message, from_id, peer_id):
