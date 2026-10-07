@@ -352,7 +352,7 @@ def record_message(
                 music = music + excluded.music,
                 voices = voices + excluded.voices
             """,
-            (stat_date,),
+            (stat_date, photos, videos, music, voices),
         )
         conn.commit()
 
