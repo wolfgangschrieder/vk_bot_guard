@@ -78,6 +78,16 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertEqual(db.get_reputation(self.conn, 2), 0)
 
+    def test_processed_message_is_idempotent(self):
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000001, 123, 1000))
+        self.assertFalse(db.claim_processed_message(self.conn, 2000000001, 123, 1001))
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 123, 1002))
+
+    def test_reputation_duplicate_can_be_detected_silently(self):
+        self.assertFalse(db.has_reputation_vote(self.conn, 1, "2026-10-05"))
+        self.assertTrue(db.add_reputation_vote(self.conn, 1, 2, 1, "2026-10-05", now=1000))
+        self.assertTrue(db.has_reputation_vote(self.conn, 1, "2026-10-05"))
+
     def test_king_is_saved_once_per_day(self):
         self.assertTrue(db.save_king(self.conn, date(2026, 10, 5), 42, 100))
         self.assertFalse(db.save_king(self.conn, date(2026, 10, 5), 99, 200))
@@ -125,7 +135,7 @@ class DatabaseTests(unittest.TestCase):
             migrated.execute(
                 "SELECT MAX(version) FROM schema_migrations"
             ).fetchone()[0],
-            2,
+            3,
         )
         self.assertTrue((Path(self.tmp.name) / "backups").exists())
 
