@@ -51,6 +51,10 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(stats["messages"], 3)
         self.assertEqual(stats["mutes"], 1)
+        self.assertEqual(stats["photos"], 0)
+        self.assertEqual(stats["videos"], 0)
+        self.assertEqual(stats["music"], 0)
+        self.assertEqual(stats["voices"], 0)
         self.assertEqual(stats["top_users"][0], (10, 2))
 
     def test_reputation_one_vote_per_user_per_week(self):
