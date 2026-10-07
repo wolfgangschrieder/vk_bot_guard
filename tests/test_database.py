@@ -57,6 +57,22 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(stats["voices"], 0)
         self.assertEqual(stats["top_users"][0], (10, 2))
 
+    def test_daily_user_stats(self):
+        timestamp = 1_760_000_000
+        db.record_message(self.conn, 10, timestamp)
+        db.record_message(self.conn, 10, timestamp)
+        db.record_message(self.conn, 20, timestamp)
+        db.record_mute(self.conn, 10, timestamp)
+
+        local_date = __import__("datetime").datetime.fromtimestamp(
+            timestamp, __import__("config").CHAT_TZ
+        ).date()
+        stats = db.get_daily_user_stats(self.conn, local_date, [10, 20, 30])
+
+        self.assertEqual(stats[10], {"messages": 2, "mutes": 1})
+        self.assertEqual(stats[20], {"messages": 1, "mutes": 0})
+        self.assertEqual(stats[30], {"messages": 0, "mutes": 0})
+
     def test_reputation_one_vote_per_user_per_week(self):
         self.assertTrue(
             db.add_reputation_vote(
@@ -139,7 +155,7 @@ class DatabaseTests(unittest.TestCase):
             migrated.execute(
                 "SELECT MAX(version) FROM schema_migrations"
             ).fetchone()[0],
-            3,
+            4,
         )
         self.assertTrue((Path(self.tmp.name) / "backups").exists())
 
