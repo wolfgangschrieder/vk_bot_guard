@@ -434,10 +434,10 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
         else:
             return False
     elif is_bot_feature_chat(peer_id):
+        # В 2000000002 слова из запрещённой лексики не являются
+        # основанием для мута. Здесь модерируем только карты/телефоны.
         if contains_card_or_phone(text):
             reason = config.CARD_PHONE_MUTE_REASON
-        elif contains_any_prohibited_term(text):
-            reason = config.PROSTITUTION_MUTE_REASON
         else:
             return False
     else:
@@ -705,8 +705,22 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         )
         return True
 
+    # Один успешный королевский мут в сутки. Используем уже существующую
+    # таблицу command_cooldowns — схема БД не меняется.
+    last_mute = db.get_command_cooldown(conn, from_id, "king_mute")
+    if last_mute:
+        last_date = datetime.fromtimestamp(last_mute, config.CHAT_TZ).date()
+        if last_date == local_date:
+            send_bot_message(
+                vk,
+                "👑 Ты уже использовал свой мут сегодня. Следующий будет доступен завтра.",
+                temporary=True,
+            )
+            return True
+
     if apply_mute(vk, config.CHAT_PEER_ID, target_id):
         record_successful_mute(conn, target_id)
+        db.set_command_cooldown(conn, from_id, "king_mute", 0, now)
         names = get_user_names(vk, [target_id])
         send_bot_message(
             vk,
