@@ -868,7 +868,7 @@ def scheduler_watchdog(vk, conn) -> None:
             local_date = now.date()
 
             # 00:00: finish yesterday, publish its stats, and appoint today's king.
-            if now.minute <= 1 and now.hour == 0:
+            if now.hour == 0:
                 stat_date = local_date - timedelta(days=1)
                 king_key = f"king:{stat_date.isoformat()}"
                 if db.claim_scheduler_event(conn, king_key):
@@ -878,13 +878,13 @@ def scheduler_watchdog(vk, conn) -> None:
                 if db.claim_scheduler_event(conn, daily_key):
                     publish_daily_stats(vk, conn, stat_date)
 
-            if now.minute <= 1 and now.hour in {6, 12, 18}:
+            if now.hour in {6, 12, 18}:
                 key = f"daily:{now.strftime('%Y-%m-%d-%H')}"
                 if db.claim_scheduler_event(conn, key):
                     publish_daily_stats(vk, conn, local_date)
 
             # Monday 12:00 — previous Monday-Sunday.
-            if now.weekday() == 0 and now.hour == 12 and now.minute <= 1:
+            if now.weekday() == 0 and now.hour == 12:
                 end_date = local_date
                 start_date = end_date - timedelta(days=7)
                 key = f"weekly:{start_date.isoformat()}"
