@@ -390,6 +390,43 @@ def record_mute(
         conn.commit()
 
 
+def get_daily_user_stats(
+    conn: sqlite3.Connection,
+    stat_date: date,
+    user_ids: list[int],
+) -> dict[int, dict[str, int]]:
+    if not user_ids:
+        return {}
+
+    key = stat_date.isoformat()
+    unique_ids = list(dict.fromkeys(int(uid) for uid in user_ids if int(uid) > 0))
+    if not unique_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in unique_ids)
+    with _lock:
+        rows = conn.execute(
+            f"""
+            SELECT user_id, messages, mutes
+            FROM daily_user_stats
+            WHERE stat_date = ? AND user_id IN ({placeholders})
+            """,
+            (key, *unique_ids),
+        ).fetchall()
+
+    result = {
+        user_id: {"messages": 0, "mutes": 0}
+        for user_id in unique_ids
+    }
+    for row in rows:
+        user_id = int(row["user_id"])
+        result[user_id] = {
+            "messages": int(row["messages"] or 0),
+            "mutes": int(row["mutes"] or 0),
+        }
+    return result
+
+
 def get_daily_stats(
     conn: sqlite3.Connection,
     stat_date: date,
