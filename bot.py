@@ -427,7 +427,7 @@ def send_bot_message(
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int) -> None:
     delete_after = (
-        config.MODERATION_REASON_DELETE_SECONDS
+        60
         if is_moderation_chat(peer_id)
         else config.BOT_REASON_DELETE_SECONDS
     )
