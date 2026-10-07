@@ -72,9 +72,9 @@ BLOCKED_USER_IDS = {
 
 RATE_LIMIT_SECONDS = 60 * 60
 MUTE_SECONDS = 60 * 60
-PROFILE_SELF_COOLDOWN_SECONDS = 30 * 60
-PROFILE_OTHER_COOLDOWN_SECONDS = 60 * 60
+PROFILE_COOLDOWN_SECONDS = 3 * 24 * 60 * 60
 BOT_REASON_DELETE_SECONDS = 10 * 60
+ALL_COMMAND_DELETE_SECONDS = 60
 SCHEDULER_INTERVAL_SECONDS = 20
 
 API_VERSION = "5.199"
@@ -95,6 +95,8 @@ except Exception as exc:
 # Existing content moderation rules — applied only to CHAT_PEER_ID.
 PROHIBITED_LEXICON = (
     "дорого",
+    "цена",
+    "стоимость",
     "мп",
     "деньги",
     "не бюджет",
@@ -121,11 +123,19 @@ LIMIT_MUTE_REASON = (
 )
 
 PROSTITUTION_MUTE_REASON = (
-    "🚫 Запрещённая лексика. Сообщение удалено, доступ ограничен на 1 час."
+    "🚫 Проституция здесь запрещена. Сообщение удалено, доступ ограничен на 1 час."
 )
 
 MEDIA_MUTE_REASON = (
     "🎬 Музыка и видео в чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
+)
+
+STICKER_MUTE_REASON = (
+    "🚫 Стикеры в этом чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
+)
+
+ALL_COMMAND_MUTE_REASON = (
+    "@all -Здесь такие команды запрещены"
 )
 
 PORN_SALE_MUTE_REASON = (
@@ -142,7 +152,7 @@ POLITICAL_MUTE_REASON = (
     "Сообщение удалено, доступ ограничен на 1 час."
 )
 
-KING_MUTE_MESSAGE = "👑 Король чата выдал мут пользователю {mention} на 1 час."
+KING_MUTE_MESSAGE = "🦸 Герой чата выдал мут пользователю {mention} на 1 час."
 
 MONTH_NAMES = (
     "января",
