@@ -612,7 +612,6 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         return False
 
     target_id = parse_target_user_id(match.group(1) or "") or from_id
-    is_self = target_id == from_id
     command_key = "profile"
     last_used = db.get_command_cooldown(conn, from_id, command_key)
 
