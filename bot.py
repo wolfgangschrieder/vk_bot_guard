@@ -536,8 +536,7 @@ def publish_king(vk, conn, stat_date: date) -> None:
         f"👑 КОРОЛЬ ЧАТА\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
-        f"Сегодня у Короля есть право выдать один или несколько мутов "
-        f"через команду /мут @username."
+        f"Сегодня у Короля есть право выдать один мут через команду /мут @username."
     )
     send_bot_message(vk, text)
     log.info(
@@ -637,6 +636,10 @@ def handle_reputation_command(
     week_key = current_week_key(
         datetime.fromtimestamp(now, config.CHAT_TZ).date()
     )
+    # Повторная репутация в течение недели полностью игнорируется.
+    if db.has_reputation_vote(conn, from_id, week_key):
+        return True
+
     if not db.add_reputation_vote(
         conn,
         from_id,
@@ -645,11 +648,7 @@ def handle_reputation_command(
         week_key,
         now,
     ):
-        send_bot_message(
-            vk,
-            "⏳ Этому пользователю ты уже выдавал репутацию на этой неделе.",
-            temporary=True,
-        )
+        # Даже при гонке двух одинаковых событий команда остаётся тихой.
         return True
 
     sign = "+1" if value > 0 else "-1"
@@ -800,6 +799,15 @@ def handle_new_message(vk, conn, message) -> None:
     text = message_text(message)
 
     if from_id <= 0 or not is_target_chat(peer_id):
+        return
+
+    message_id = message_field(message, "id")
+    if message_id > 0 and not db.claim_processed_message(conn, peer_id, message_id):
+        log.warning(
+            "Повторная доставка сообщения проигнорирована: peer_id=%s message_id=%s",
+            peer_id,
+            message_id,
+        )
         return
 
     now = int(time.time())
