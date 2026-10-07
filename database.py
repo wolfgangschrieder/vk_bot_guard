@@ -9,7 +9,7 @@ from typing import Optional
 import config
 
 _lock = threading.Lock()
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def connect(db_path: str | None = None) -> sqlite3.Connection:
@@ -84,11 +84,11 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             )
             current = 2
 
-        if current < SCHEMA_VERSION:
-            _migration_3(conn)
+        if current < 4:
+            _migration_4(conn)
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-                (3, int(time.time())),
+                (4, int(time.time())),
             )
 
         conn.commit()
@@ -177,6 +177,13 @@ def _migration_3(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _migration_4(conn: sqlite3.Connection) -> None:
+    for column in ("photos", "videos", "music", "voices"):
+        conn.execute(
+            f"ALTER TABLE daily_stats ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _get_or_create(
@@ -308,12 +315,18 @@ def record_message(
     conn: sqlite3.Connection,
     user_id: int,
     message_time: Optional[int] = None,
+    media_counts: Optional[dict[str, int]] = None,
 ) -> None:
     """Increment daily chat and per-user message counters."""
     timestamp = int(time.time()) if message_time is None else int(message_time)
     stat_date = datetime.fromtimestamp(
         timestamp, config.CHAT_TZ
     ).date().isoformat()
+    media_counts = media_counts or {}
+    photos = max(0, int(media_counts.get("image", 0)))
+    videos = max(0, int(media_counts.get("video", 0)))
+    music = max(0, int(media_counts.get("audio", 0)))
+    voices = max(0, int(media_counts.get("voice", 0)))
 
     with _lock:
         conn.execute(
@@ -327,10 +340,17 @@ def record_message(
         )
         conn.execute(
             """
-            INSERT INTO daily_stats(stat_date, messages, mutes)
-            VALUES (?, 1, 0)
+            INSERT INTO daily_stats(
+                stat_date, messages, mutes, photos, videos, music, voices
+            )
+            VALUES (?, 1, 0, ?, ?, ?, ?)
             ON CONFLICT(stat_date)
-            DO UPDATE SET messages = messages + 1
+            DO UPDATE SET
+                messages = messages + 1,
+                photos = photos + excluded.photos,
+                videos = videos + excluded.videos,
+                music = music + excluded.music,
+                voices = voices + excluded.voices
             """,
             (stat_date,),
         )
@@ -395,6 +415,10 @@ def get_daily_stats(
         "date": key,
         "messages": int(total["messages"]) if total else 0,
         "mutes": int(total["mutes"]) if total else 0,
+        "photos": int(total["photos"]) if total else 0,
+        "videos": int(total["videos"]) if total else 0,
+        "music": int(total["music"]) if total else 0,
+        "voices": int(total["voices"]) if total else 0,
         "top_users": [
             (int(row["user_id"]), int(row["messages"])) for row in top
         ],
@@ -410,7 +434,11 @@ def get_weekly_stats(
         totals = conn.execute(
             """
             SELECT COALESCE(SUM(messages), 0) AS messages,
-                   COALESCE(SUM(mutes), 0) AS mutes
+                   COALESCE(SUM(mutes), 0) AS mutes,
+                   COALESCE(SUM(photos), 0) AS photos,
+                   COALESCE(SUM(videos), 0) AS videos,
+                   COALESCE(SUM(music), 0) AS music,
+                   COALESCE(SUM(voices), 0) AS voices
             FROM daily_stats
             WHERE stat_date >= ? AND stat_date < ?
             """,
@@ -433,6 +461,10 @@ def get_weekly_stats(
     return {
         "messages": int(totals["messages"] or 0),
         "mutes": int(totals["mutes"] or 0),
+        "photos": int(totals["photos"] or 0),
+        "videos": int(totals["videos"] or 0),
+        "music": int(totals["music"] or 0),
+        "voices": int(totals["voices"] or 0),
         "top_users": [
             (int(row["user_id"]), int(row["messages"])) for row in top
         ],
