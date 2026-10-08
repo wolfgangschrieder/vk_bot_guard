@@ -516,7 +516,7 @@ def format_top(vk, rows, medals: tuple[str, ...]) -> str:
     return "\n".join(lines) if lines else "Пока нет сообщений."
 
 
-def publish_daily_stats(vk, conn, stat_date: date) -> None:
+def publish_daily_stats(vk, conn, stat_date: date) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     top3 = stats["top_users"][:3]
     month = config.MONTH_NAMES[stat_date.month - 1]
@@ -535,7 +535,7 @@ def publish_daily_stats(vk, conn, stat_date: date) -> None:
     return send_bot_message(vk, report) > 0
 
 
-def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
+def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
     stats = db.get_weekly_stats(conn, start_date, end_date)
     month = config.MONTH_NAMES[start_date.month - 1]
 
@@ -554,15 +554,15 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
     return send_bot_message(vk, report) > 0
 
 
-def publish_king(vk, conn, stat_date: date) -> None:
+def publish_king(vk, conn, stat_date: date) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
 
     user_id, messages = stats["top_users"][0]
-    if not db.save_king(conn, stat_date, user_id, messages):
-        return
+    if db.get_king(conn, stat_date):
+        return True
 
     names = get_user_names(vk, [user_id])
     text = (
@@ -572,13 +572,16 @@ def publish_king(vk, conn, stat_date: date) -> None:
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
     sent = send_bot_message(vk, text)
+    if sent <= 0:
+        return False
+    db.save_king(conn, stat_date, user_id, messages)
     log.info(
         "Герой чата: date=%s user=%s messages=%s",
         stat_date,
         user_id,
         messages,
     )
-    return sent > 0
+    return True
 
 
 def current_week_key(local_date: date) -> str:
