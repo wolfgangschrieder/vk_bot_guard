@@ -616,69 +616,36 @@ def resolve_target_user_id(vk, text: str) -> int:
     return int(profiles[0].get("id", 0) or 0)
 
 
-def format_user_stats_report(vk, conn, user_ids: list[int], stat_date: date) -> str:
-    stats = db.get_daily_stats(conn, stat_date)
-    rows = db.get_daily_user_stats(conn, stat_date, user_ids)
-    names = get_user_names(vk, user_ids)
-    month = config.MONTH_NAMES[stat_date.month - 1]
-
-    lines = [
-        "📊 СТАТИСТИКА ЧАТА ЗА СЕГОДНЯ",
-        f"#{stat_date.day}{month}",
-        "",
-        f"💬 Сообщений: {stats['messages']}",
-        f"📷 Фото: {stats['photos']}",
-        f"🎬 Видео: {stats['videos']}",
-        f"🎵 Музыка: {stats['music']}",
-        f"🎙 Голосовые: {stats['voices']}",
-        f"🔇 Мутов: {stats['mutes']}",
-        "",
-        "👤 УКАЗАННЫЕ ПОЛЬЗОВАТЕЛИ",
-    ]
-
-    for user_id in user_ids:
-        user_stats = rows.get(user_id, {"messages": 0, "mutes": 0})
-        lines.append(
-            f"{mention(user_id, names.get(user_id))} — "
-            f"{user_stats['messages']} сообщ., {user_stats['mutes']} мутов"
+def is_stat_allowed_user(vk, from_id: int) -> bool:
+    try:
+        profiles = vk.users.get(
+            user_ids=str(from_id),
+            fields="screen_name",
         )
+    except ApiError as err:
+        log.warning("Не удалось проверить доступ к /stat для user=%s: %s", from_id, err)
+        return False
 
-    lines.extend([
-        "",
-        "🏆 ТОП-3 АКТИВНЫХ",
-        format_top(vk, stats["top_users"][:3], ("🥇", "🥈", "🥉")),
-    ])
-    return "\n".join(lines)
+    if not profiles:
+        return False
+
+    screen_name = str(profiles[0].get("screen_name", "") or "").strip().lower()
+    return screen_name in {login.lower() for login in config.STAT_ALLOWED_LOGINS}
 
 
 def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
-    match = re.match(r"^/stat(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
-    if not match:
+    # /stat — закрытая команда. Доступ только у трёх указанных аккаунтов.
+    # Команда всегда показывает общую статистику чата 2000000002
+    # за текущий день; статистика отдельных пользователей здесь не запрашивается.
+    if not re.fullmatch(r"/stat", text.strip(), re.IGNORECASE):
         return False
 
-    raw_targets = (match.group(1) or "").strip()
-    if not raw_targets:
-        send_bot_message(vk, "❗ Укажи от 1 до 3 пользователей через @username или @id.", temporary=True)
+    if not is_stat_allowed_user(vk, from_id):
         return True
-
-    parts = [part.strip() for part in re.split(r"[,;]+", raw_targets) if part.strip()]
-    if not 1 <= len(parts) <= 3:
-        send_bot_message(vk, "❗ Команда /stat принимает от 1 до 3 пользователей.", temporary=True)
-        return True
-
-    user_ids = []
-    for part in parts:
-        target_id = resolve_target_user_id(vk, part)
-        if target_id <= 0:
-            send_bot_message(vk, f"❗ Не удалось найти пользователя: {part}", temporary=True)
-            return True
-        if target_id not in user_ids:
-            user_ids.append(target_id)
 
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    send_bot_message(vk, format_user_stats_report(vk, conn, user_ids, stat_date))
+    send_bot_message(vk, format_daily_stats_report(vk, conn, stat_date))
     return True
-
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
