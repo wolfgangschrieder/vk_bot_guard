@@ -57,6 +57,30 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(stats["voices"], 0)
         self.assertEqual(stats["top_users"][0], (10, 2))
 
+    def test_daily_stats_includes_media_columns(self):
+        timestamp = 1_760_000_000
+        db.record_message(
+            self.conn,
+            10,
+            timestamp,
+            {"image": 2, "video": 3, "audio": 4, "voice": 5},
+        )
+
+        local_date = __import__("datetime").datetime.fromtimestamp(
+            timestamp, __import__("config").CHAT_TZ
+        ).date()
+        stats = db.get_daily_stats(self.conn, local_date)
+
+        self.assertEqual(
+            {
+                "photos": stats["photos"],
+                "videos": stats["videos"],
+                "music": stats["music"],
+                "voices": stats["voices"],
+            },
+            {"photos": 2, "videos": 3, "music": 4, "voices": 5},
+        )
+
     def test_daily_user_stats(self):
         timestamp = 1_760_000_000
         db.record_message(self.conn, 10, timestamp)
