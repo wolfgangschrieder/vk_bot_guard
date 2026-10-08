@@ -644,7 +644,7 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         return True
 
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    send_bot_message(vk, format_daily_stats_report(vk, conn, stat_date))
+    publish_daily_stats(vk, conn, stat_date)
     return True
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
