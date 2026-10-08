@@ -532,7 +532,7 @@ def publish_daily_stats(vk, conn, stat_date: date) -> None:
         f"🏆 ТОП-3 АКТИВНЫХ\n"
         f"{format_top(vk, top3, ('🥇', '🥈', '🥉'))}"
     )
-    send_bot_message(vk, report)
+    return send_bot_message(vk, report) > 0
 
 
 def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
@@ -551,14 +551,14 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> None:
         f"🏆 ТОП-5 АКТИВНЫХ\n"
         f"{format_top(vk, stats['top_users'], ('🥇', '🥈', '🥉', '4️⃣', '5️⃣'))}"
     )
-    send_bot_message(vk, report)
+    return send_bot_message(vk, report) > 0
 
 
 def publish_king(vk, conn, stat_date: date) -> None:
     stats = db.get_daily_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
-        return
+        return True
 
     user_id, messages = stats["top_users"][0]
     if not db.save_king(conn, stat_date, user_id, messages):
@@ -571,13 +571,14 @@ def publish_king(vk, conn, stat_date: date) -> None:
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
-    send_bot_message(vk, text)
+    sent = send_bot_message(vk, text)
     log.info(
         "Герой чата: date=%s user=%s messages=%s",
         stat_date,
         user_id,
         messages,
     )
+    return sent > 0
 
 
 def current_week_key(local_date: date) -> str:
@@ -865,25 +866,29 @@ def scheduler_watchdog(vk, conn) -> None:
             if now.hour == 0:
                 stat_date = local_date - timedelta(days=1)
                 king_key = f"king:{stat_date.isoformat()}"
-                if db.claim_scheduler_event(conn, king_key):
-                    publish_king(vk, conn, stat_date)
+                if not db.scheduler_event_claimed(conn, king_key):
+                    if publish_king(vk, conn, stat_date):
+                        db.claim_scheduler_event(conn, king_key)
 
                 daily_key = f"daily:{stat_date.isoformat()}"
-                if db.claim_scheduler_event(conn, daily_key):
-                    publish_daily_stats(vk, conn, stat_date)
+                if not db.scheduler_event_claimed(conn, daily_key):
+                    if publish_daily_stats(vk, conn, stat_date):
+                        db.claim_scheduler_event(conn, daily_key)
 
             if now.hour in {6, 12, 18}:
                 key = f"daily:{now.strftime('%Y-%m-%d-%H')}"
-                if db.claim_scheduler_event(conn, key):
-                    publish_daily_stats(vk, conn, local_date)
+                if not db.scheduler_event_claimed(conn, key):
+                    if publish_daily_stats(vk, conn, local_date):
+                        db.claim_scheduler_event(conn, key)
 
             # Monday 12:00 — previous Monday-Sunday.
             if now.weekday() == 0 and now.hour == 12:
                 end_date = local_date
                 start_date = end_date - timedelta(days=7)
                 key = f"weekly:{start_date.isoformat()}"
-                if db.claim_scheduler_event(conn, key):
-                    publish_weekly_stats(vk, conn, start_date, end_date)
+                if not db.scheduler_event_claimed(conn, key):
+                    if publish_weekly_stats(vk, conn, start_date, end_date):
+                        db.claim_scheduler_event(conn, key)
 
         except Exception:
             log.error("Ошибка scheduler:\n%s", traceback.format_exc())
