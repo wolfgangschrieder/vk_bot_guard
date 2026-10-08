@@ -736,6 +736,18 @@ def remove_bot_message(conn: sqlite3.Connection, message_id: int) -> None:
         conn.commit()
 
 
+def scheduler_event_claimed(
+    conn: sqlite3.Connection,
+    event_key: str,
+) -> bool:
+    with _lock:
+        row = conn.execute(
+            "SELECT 1 FROM scheduler_state WHERE event_key = ? LIMIT 1",
+            (event_key,),
+        ).fetchone()
+    return row is not None
+
+
 def claim_scheduler_event(
     conn: sqlite3.Connection,
     event_key: str,
