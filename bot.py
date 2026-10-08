@@ -894,6 +894,11 @@ def handle_new_message(vk, conn, message) -> None:
             classify_media(message),
         )
 
+    # /stat is a restricted reporting command and must work for the
+    # three explicitly allowed accounts even if one of them is an admin.
+    if is_bot_feature_chat(peer_id) and handle_stat_command(vk, conn, from_id, text, now):
+        return
+
     if from_id in config.ADMIN_IDS:
         return
 
