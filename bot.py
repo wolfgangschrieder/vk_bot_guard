@@ -619,20 +619,32 @@ def resolve_target_user_id(vk, text: str) -> int:
 
 
 def is_stat_allowed_user(vk, from_id: int) -> bool:
+    """Check /stat access by resolving the configured VK screen names to IDs."""
+    allowed_logins = tuple(
+        login.strip().lstrip("@")
+        for login in config.STAT_ALLOWED_LOGINS
+        if login.strip()
+    )
+    if not allowed_logins:
+        return False
+
     try:
         profiles = vk.users.get(
-            user_ids=str(from_id),
-            fields="screen_name",
+            user_ids=",".join(allowed_logins),
         )
     except ApiError as err:
-        log.warning("Не удалось проверить доступ к /stat для user=%s: %s", from_id, err)
+        log.warning(
+            "Не удалось определить пользователей с доступом к /stat: %s",
+            err,
+        )
         return False
 
-    if not profiles:
-        return False
-
-    screen_name = str(profiles[0].get("screen_name", "") or "").strip().lower()
-    return screen_name in {login.lower() for login in config.STAT_ALLOWED_LOGINS}
+    allowed_ids = {
+        int(profile.get("id", 0) or 0)
+        for profile in profiles
+        if int(profile.get("id", 0) or 0) > 0
+    }
+    return int(from_id) in allowed_ids
 
 
 def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
@@ -648,6 +660,7 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     publish_daily_stats(vk, conn, stat_date)
     return True
+
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
