@@ -154,6 +154,12 @@ POLITICAL_MUTE_REASON = (
 
 KING_MUTE_MESSAGE = "🦸 Герой чата выдал мут пользователю {mention} на 1 час."
 
+STAT_ALLOWED_LOGINS = {
+    "piterparker34",
+    "kenaya",
+    "id1122341522",
+}
+
 MONTH_NAMES = (
     "января",
     "февраля",
