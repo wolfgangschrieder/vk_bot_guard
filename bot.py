@@ -427,13 +427,15 @@ def send_bot_message(
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int) -> None:
     delete_after = (
-        60
+        config.MODERATION_REASON_DELETE_SECONDS
         if is_moderation_chat(peer_id)
         else config.BOT_REASON_DELETE_SECONDS
     )
+    names = get_user_names(vk, [user_id])
+    user_name = names.get(user_id) or "Пользователь"
     send_bot_message(
         vk,
-        f"[id{user_id}|Пользователь], {reason}",
+        f"{user_name}, {reason}",
         temporary=True,
         peer_id=peer_id,
         delete_after_seconds=delete_after,
@@ -818,11 +820,13 @@ def bot_message_cleanup_watchdog(vk, conn) -> None:
         try:
             due = db.get_due_bot_messages(conn)
             for message_id, peer_id in due:
-                delete_bot_message(vk, message_id, peer_id)
-                db.remove_bot_message(conn, message_id)
+                # Не удаляем запись из очереди при ошибке VK: следующая
+                # итерация должна повторить попытку.
+                if delete_bot_message(vk, message_id, peer_id):
+                    db.remove_bot_message(conn, message_id)
         except Exception:
             log.error("Ошибка автоудаления сообщений бота:\n%s", traceback.format_exc())
-        time.sleep(20)
+        time.sleep(5)
 
 
 def scheduler_watchdog(vk, conn) -> None:
