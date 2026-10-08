@@ -613,31 +613,36 @@ def resolve_target_user_id(vk, text: str) -> int:
 
 
 def format_user_stats_report(vk, conn, user_ids: list[int], stat_date: date) -> str:
+    stats = db.get_daily_stats(conn, stat_date)
     rows = db.get_daily_user_stats(conn, stat_date, user_ids)
     names = get_user_names(vk, user_ids)
     month = config.MONTH_NAMES[stat_date.month - 1]
 
     lines = [
-        "📊 СТАТИСТИКА ЗА СЕГОДНЯ",
+        "📊 СТАТИСТИКА ЧАТА ЗА СЕГОДНЯ",
         f"#{stat_date.day}{month}",
         "",
+        f"💬 Сообщений: {stats['messages']}",
+        f"📷 Фото: {stats['photos']}",
+        f"🎬 Видео: {stats['videos']}",
+        f"🎵 Музыка: {stats['music']}",
+        f"🎙 Голосовые: {stats['voices']}",
+        f"🔇 Мутов: {stats['mutes']}",
+        "",
+        "👤 УКАЗАННЫЕ ПОЛЬЗОВАТЕЛИ",
     ]
-    total_messages = 0
-    total_mutes = 0
+
     for user_id in user_ids:
-        messages = rows.get(user_id, {}).get("messages", 0)
-        mutes = rows.get(user_id, {}).get("mutes", 0)
-        total_messages += messages
-        total_mutes += mutes
+        user_stats = rows.get(user_id, {"messages": 0, "mutes": 0})
         lines.append(
-            f"{mention(user_id, names.get(user_id))} — {messages} сообщ."
-            + (f", {mutes} мутов" if mutes else "")
+            f"{mention(user_id, names.get(user_id))} — "
+            f"{user_stats['messages']} сообщ., {user_stats['mutes']} мутов"
         )
 
     lines.extend([
         "",
-        f"💬 Всего сообщений: {total_messages}",
-        f"🔇 Всего мутов: {total_mutes}",
+        "🏆 ТОП-3 АКТИВНЫХ",
+        format_top(vk, stats["top_users"][:3], ("🥇", "🥈", "🥉")),
     ])
     return "\n".join(lines)
 
@@ -649,7 +654,7 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
 
     raw_targets = (match.group(1) or "").strip()
     if not raw_targets:
-        send_bot_message(vk, "❗ Укажи до 3 пользователей через @username или @id.", temporary=True)
+        send_bot_message(vk, "❗ Укажи от 1 до 3 пользователей через @username или @id.", temporary=True)
         return True
 
     parts = [part.strip() for part in re.split(r"[,;]+", raw_targets) if part.strip()]
@@ -661,25 +666,14 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     for part in parts:
         target_id = resolve_target_user_id(vk, part)
         if target_id <= 0:
-            send_bot_message(
-                vk,
-                f"❗ Не удалось найти пользователя: {part}",
-                temporary=True,
-            )
+            send_bot_message(vk, f"❗ Не удалось найти пользователя: {part}", temporary=True)
             return True
         if target_id not in user_ids:
             user_ids.append(target_id)
 
-    if not user_ids:
-        return True
-
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    send_bot_message(
-        vk,
-        format_user_stats_report(vk, conn, user_ids, stat_date),
-    )
+    send_bot_message(vk, format_user_stats_report(vk, conn, user_ids, stat_date))
     return True
-
 
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
