@@ -84,12 +84,25 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             )
             current = 2
 
+        if current < 3:
+            _migration_3(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (3, int(time.time())),
+            )
+            current = 3
+
         if current < 4:
             _migration_4(conn)
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (4, int(time.time())),
             )
+            current = 4
+
+        # Repair databases created by the previous migration path: schema
+        # version 4 could exist even though migration 3 was skipped.
+        _migration_3(conn)
 
         conn.commit()
 
