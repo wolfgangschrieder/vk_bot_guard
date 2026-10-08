@@ -447,7 +447,7 @@ def get_daily_stats(
     key = stat_date.isoformat()
     with _lock:
         total = conn.execute(
-            "SELECT messages, mutes FROM daily_stats WHERE stat_date = ?",
+            "SELECT messages, mutes, photos, videos, music, voices FROM daily_stats WHERE stat_date = ?",
             (key,),
         ).fetchone()
         top = conn.execute(
