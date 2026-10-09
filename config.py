@@ -77,6 +77,8 @@ BOT_REASON_DELETE_SECONDS = 10 * 60
 ALL_COMMAND_DELETE_SECONDS = 60
 MODERATION_REASON_DELETE_SECONDS = 60
 SCHEDULER_INTERVAL_SECONDS = 20
+HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
+SCHEDULER_CATCHUP_DAYS = 7
 
 API_VERSION = "5.199"
 RECONNECT_DELAY = 5
@@ -160,6 +162,14 @@ STAT_ALLOWED_LOGINS = {
     "kenaya",
     "id1122341522",
 }
+
+# Optional stable IDs for the same three accounts; avoids a VK lookup for /stat.
+STAT_ALLOWED_IDS = {
+    int(part.strip()) for part in os.getenv("STAT_ALLOWED_IDS", "").split(",")
+    if part.strip().isdigit()
+}
+if STAT_ALLOWED_IDS and len(STAT_ALLOWED_IDS) != 3:
+    raise SystemExit("STAT_ALLOWED_IDS должен содержать ровно три ID разрешённых аккаунтов.")
 
 MONTH_NAMES = (
     "января",

@@ -179,7 +179,7 @@ class DatabaseTests(unittest.TestCase):
             migrated.execute(
                 "SELECT MAX(version) FROM schema_migrations"
             ).fetchone()[0],
-            4,
+            db.SCHEMA_VERSION,
         )
         self.assertTrue((Path(self.tmp.name) / "backups").exists())
 
