@@ -8,6 +8,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      VK_TOKEN: test-token-no-network
+      GROUP_ID: '1'
+      CHAT_PEER_ID: '2000000002'
+      MODERATION_CHAT_PEER_ID: '2000000001'
+      CHAT_TIMEZONE: Europe/Moscow
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

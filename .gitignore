@@ -5,4 +5,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-backups/\n
+backups/
+*.db-wal
+*.db-shm
+*.log.*
+.bot.lock

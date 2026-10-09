@@ -1,4 +1,5 @@
-import shutil
+import json
+from contextlib import closing, contextmanager
 import sqlite3
 import threading
 import time
@@ -8,17 +9,48 @@ from typing import Optional
 
 import config
 
-_lock = threading.Lock()
-SCHEMA_VERSION = 4
+_lock = threading.RLock()
+SCHEMA_VERSION = 5
+
+
+class Connection(sqlite3.Connection):
+    atomic_depth = 0
+
+    def commit(self):
+        if not self.atomic_depth:
+            super().commit()
+
+
+@contextmanager
+def atomic(conn):
+    """Serialize shared-connection access and commit all local effects together."""
+    with _lock:
+        if conn.atomic_depth:
+            yield
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        conn.atomic_depth = 1
+        try:
+            yield
+            sqlite3.Connection.commit(conn)
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.atomic_depth = 0
 
 
 def connect(db_path: str | None = None) -> sqlite3.Connection:
     path = db_path or str(config.DB_PATH)
     existed = Path(path).exists()
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, factory=Connection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
-    _ensure_schema(conn, path if existed else None)
+    try:
+        _ensure_schema(conn, path if existed else None)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -26,13 +58,14 @@ def _backup_before_migration(path: str) -> None:
     source = Path(path)
     backup_dir = source.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
+    stamp = f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()}"
     destination = backup_dir / f"{source.stem}_{stamp}.db"
-    shutil.copy2(source, destination)
+    with closing(sqlite3.connect(source)) as reader, closing(sqlite3.connect(destination)) as writer:
+        reader.backup(writer)
 
 
 def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None:
-    with _lock:
+    with atomic(conn):
         migration_table = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
         ).fetchone()
@@ -44,6 +77,9 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             current = int((row["version"] if row else 0) or 0)
         else:
             current = 0
+
+        if current > SCHEMA_VERSION:
+            raise RuntimeError("База создана более новой версией бота; обновите код.")
 
         if db_path and current < SCHEMA_VERSION:
             _backup_before_migration(db_path)
@@ -103,6 +139,13 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
         # Repair databases created by the previous migration path: schema
         # version 4 could exist even though migration 3 was skipped.
         _migration_3(conn)
+
+        if current < 5:
+            _migration_5(conn)
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (5, int(time.time())),
+            )
 
         conn.commit()
 
@@ -193,10 +236,37 @@ def _migration_3(conn: sqlite3.Connection) -> None:
 
 
 def _migration_4(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(daily_stats)")}
     for column in ("photos", "videos", "music", "voices"):
-        conn.execute(
+        if column not in existing:
+            conn.execute(
             f"ALTER TABLE daily_stats ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-        )
+            )
+
+
+def _migration_5(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS inbox (
+        event_key TEXT PRIMARY KEY, payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL, done_at INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS outbox (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
+        payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
+        done_at INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS outbox_due ON outbox(done_at, next_attempt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS inbox_due ON inbox(done_at, next_attempt)")
+    conn.execute("CREATE INDEX IF NOT EXISTS processed_age ON processed_messages(processed_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS bot_messages_due ON bot_messages(delete_at)")
+    # Historical mute aggregates cannot be assigned to a chat reliably.
+    # Keep them intact; new reports use the chat-scoped table below.
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_mute_stats (
+        stat_date TEXT NOT NULL, peer_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        mutes INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(stat_date, peer_id, user_id)
+    )""")
 
 
 def _get_or_create(
@@ -222,6 +292,7 @@ def register_message(
     user_id: int,
     peer_id: int,
     now: Optional[int] = None,
+    defer_mute: bool = False,
 ) -> dict:
     """Register a message using a sliding one-hour window."""
     now = int(time.time()) if now is None else int(now)
@@ -271,6 +342,11 @@ def register_message(
                 "warnings": warnings,
                 "mute_until": 0,
             }
+
+        if defer_mute:
+            return {"should_mute": True, "already_muted": False,
+                    "seconds_left": config.RATE_LIMIT_SECONDS - (now - last),
+                    "warnings": warnings + 1, "mute_until": now + config.MUTE_SECONDS}
 
         warnings += 1
         mute_until = now + config.MUTE_SECONDS
@@ -374,6 +450,7 @@ def record_mute(
     conn: sqlite3.Connection,
     user_id: int,
     mute_time: Optional[int] = None,
+    peer_id: int | None = None,
 ) -> None:
     """Increment only aggregate mute counters; no per-mute history is stored."""
     timestamp = int(time.time()) if mute_time is None else int(mute_time)
@@ -382,6 +459,12 @@ def record_mute(
     ).date().isoformat()
 
     with _lock:
+        if peer_id is not None:
+            conn.execute("""INSERT INTO chat_mute_stats(stat_date, peer_id, user_id, mutes)
+                VALUES (?, ?, ?, 1) ON CONFLICT(stat_date, peer_id, user_id)
+                DO UPDATE SET mutes = mutes + 1""", (stat_date, peer_id, user_id))
+            conn.commit()
+            return
         conn.execute(
             """
             INSERT INTO daily_user_stats(stat_date, user_id, messages, mutes)
@@ -508,9 +591,13 @@ def get_weekly_stats(
             (start_date.isoformat(), end_date.isoformat()),
         ).fetchall()
 
+        scoped_mutes = conn.execute("""SELECT COALESCE(SUM(mutes), 0)
+            FROM chat_mute_stats WHERE stat_date >= ? AND stat_date < ? AND peer_id = ?""",
+            (start_date.isoformat(), end_date.isoformat(), config.CHAT_PEER_ID)).fetchone()[0]
+
     return {
         "messages": int(totals["messages"] or 0),
-        "mutes": int(totals["mutes"] or 0),
+        "mutes": int(scoped_mutes),
         "photos": int(totals["photos"] or 0),
         "videos": int(totals["videos"] or 0),
         "music": int(totals["music"] or 0),
@@ -767,3 +854,100 @@ def claim_scheduler_event(
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def enqueue(conn, kind, payload):
+    with _lock:
+        cursor = conn.execute(
+            'INSERT INTO outbox(kind, payload, created_at) VALUES (?, ?, ?)',
+            (kind, json.dumps(payload, ensure_ascii=False), int(time.time())),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def due_operations(conn, now=None):
+    now = int(time.time()) if now is None else now
+    with _lock:
+        return conn.execute(
+            'SELECT * FROM outbox WHERE done_at = 0 AND next_attempt <= ? ORDER BY id LIMIT 100',
+            (now,),
+        ).fetchall()
+
+
+def finish_operation(conn, operation_id, now=None):
+    with _lock:
+        conn.execute('UPDATE outbox SET done_at = ? WHERE id = ?',
+                     (int(time.time()) if now is None else now, operation_id))
+        conn.commit()
+
+
+def retry_operation(conn, operation_id, error, now=None):
+    now = int(time.time()) if now is None else now
+    with _lock:
+        row = conn.execute('SELECT attempts FROM outbox WHERE id = ?', (operation_id,)).fetchone()
+        delay = min(300, 5 * 2 ** min(row['attempts'], 6))
+        conn.execute('UPDATE outbox SET attempts = attempts + 1, next_attempt = ?, last_error = ? WHERE id = ?',
+                     (now + delay, str(error)[:500], operation_id))
+        conn.commit()
+
+
+def mute_deadline(conn, peer_id, user_id):
+    with _lock:
+        row = conn.execute('SELECT mute_until FROM users WHERE peer_id = ? AND user_id = ?',
+                           (peer_id, user_id)).fetchone()
+        deadline = int(row['mute_until']) if row else 0
+        # Include queued restrictions, without treating them as confirmed VK mutes.
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND done_at = 0"):
+            payload = json.loads(row['payload'])
+            if payload['peer_id'] == peer_id and payload['user_id'] == user_id:
+                deadline = max(deadline, payload['until'])
+        return deadline
+
+
+def confirm_mute(conn, peer_id, user_id, until):
+    with _lock:
+        _get_or_create(conn, user_id, peer_id)
+        conn.execute('UPDATE users SET mute_until = MAX(mute_until, ?), warnings = warnings + 1 '
+                     'WHERE peer_id = ? AND user_id = ?', (until, peer_id, user_id))
+        conn.commit()
+
+
+def store_inbox(conn, event_key, message, now=None):
+    timestamp = int(time.time()) if now is None else now
+    with _lock:
+        conn.execute('INSERT OR IGNORE INTO inbox(event_key, payload, created_at) VALUES (?, ?, ?)',
+                     (event_key, json.dumps(message, ensure_ascii=False), timestamp))
+        conn.commit()
+
+
+def due_inbox(conn, now=None):
+    timestamp = int(time.time()) if now is None else now
+    with _lock:
+        return conn.execute('SELECT * FROM inbox WHERE done_at = 0 AND next_attempt <= ? '
+                            'ORDER BY created_at, event_key LIMIT 100', (timestamp,)).fetchall()
+
+
+def finish_inbox(conn, event_key):
+    with _lock:
+        conn.execute('UPDATE inbox SET done_at = ? WHERE event_key = ?', (int(time.time()), event_key))
+        conn.commit()
+
+
+def retry_inbox(conn, event_key):
+    with _lock:
+        row = conn.execute('SELECT attempts FROM inbox WHERE event_key = ?', (event_key,)).fetchone()
+        delay = min(300, 5 * 2 ** min(row['attempts'], 6))
+        conn.execute('UPDATE inbox SET attempts = attempts + 1, next_attempt = ? WHERE event_key = ?',
+                     (int(time.time()) + delay, event_key))
+        conn.commit()
+
+
+def prune_operational_history(conn, now=None):
+    cutoff = (int(time.time()) if now is None else now) - config.HISTORY_RETENTION_SECONDS
+    with _lock:
+        conn.execute('DELETE FROM processed_messages WHERE processed_at < ?', (cutoff,))
+        conn.execute('DELETE FROM inbox WHERE done_at > 0 AND done_at < ?', (cutoff,))
+        conn.execute('DELETE FROM outbox WHERE done_at > 0 AND done_at < ?', (cutoff,))
+        conn.execute('DELETE FROM scheduler_state WHERE created_at < ?', (cutoff,))
+        conn.commit()
