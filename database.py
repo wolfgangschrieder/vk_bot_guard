@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class Connection(sqlite3.Connection):
@@ -147,6 +147,11 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
                 (5, int(time.time())),
             )
 
+        if current < 6:
+            _migration_6(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (6, int(time.time())))
+
         conn.commit()
 
 
@@ -266,6 +271,20 @@ def _migration_5(conn):
         stat_date TEXT NOT NULL, peer_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
         mutes INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(stat_date, peer_id, user_id)
+    )""")
+
+
+def _migration_6(conn):
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(outbox)')}
+    if 'status' not in columns:
+        conn.execute("ALTER TABLE outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+    conn.execute("UPDATE outbox SET status = 'done' WHERE done_at > 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS outbox_status_due ON outbox(status, next_attempt, id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS cleanup_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, peer_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL DEFAULT 0, cmid INTEGER NOT NULL DEFAULT 0,
+        delete_at INTEGER NOT NULL,
+        UNIQUE(peer_id, message_id, cmid)
     )""")
 
 
@@ -870,14 +889,14 @@ def due_operations(conn, now=None):
     now = int(time.time()) if now is None else now
     with _lock:
         return conn.execute(
-            'SELECT * FROM outbox WHERE done_at = 0 AND next_attempt <= ? ORDER BY id LIMIT 100',
+            "SELECT * FROM outbox WHERE status = 'pending' AND next_attempt <= ? ORDER BY id LIMIT 100",
             (now,),
         ).fetchall()
 
 
 def finish_operation(conn, operation_id, now=None):
     with _lock:
-        conn.execute('UPDATE outbox SET done_at = ? WHERE id = ?',
+        conn.execute("UPDATE outbox SET done_at = ?, status = 'done' WHERE id = ?",
                      (int(time.time()) if now is None else now, operation_id))
         conn.commit()
 
@@ -892,13 +911,31 @@ def retry_operation(conn, operation_id, error, now=None):
         conn.commit()
 
 
+def stop_operation(conn, operation_id, error, status='failed', *, attempted=False):
+    if status not in {'failed', 'cancelled'}:
+        raise ValueError(status)
+    with _lock:
+        conn.execute('UPDATE outbox SET status = ?, last_error = ?, attempts = attempts + ? WHERE id = ?',
+                     (status, str(error)[:500], int(attempted), operation_id))
+        conn.commit()
+
+
+def queue_cleanup(conn, peer_id, message_id, cmid, delete_at):
+    if message_id <= 0 and cmid <= 0:
+        raise ValueError('A message identifier is required for cleanup')
+    with _lock:
+        conn.execute('INSERT OR IGNORE INTO cleanup_tasks(peer_id, message_id, cmid, delete_at) '
+                     'VALUES (?, ?, ?, ?)', (peer_id, message_id, cmid, delete_at))
+        conn.commit()
+
+
 def mute_deadline(conn, peer_id, user_id):
     with _lock:
         row = conn.execute('SELECT mute_until FROM users WHERE peer_id = ? AND user_id = ?',
                            (peer_id, user_id)).fetchone()
         deadline = int(row['mute_until']) if row else 0
         # Include queued restrictions, without treating them as confirmed VK mutes.
-        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND done_at = 0"):
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row['payload'])
             if payload['peer_id'] == peer_id and payload['user_id'] == user_id:
                 deadline = max(deadline, payload['until'])

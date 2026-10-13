@@ -19,7 +19,7 @@ class BotTests(unittest.TestCase):
         bot.STAT_ACCESS_CACHE.clear()
         self.vk = MagicMock()
         self.vk.messages.send.return_value = 100
-        self.vk.messages.delete.return_value = {'1': 1}
+        self.vk.messages.delete.return_value = 1
         self.vk.messages.changeConversationMemberRestrictions.return_value = 1
         self.vk.users.get.side_effect = self.profiles
         self.now = int(datetime(2026, 10, 9, 14, tzinfo=config.CHAT_TZ).timestamp())
@@ -280,19 +280,19 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], self.now + 5)
 
     def test_migration_failure_is_atomic_and_retryable(self):
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 5')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 6')
         self.conn.commit()
-        original = db._migration_5
+        original = db._migration_6
         def fail(conn):
             original(conn)
             conn.execute('CREATE TABLE temporary_migration_probe(id INTEGER)')
             raise RuntimeError('migration failed')
-        with patch.object(db, '_migration_5', side_effect=fail):
+        with patch.object(db, '_migration_6', side_effect=fail):
             with self.assertRaises(RuntimeError):
                 db.connect(self.path)
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name = 'temporary_migration_probe'").fetchone())
         retry = db.connect(self.path)
-        self.assertEqual(retry.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], 5)
+        self.assertEqual(retry.execute('SELECT MAX(version) FROM schema_migrations').fetchone()[0], db.SCHEMA_VERSION)
         retry.close()
 
     def test_confirmed_mute_survives_crash_before_db_commit(self):
@@ -308,7 +308,7 @@ class BotTests(unittest.TestCase):
     def test_backup_api_preserves_wal_rows(self):
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('INSERT INTO users(user_id, peer_id, warnings) VALUES (77, 2000000001, 5)')
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 5')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 6')
         self.conn.commit()
         migrated = db.connect(self.path)
         migrated.close()
@@ -331,6 +331,143 @@ class BotTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 bot.run_forever()
             self.assertEqual(thread.call_count, 3)
+
+    def operation(self, kind, payload):
+        operation_id = db.enqueue(self.conn, kind, payload)
+        return self.conn.execute('SELECT * FROM outbox WHERE id = ?', (operation_id,)).fetchone()
+
+    def test_structured_send_with_zero_global_id_cleans_up_by_cmid(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('мп', peer=config.MODERATION_CHAT_PEER_ID))
+        self.vk.messages.send.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
+            'message_id': 0, 'conversation_message_id': 77}]
+        self.drain()
+        task = self.conn.execute('SELECT * FROM cleanup_tasks').fetchone()
+        self.assertEqual((task['peer_id'], task['cmid']), (config.MODERATION_CHAT_PEER_ID, 77))
+        self.assertEqual(self.vk.messages.send.call_args.kwargs['peer_ids'], str(config.MODERATION_CHAT_PEER_ID))
+        self.assertEqual(self.vk.messages.send.call_count, 1)
+        bot.cleanup_tick(self.conn, self.now + 60)
+        self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
+            'conversation_message_id': 77, 'message_id': 0, 'response': 1}]
+        bot.deliver_outbox(self.vk, self.conn, self.now + 60)
+        self.assertEqual(self.vk.messages.delete.call_args.kwargs['cmids'], '77')
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0], 0)
+
+    def test_zero_send_is_quarantined_without_resend(self):
+        self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'test', 'temporary': False, 'delay': 60})
+        self.vk.messages.send.return_value = 0
+        self.drain()
+        row = self.conn.execute("SELECT * FROM outbox WHERE kind = 'send'").fetchone()
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('Неоднозначный', row['last_error'])
+        self.assertEqual(self.vk.messages.send.call_count, 1)
+
+    def test_send_nested_access_error_is_terminal(self):
+        self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'test', 'temporary': False, 'delay': 60})
+        self.vk.messages.send.return_value = [{'peer_id': config.CHAT_PEER_ID, 'message_id': 0,
+            'conversation_message_id': 0, 'error': {'code': 917, 'message': 'no access'}}]
+        self.drain()
+        row = self.conn.execute('SELECT * FROM outbox').fetchone()
+        self.assertEqual(row['status'], 'failed')
+        self.assertIn('917', row['last_error'])
+        self.assertEqual(self.vk.messages.send.call_count, 1)
+
+    def test_failed_delete_blocks_reason(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('мп', peer=config.MODERATION_CHAT_PEER_ID))
+        self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
+            'message_id': 1, 'conversation_message_id': 7, 'response': 0,
+            'error': {'code': 924, 'message': 'cannot delete'}}]
+        self.drain()
+        self.vk.messages.send.assert_not_called()
+        self.assertEqual(self.conn.execute("SELECT status FROM outbox WHERE kind = 'delete'").fetchone()[0], 'failed')
+        self.assertEqual(self.conn.execute("SELECT status FROM outbox WHERE kind = 'send'").fetchone()[0], 'failed')
+
+    def test_partial_delete_does_not_confirm_whole_request(self):
+        row = self.operation('delete', {'params': {'message_ids': '1,2', 'delete_for_all': 1}})
+        self.vk.messages.delete.return_value = [{'message_id': 1, 'response': 1}]
+        with self.assertRaises(bot.DeliveryError):
+            bot.execute_operation(self.vk, self.conn, row, self.now)
+        self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], 0)
+
+    def test_legacy_cmid_parameter_is_normalized(self):
+        row = self.operation('delete', {'params': {'peer_id': config.CHAT_PEER_ID,
+            'conversation_message_ids': '77', 'delete_for_all': 1}})
+        self.vk.messages.delete.return_value = [{'peer_id': config.CHAT_PEER_ID,
+            'conversation_message_id': 77, 'response': 1}]
+        bot.execute_operation(self.vk, self.conn, row, self.now)
+        self.assertEqual(self.vk.messages.delete.call_args.kwargs['cmids'], '77')
+        self.assertNotIn('conversation_message_ids', self.vk.messages.delete.call_args.kwargs)
+
+    def test_missing_dependency_fails_without_notification(self):
+        self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'test',
+            'temporary': False, 'delay': 60, 'depends_on': 9999})
+        self.drain()
+        self.vk.messages.send.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT status FROM outbox').fetchone()[0], 'failed')
+
+    def test_wrong_chat_jobs_are_cancelled_not_retargeted(self):
+        self.operation('send', {'peer_id': 2000000387, 'message': 'old', 'temporary': False, 'delay': 60})
+        self.drain()
+        self.vk.messages.send.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT status FROM outbox').fetchone()[0], 'cancelled')
+
+    def test_existing_hundreds_of_retries_are_stopped(self):
+        row = self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'old', 'temporary': False, 'delay': 60})
+        self.conn.execute('UPDATE outbox SET attempts = 333 WHERE id = ?', (row['id'],))
+        self.conn.commit()
+        self.drain()
+        self.vk.messages.send.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT status FROM outbox').fetchone()[0], 'failed')
+
+    def test_retry_budget_is_bounded(self):
+        self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'test', 'temporary': False, 'delay': 60})
+        self.vk.messages.send.side_effect = OSError('timeout')
+        for attempt in range(config.DELIVERY_MAX_ATTEMPTS + 3):
+            bot.deliver_outbox(self.vk, self.conn, self.now + attempt * 300)
+        row = self.conn.execute('SELECT * FROM outbox').fetchone()
+        self.assertEqual(row['status'], 'failed')
+        self.assertEqual(row['attempts'], config.DELIVERY_MAX_ATTEMPTS)
+        self.assertEqual(self.vk.messages.send.call_count, config.DELIVERY_MAX_ATTEMPTS)
+
+    def test_stale_notifications_are_not_sent(self):
+        self.operation('send', {'peer_id': config.CHAT_PEER_ID, 'message': 'old', 'temporary': False, 'delay': 60})
+        self.drain(self.now + config.SEND_MAX_AGE_SECONDS + 1)
+        self.vk.messages.send.assert_not_called()
+        self.assertEqual(self.conn.execute('SELECT status FROM outbox').fetchone()[0], 'cancelled')
+
+    def test_failed_king_request_releases_pending_right(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        db.save_king(self.conn, today - timedelta(days=1), 1, 20)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
+        self.vk.messages.changeConversationMemberRestrictions.return_value = {'error': {'code': 935, 'message': 'not member'}}
+        self.drain()
+        self.assertFalse(bot.pending_king_mute(self.conn, 1, today))
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), 0)
+        self.vk.messages.changeConversationMemberRestrictions.return_value = 1
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id3', mid=2))
+        self.drain()
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), self.now)
+        self.assertEqual(self.conn.execute('SELECT SUM(mutes) FROM chat_mute_stats').fetchone()[0], 1)
+
+    def test_forwarded_content_cannot_bypass_rules(self):
+        nested = {'text': '', 'fwd_messages': [{'text': '', 'attachments': [{'type': 'video'}]}]}
+        bot.handle_new_message(self.vk, self.conn, self.message(peer=config.MODERATION_CHAT_PEER_ID, fwd_messages=[nested]))
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(len(self.queued('mute')), 1)
+
+    def test_quoted_reply_does_not_punish_author(self):
+        bot.handle_new_message(self.vk, self.conn, self.message(peer=config.MODERATION_CHAT_PEER_ID,
+            reply_message={'text': 'мп'}))
+        self.assertEqual(len(self.queued('mute')), 0)
+
+    def test_cleanup_survives_reopen_with_conversation_ids(self):
+        db.queue_cleanup(self.conn, config.CHAT_PEER_ID, 0, 9, self.now)
+        self.conn.close()
+        self.conn = db.connect(self.path)
+        bot.ACTIVE_CONN = self.conn
+        bot.cleanup_tick(self.conn, self.now)
+        self.vk.messages.delete.return_value = [{'peer_id': config.CHAT_PEER_ID, 'conversation_message_id': 9, 'response': 1}]
+        self.drain()
+        self.assertEqual(self.conn.execute('SELECT status FROM outbox').fetchone()[0], 'done')
 
     def test_second_local_instance_is_rejected(self):
         with patch.object(config, 'BASE_DIR', Path(self.tmp.name)):

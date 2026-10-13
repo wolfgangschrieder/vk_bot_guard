@@ -58,11 +58,11 @@ def delete_message(vk, message) -> int:
     if message_id > 0:
         params = {"message_ids": str(message_id), "delete_for_all": 1}
     elif cmid > 0 and peer_id > 0:
-        params = {"peer_id": peer_id, "conversation_message_ids": str(cmid), "delete_for_all": 1}
+        params = {"peer_id": peer_id, "cmids": str(cmid), "delete_for_all": 1}
     else:
         log.error("Нельзя удалить сообщение без id/cmid: peer=%s", peer_id)
         return 0
-    return db.enqueue(ACTIVE_CONN, "delete", {"params": params})
+    return db.enqueue(ACTIVE_CONN, "delete", {"params": params, "peer_id": peer_id})
 
 def apply_mute(vk, peer_id: int, user_id: int, *, reason=None, king_id=None, now=None, deletion_id=None) -> bool:
     now = int(time.time()) if now is None else int(now)
@@ -356,23 +356,24 @@ def record_successful_mute(conn, user_id: int, peer_id: int, now=None) -> None:
     db.record_mute(conn, user_id, now, peer_id=peer_id)
 
 def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> bool:
-    text = message_text(message)
+    contents = list(moderated_contents(message))
+    texts = [message_text(item) for item in contents]
 
     if is_moderation_chat(peer_id):
-        if contains_porn_sale_term(text):
+        if any(contains_porn_sale_term(text) for text in texts):
             reason = config.PORN_SALE_MUTE_REASON
-        elif has_sticker_attachment(message):
+        elif any(has_sticker_attachment(item) for item in contents):
             reason = config.STICKER_MUTE_REASON
-        elif has_media_attachment(message):
+        elif any(has_media_attachment(item) for item in contents):
             reason = config.MEDIA_MUTE_REASON
-        elif contains_any_prohibited_term(text):
+        elif any(contains_any_prohibited_term(text) for text in texts):
             reason = config.PROSTITUTION_MUTE_REASON
         else:
             return False
     elif is_bot_feature_chat(peer_id):
         # В 2000000002 слова из запрещённой лексики не являются
         # основанием для мута. Здесь модерируем только карты/телефоны.
-        if contains_card_or_phone(text):
+        if any(contains_card_or_phone(text) for text in texts):
             reason = config.CARD_PHONE_MUTE_REASON
         else:
             return False
@@ -389,6 +390,16 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
         muted,
     )
     return True
+
+
+def moderated_contents(message):
+    """Inspect explicit forwards; replying to a message does not republish it."""
+    pending = [message]
+    while pending:
+        item = pending.pop()
+        yield item
+        forwards = event_field(item, 'fwd_messages', []) or []
+        pending.extend(child for child in forwards if isinstance(child, dict))
 
 
 def mention(user_id: int, name: str | None = None) -> str:
@@ -749,8 +760,14 @@ def cleanup_tick(conn, now=None):
         for message_id, peer_id in db.get_due_bot_messages(conn, now):
             db.enqueue(conn, "delete", {"params": {
                 "message_ids": str(message_id), "delete_for_all": 1,
-            }})
+            }, "peer_id": peer_id})
             db.remove_bot_message(conn, message_id)
+        timestamp = int(time.time()) if now is None else now
+        for row in conn.execute('SELECT * FROM cleanup_tasks WHERE delete_at <= ?', (timestamp,)).fetchall():
+            params = ({'peer_id': row['peer_id'], 'cmids': str(row['cmid']), 'delete_for_all': 1}
+                      if row['cmid'] > 0 else {'message_ids': str(row['message_id']), 'delete_for_all': 1})
+            db.enqueue(conn, 'delete', {'params': params, 'peer_id': row['peer_id']})
+            conn.execute('DELETE FROM cleanup_tasks WHERE id = ?', (row['id'],))
 
 
 def scheduler_watchdog(vk, conn) -> None:
@@ -782,7 +799,10 @@ def process_message(vk, conn, message) -> None:
             db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
         return
 
-    if is_bot_feature_chat(peer_id) and re.search(r"(?<!\w)@all(?!\w)", text, re.IGNORECASE):
+    if is_bot_feature_chat(peer_id) and any(
+        re.search(r"(?<!\w)@all(?!\w)", message_text(item), re.IGNORECASE)
+        for item in moderated_contents(message)
+    ):
         deleted = delete_message(vk, message)
         muted = apply_mute(vk, peer_id, from_id, reason=config.ALL_COMMAND_MUTE_REASON, deletion_id=deleted)
         log.warning(
@@ -832,7 +852,7 @@ def process_message(vk, conn, message) -> None:
 
 def pending_king_mute(conn, user_id, local_date):
     with db._lock:
-        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND done_at = 0"):
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row["payload"])
             request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
             if payload.get("king_id") == user_id and request_date == local_date:
@@ -881,27 +901,94 @@ def process_inbox(vk, conn):
             db.retry_inbox(conn, row["event_key"])
 
 
+class DeliveryError(RuntimeError):
+    def __init__(self, message, *, code=None, permanent=False):
+        super().__init__(message)
+        self.code = code
+        self.permanent = permanent
+
+
+def check_embedded_error(item):
+    error = item.get('error')
+    if error:
+        raise DeliveryError(str(error.get('message', error.get('error_msg', 'VK rejected operation'))),
+                            code=error.get('code', error.get('error_code')))
+
+
+def parse_sent_message(response, peer_id):
+    if isinstance(response, list):
+        matches = [item for item in response if isinstance(item, dict) and item.get('peer_id') == peer_id]
+        if len(matches) != 1:
+            raise DeliveryError('Ответ отправки не содержит единственного нужного адресата', permanent=True)
+        item = matches[0]
+        check_embedded_error(item)
+        message_id = int(item.get('message_id', 0) or 0)
+        cmid = int(item.get('conversation_message_id', 0) or 0)
+        if message_id > 0 or cmid > 0:
+            return message_id, cmid
+    elif isinstance(response, int) and not isinstance(response, bool) and response > 0:
+        return response, 0  # Compatibility with legacy numeric API responses.
+    # A zero/unknown answer may follow a real send. Never automatically resend it.
+    raise DeliveryError('Неоднозначный ответ отправки: нет ID; требуется проверка в чате', permanent=True)
+
+
+def validate_deleted_messages(response, params):
+    if isinstance(response, list):
+        if not response:
+            raise DeliveryError('Пустой ответ удаления')
+        cmids = str(params.get('cmids', '')).split(',') if params.get('cmids') else []
+        message_ids = str(params.get('message_ids', '')).split(',') if params.get('message_ids') else []
+        seen = set()
+        for item in response:
+            if not isinstance(item, dict):
+                raise DeliveryError('Некорректный элемент ответа удаления')
+            check_embedded_error(item)
+            if item.get('response') != 1:
+                raise DeliveryError('VK не подтвердил удаление', permanent=True)
+            if cmids:
+                if item.get('peer_id') != params.get('peer_id'):
+                    raise DeliveryError('Удаление подтверждено для другой беседы', permanent=True)
+                seen.add(str(item.get('conversation_message_id', 0)))
+            else:
+                seen.add(str(item.get('message_id', 0)))
+        if not set(cmids or message_ids).issubset(seen):
+            raise DeliveryError('Часть сообщений не подтверждена в ответе удаления', permanent=True)
+    elif isinstance(response, dict):
+        expected = set(str(params.get('message_ids', '')).split(','))
+        if not expected or '' in expected or not expected.issubset(response) or any(response[key] != 1 for key in expected):
+            raise DeliveryError('VK не подтвердил удаление всех ID', permanent=True)
+    elif response != 1:
+        raise DeliveryError('Некорректный ответ удаления', permanent=True)
+
+
 def execute_operation(vk, conn, row, now):
     payload = json.loads(row["payload"])
     if row["kind"] == "send":
         if payload.get("depends_on"):
             with db._lock:
-                dependency = conn.execute("SELECT done_at FROM outbox WHERE id = ?", (payload["depends_on"],)).fetchone()
-            if dependency and not dependency["done_at"]:
+                dependency = conn.execute("SELECT status FROM outbox WHERE id = ?", (payload["depends_on"],)).fetchone()
+            if dependency is None or dependency['status'] in {'failed', 'cancelled'}:
+                raise DeliveryError("Удаление не подтверждено; уведомление заблокировано", permanent=True)
+            if dependency['status'] != 'done':
                 return
-        # Positive SQLite IDs are unique and persistent across restarts.
-        message_id = int(vk.messages.send(peer_id=payload["peer_id"],
-            random_id=row["id"], message=payload["message"]) or 0)
-        if not message_id:
-            raise RuntimeError("VK не вернул ID отправленного сообщения")
+        # peer_ids requests a structured response with the conversation-scoped ID.
+        response = vk.messages.send(peer_ids=str(payload["peer_id"]),
+            random_id=row["id"], message=payload["message"])
+        message_id, cmid = parse_sent_message(response, payload["peer_id"])
         with db.atomic(conn):
             if payload["temporary"]:
-                db.queue_bot_message(conn, message_id, payload["peer_id"], now + payload["delay"])
+                if cmid:
+                    db.queue_cleanup(conn, payload["peer_id"], message_id, cmid, now + payload["delay"])
+                else:
+                    db.queue_bot_message(conn, message_id, payload["peer_id"], now + payload["delay"])
             db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "delete":
-        result = vk.messages.delete(**payload["params"])
-        if not result or (isinstance(result, dict) and any(not value for value in result.values())):
-            raise RuntimeError("VK не подтвердил удаление сообщения")
+        params = dict(payload["params"])
+        # Normalize jobs created before v6 without rewriting their stored payload.
+        if 'conversation_message_ids' in params:
+            params['cmids'] = params.pop('conversation_message_ids')
+        response = vk.messages.delete(**params)
+        validate_deleted_messages(response, params)
         db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "mute":
         remaining = payload["until"] - now
@@ -916,6 +1003,8 @@ def execute_operation(vk, conn, row, now):
             return
         result = vk.messages.changeConversationMemberRestrictions(peer_id=payload["peer_id"],
             member_ids=str(payload["user_id"]), action="ro", **{"for": remaining})
+        if isinstance(result, dict):
+            check_embedded_error(result)
         if not result:
             raise RuntimeError("VK не подтвердил ограничение")
         with db.atomic(conn):
@@ -941,13 +1030,32 @@ def deliver_outbox(vk, conn, now=None):
     ACTIVE_CONN = conn
     with DELIVERY_LOCK:
         for row in db.due_operations(conn, now):
+            timestamp = int(time.time()) if now is None else now
             try:
-                execute_operation(vk, conn, row, int(time.time()) if now is None else now)
+                payload = json.loads(row['payload'])
+                peer_id = payload.get('peer_id') or payload.get('params', {}).get('peer_id')
+                if peer_id and not is_target_chat(int(peer_id)):
+                    db.stop_operation(conn, row['id'], 'Чат исключён из текущей конфигурации', 'cancelled')
+                    continue
+                if row['kind'] == 'send' and timestamp - row['created_at'] > config.SEND_MAX_AGE_SECONDS:
+                    db.stop_operation(conn, row['id'], 'Сообщение устарело до доставки', 'cancelled')
+                    continue
+                if row['attempts'] >= config.DELIVERY_MAX_ATTEMPTS:
+                    db.stop_operation(conn, row['id'], row['last_error'] + '; исчерпаны попытки')
+                    continue
+                execute_operation(vk, conn, row, timestamp)
             except Exception as error:
-                label = f"{type(error).__name__}: code={getattr(error, 'code', 'n/a')}"
-                log.warning("Действие VK будет повторено: operation=%s kind=%s error=%s",
-                            row["id"], row["kind"], label)
-                db.retry_operation(conn, row["id"], label, now)
+                code = getattr(error, 'code', None)
+                label = f"{type(error).__name__}: code={code if code is not None else 'n/a'}"
+                if isinstance(error, DeliveryError):
+                    label += '; ' + str(error)
+                permanent = code in {5, 15, 100, 113, 917, 922, 924, 925, 927, 932, 935, 945, 946, 947}
+                if permanent or getattr(error, 'permanent', False) or row['attempts'] + 1 >= config.DELIVERY_MAX_ATTEMPTS:
+                    db.stop_operation(conn, row['id'], label, attempted=True)
+                    log.error("Действие требует исправления: operation=%s kind=%s error=%s", row['id'], row['kind'], label)
+                else:
+                    log.warning("Действие VK будет повторено: operation=%s kind=%s error=%s", row['id'], row['kind'], label)
+                    db.retry_operation(conn, row['id'], label, timestamp)
 
 
 def delivery_watchdog(vk, conn):
