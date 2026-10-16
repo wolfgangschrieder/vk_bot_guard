@@ -600,7 +600,7 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
-    records = db.record_daily_chat_stats(conn, stat_date)
+    new_records = db.record_daily_chat_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
@@ -614,6 +614,10 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         return True
 
     names = get_user_names(vk, [user_id])
+    stat_records = db.get_chat_stat_records(conn)
+    hero_record = db.get_hero_message_record(
+        conn, (stat_date.isoformat(), user_id, messages)
+    )
     text = (
         f"🦸 ГЕРОЙ ЧАТА\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
@@ -621,16 +625,36 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
     record_lines = []
-    if "active_users" in records:
+    for metric, label, suffix in (
+        ("active_users", "👥 Рекорд активных участников", ""),
+        ("activity_percent", "⚡ Рекорд активности чата", "% от среднего за 7 дней"),
+    ):
+        record = stat_records.get(metric)
+        if record:
+            record_day = date.fromisoformat(record["stat_date"]).strftime("%d.%m.%Y")
+            is_new = metric in new_records and record["stat_date"] == stat_date.isoformat()
+            new_label = " — новый рекорд" if is_new else ""
+            record_lines.append(
+                f"{label}: {record['value']}{suffix} ({record_day}){new_label}"
+            )
+        else:
+            record_lines.append(f"{label}: пока нет данных")
+
+    if hero_record:
+        record_date, record_user_id, record_messages = hero_record
+        record_name = names.get(record_user_id)
+        if record_user_id not in names:
+            record_name = get_user_names(vk, [record_user_id]).get(record_user_id)
+        record_day = date.fromisoformat(record_date).strftime("%d.%m.%Y")
+        is_new = record_date == stat_date.isoformat()
+        new_label = " — новый рекорд" if is_new else ""
         record_lines.append(
-            f"👥 Новый рекорд активных участников: {records['active_users']}"
+            f"🏆 Рекорд Героя чата: {mention(record_user_id, record_name)} — "
+            f"{record_messages} сообщ. за день ({record_day}){new_label}"
         )
-    if "activity_percent" in records:
-        record_lines.append(
-            f"⚡ Новый рекорд активности чата: {records['activity_percent']}%"
-        )
-    if record_lines:
-        text += "\n\n" + "\n".join(record_lines)
+    else:
+        record_lines.append("🏆 Рекорд Героя чата: пока нет данных")
+    text += "\n\n" + "\n".join(record_lines)
     sent = send_bot_message(vk, text)
     if sent <= 0:
         return False

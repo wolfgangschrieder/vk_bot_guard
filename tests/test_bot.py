@@ -425,9 +425,34 @@ class BotTests(unittest.TestCase):
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(len(self.queued('send')), count)
         self.assertTrue(any(
-            'Новый рекорд активных участников' in item['message']
+            'Рекорд активных участников:' in item['message']
+            and 'новый рекорд' in item['message']
             for item in self.queued('send')
         ))
+
+    def test_midnight_hero_announcement_always_publishes_existing_records(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
+        record_date = stat_date - timedelta(days=1)
+        db.save_king(self.conn, record_date, 42, 12)
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ('active_users', 9, record_date.isoformat()),
+        )
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ('activity_percent', 175, record_date.isoformat()),
+        )
+        self.conn.commit()
+        for _ in range(3):
+            db.record_message(self.conn, 1, self.now - 24 * 60 * 60)
+
+        self.assertTrue(bot.publish_king(self.vk, self.conn, stat_date))
+
+        report = self.queued('send')[0]['message']
+        self.assertIn('Рекорд активных участников: 9', report)
+        self.assertIn('Рекорд активности чата: 175% от среднего за 7 дней', report)
+        self.assertIn('Рекорд Героя чата: [id42|Test User] — 12 сообщ. за день', report)
+        self.assertNotIn('новый рекорд', report)
 
     def test_scheduler_rollback_retries_without_duplicate_king(self):
         yesterday = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)

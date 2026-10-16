@@ -762,6 +762,36 @@ def record_daily_chat_stats(conn: sqlite3.Connection, stat_date: date) -> dict[s
     return new_records
 
 
+def get_chat_stat_records(conn: sqlite3.Connection) -> dict[str, dict]:
+    with _lock:
+        rows = conn.execute(
+            "SELECT metric, record_value, stat_date FROM chat_stat_records"
+        ).fetchall()
+    return {
+        row["metric"]: {
+            "value": int(row["record_value"]),
+            "stat_date": row["stat_date"],
+        }
+        for row in rows
+    }
+
+
+def get_hero_message_record(conn: sqlite3.Connection, candidate=None):
+    """Return the all-time daily message record, including an uncommitted candidate."""
+    with _lock:
+        row = conn.execute(
+            "SELECT stat_date, user_id, messages FROM king_history "
+            "ORDER BY messages DESC, stat_date ASC, user_id ASC LIMIT 1"
+        ).fetchone()
+    record = (
+        (row["stat_date"], int(row["user_id"]), int(row["messages"]))
+        if row else None
+    )
+    if candidate and (record is None or candidate[2] > record[2]):
+        record = candidate
+    return record
+
+
 def get_weekly_stats(
     conn: sqlite3.Connection,
     start_date: date,
