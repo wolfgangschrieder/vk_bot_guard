@@ -123,6 +123,10 @@ class BotTests(unittest.TestCase):
             item['message'] == 'Test User, Спам запрещен!'
             for item in self.queued('send')
         ))
+        self.assertEqual(
+            self.conn.execute('SELECT delete_at FROM bot_messages').fetchone()[0],
+            self.now + 300,
+        )
 
     def test_non_sticker_breaks_repeated_sticker_streak(self):
         sticker = [{'type': 'sticker', 'sticker': {'sticker_id': 77}}]
@@ -367,6 +371,11 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), 0)
         self.drain()
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), self.now)
+        king_notice = next(item for item in self.queued('send')
+                           if item['message'].startswith('🦸 Герой чата выдал мут'))
+        self.assertTrue(king_notice['temporary'])
+        self.assertEqual(king_notice['delay'], 300)
+        self.assertEqual(king_notice['peer_id'], config.CHAT_PEER_ID)
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id4', mid=3))
         self.assertEqual(len(self.queued('mute')), 1)
 

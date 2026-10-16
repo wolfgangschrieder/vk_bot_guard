@@ -456,7 +456,7 @@ def send_mute_reason(vk, user_id: int, reason: str, peer_id: int, deletion_id=No
     delete_after = (
         config.MODERATION_REASON_DELETE_SECONDS
         if is_moderation_chat(peer_id)
-        else config.BOT_REASON_DELETE_SECONDS
+        else config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS
     )
     names = get_user_names(vk, [user_id])
     user_name = names.get(user_id) or "Пользователь"
@@ -1320,7 +1320,10 @@ def execute_operation(vk, conn, row, now):
                 db.set_command_cooldown(conn, payload["king_id"], "king_mute", 0, now)
                 names = get_user_names(vk, [payload["user_id"]])
                 send_bot_message(vk, config.KING_MUTE_MESSAGE.format(
-                    mention=mention(payload["user_id"], names.get(payload["user_id"]))))
+                    mention=mention(payload["user_id"], names.get(payload["user_id"]))),
+                    temporary=True,
+                    peer_id=payload["peer_id"],
+                    delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS)
             elif payload.get("reason"):
                 send_mute_reason(vk, payload["user_id"], payload["reason"], payload["peer_id"], payload.get("deletion_id"))
             db.finish_operation(conn, row["id"], now)
