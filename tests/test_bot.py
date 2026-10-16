@@ -79,10 +79,12 @@ class BotTests(unittest.TestCase):
         self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
         self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
         self.assertIn('добавлен в ЧС', self.queued('send')[0]['message'])
+        self.assertEqual(self.queued('send')[0]['delay'], 300)
 
         bot.handle_new_message(self.vk, self.conn, self.message('/чс снять @kenaya', uid=99, mid=2))
         self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
         self.assertIn('удалён из чёрного списка', self.queued('send')[-1]['message'])
+        self.assertEqual(self.queued('send')[-1]['delay'], 120)
 
     def test_non_admin_cannot_change_blacklist(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=1))

@@ -819,7 +819,8 @@ def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> boo
         response = f"ℹ️ @id{target_id} уже в ЧС; повторное удаление из беседы выполнено."
     else:
         response = f"ℹ️ @id{target_id} уже в ЧС. При повторном входе бот удалит его автоматически."
-    send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+    notice_delay = config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS if added else 120
+    send_bot_message(vk, response, temporary=True, delete_after_seconds=notice_delay)
     return True
 
 
