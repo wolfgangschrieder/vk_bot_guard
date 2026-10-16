@@ -600,6 +600,7 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
+    records = db.record_daily_chat_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
@@ -619,6 +620,17 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
+    record_lines = []
+    if "active_users" in records:
+        record_lines.append(
+            f"👥 Новый рекорд активных участников: {records['active_users']}"
+        )
+    if "activity_percent" in records:
+        record_lines.append(
+            f"⚡ Новый рекорд активности чата: {records['activity_percent']}%"
+        )
+    if record_lines:
+        text += "\n\n" + "\n".join(record_lines)
     sent = send_bot_message(vk, text)
     if sent <= 0:
         return False

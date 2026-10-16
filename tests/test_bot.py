@@ -424,6 +424,10 @@ class BotTests(unittest.TestCase):
         count = len(reports)
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(len(self.queued('send')), count)
+        self.assertTrue(any(
+            'Новый рекорд активных участников' in item['message']
+            for item in self.queued('send')
+        ))
 
     def test_scheduler_rollback_retries_without_duplicate_king(self):
         yesterday = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
@@ -452,14 +456,14 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], self.now + 5)
 
     def test_migration_failure_is_atomic_and_retryable(self):
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 8')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 9')
         self.conn.commit()
-        original = db._migration_8
+        original = db._migration_9
         def fail(conn):
             original(conn)
             conn.execute('CREATE TABLE temporary_migration_probe(id INTEGER)')
             raise RuntimeError('migration failed')
-        with patch.object(db, '_migration_8', side_effect=fail):
+        with patch.object(db, '_migration_9', side_effect=fail):
             with self.assertRaises(RuntimeError):
                 db.connect(self.path)
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name = 'temporary_migration_probe'").fetchone())
@@ -480,7 +484,7 @@ class BotTests(unittest.TestCase):
     def test_backup_api_preserves_wal_rows(self):
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('INSERT INTO users(user_id, peer_id, warnings) VALUES (77, 2000000001, 5)')
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 8')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 9')
         self.conn.commit()
         migrated = db.connect(self.path)
         migrated.close()

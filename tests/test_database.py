@@ -114,6 +114,51 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(stats["active_users"], 1)
         self.assertIsNone(stats["activity_percent"])
 
+    def test_daily_chat_records_are_saved_only_when_beaten(self):
+        first_day = date(2026, 10, 1)
+        first_timestamp = int(datetime.combine(first_day, time(12), config.CHAT_TZ).timestamp())
+        db.record_message(self.conn, 10, first_timestamp)
+        db.record_message(self.conn, 20, first_timestamp)
+        self.assertEqual(
+            db.record_daily_chat_stats(self.conn, first_day),
+            {"active_users": 2},
+        )
+
+        second_day = first_day + timedelta(days=1)
+        second_timestamp = int(datetime.combine(second_day, time(12), config.CHAT_TZ).timestamp())
+        for user_id in (10, 20, 30):
+            for _ in range(14 // 3 + (user_id == 10)):
+                db.record_message(self.conn, user_id, second_timestamp)
+        records = db.record_daily_chat_stats(self.conn, second_day)
+
+        self.assertEqual(records["active_users"], 3)
+        self.assertGreater(records["activity_percent"], 100)
+        self.assertEqual(db.record_daily_chat_stats(self.conn, second_day), {})
+
+    def test_record_migration_backfills_existing_daily_history(self):
+        first_day = date(2026, 10, 1)
+        for day, user_messages in (
+            (first_day, ((10, 4), (20, 4))),
+            (first_day + timedelta(days=1), ((10, 8), (20, 4), (30, 4))),
+        ):
+            timestamp = int(datetime.combine(day, time(12), config.CHAT_TZ).timestamp())
+            for user_id, message_count in user_messages:
+                for _ in range(message_count):
+                    db.record_message(self.conn, user_id, timestamp)
+
+        self.conn.execute("DROP TABLE chat_stat_records")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version = 9")
+        self.conn.commit()
+        migrated = db.connect(str(Path(self.tmp.name) / "test.db"))
+        rows = {
+            row["metric"]: (row["record_value"], row["stat_date"])
+            for row in migrated.execute("SELECT * FROM chat_stat_records")
+        }
+
+        self.assertEqual(rows["active_users"], (3.0, "2026-10-02"))
+        self.assertEqual(rows["activity_percent"], (1400.0, "2026-10-02"))
+        migrated.close()
+
     def test_daily_user_stats(self):
         timestamp = 1_760_000_000
         db.record_message(self.conn, 10, timestamp)

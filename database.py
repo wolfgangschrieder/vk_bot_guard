@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 class Connection(sqlite3.Connection):
@@ -162,6 +162,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_8(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (8, int(time.time())))
+            current = 8
+
+        if current < 9:
+            _migration_9(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (9, int(time.time())))
 
         conn.commit()
 
@@ -317,6 +323,47 @@ def _migration_8(conn):
         last_at INTEGER NOT NULL,
         PRIMARY KEY (peer_id, user_id)
     )""")
+
+
+def _migration_9(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_stat_records (
+        metric TEXT PRIMARY KEY,
+        record_value REAL NOT NULL,
+        stat_date TEXT NOT NULL
+    )""")
+
+    active = conn.execute(
+        "SELECT stat_date, COUNT(*) AS value FROM daily_user_stats "
+        "WHERE messages > 0 GROUP BY stat_date ORDER BY stat_date"
+    ).fetchall()
+    if active:
+        best_active = max(active, key=lambda row: int(row["value"]))
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("active_users", int(best_active["value"]), best_active["stat_date"]),
+        )
+
+    daily_rows = conn.execute(
+        "SELECT stat_date, messages FROM daily_stats ORDER BY stat_date"
+    ).fetchall()
+    messages_by_date = {row["stat_date"]: int(row["messages"] or 0) for row in daily_rows}
+    best_activity = None
+    for row in daily_rows:
+        current_date = date.fromisoformat(row["stat_date"])
+        previous_messages = sum(
+            messages_by_date.get((current_date - timedelta(days=offset)).isoformat(), 0)
+            for offset in range(1, 8)
+        )
+        if previous_messages <= 0:
+            continue
+        activity = round(int(row["messages"] or 0) * 700 / previous_messages)
+        if best_activity is None or activity > best_activity["value"]:
+            best_activity = {"value": activity, "stat_date": row["stat_date"]}
+    if best_activity is not None:
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("activity_percent", best_activity["value"], best_activity["stat_date"]),
+        )
 
 
 def track_sticker_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
@@ -686,6 +733,33 @@ def get_daily_stats(
             (int(row["user_id"]), int(row["messages"])) for row in top
         ],
     }
+
+
+def record_daily_chat_stats(conn: sqlite3.Connection, stat_date: date) -> dict[str, int]:
+    """Persist new all-time highs for daily active users and chat activity."""
+    stats = get_daily_stats(conn, stat_date)
+    candidates = {
+        "active_users": stats["active_users"],
+        "activity_percent": stats["activity_percent"],
+    }
+    new_records = {}
+    with atomic(conn):
+        for metric, value in candidates.items():
+            if value is None or value <= 0:
+                continue
+            row = conn.execute(
+                "SELECT record_value FROM chat_stat_records WHERE metric = ?",
+                (metric,),
+            ).fetchone()
+            if row is None or value > row["record_value"]:
+                conn.execute(
+                    "INSERT INTO chat_stat_records(metric, record_value, stat_date) "
+                    "VALUES (?, ?, ?) ON CONFLICT(metric) DO UPDATE SET "
+                    "record_value = excluded.record_value, stat_date = excluded.stat_date",
+                    (metric, value, stat_date.isoformat()),
+                )
+                new_records[metric] = int(value)
+    return new_records
 
 
 def get_weekly_stats(
