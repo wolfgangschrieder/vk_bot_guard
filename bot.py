@@ -28,6 +28,26 @@ logging.basicConfig(
 log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
+USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
+
+
+def menu_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[
+            {
+                "action": {"type": "text", "label": "👤 Мой профиль"},
+                "color": "primary",
+            },
+            {
+                "action": {
+                    "type": "open_link",
+                    "link": USER_GUIDE_URL,
+                    "label": "📖 Руководство",
+                },
+            },
+        ]],
+    }
 
 
 class TimeoutSession(requests.Session):
@@ -55,10 +75,14 @@ def delete_message(vk, message) -> int:
     message_id = message_field(message, "id")
     cmid = message_field(message, "conversation_message_id")
     peer_id = message_field(message, "peer_id")
-    if message_id > 0:
-        params = {"message_ids": str(message_id), "delete_for_all": 1}
-    elif cmid > 0 and peer_id > 0:
+    # In group conversations, prefer the conversation-scoped ID and include
+    # the peer. A global message ID without its destination is ambiguous for
+    # community tokens and may be rejected by VK for messages authored by
+    # other participants.
+    if cmid > 0 and peer_id >= CHAT_PEER_START:
         params = {"peer_id": peer_id, "cmids": str(cmid), "delete_for_all": 1}
+    elif message_id > 0:
+        params = {"peer_id": peer_id, "message_ids": str(message_id), "delete_for_all": 1}
     else:
         log.error("Нельзя удалить сообщение без id/cmid: peer=%s", peer_id)
         return 0
@@ -81,14 +105,22 @@ def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
         return False
 
     try:
-        vk.messages.removeChatUser(chat_id=chat_id, user_id=user_id)
+        response = vk.messages.removeChatUser(chat_id=chat_id, user_id=user_id)
+        if response not in (1, True):
+            log.error(
+                "VK не подтвердил удаление пользователя user=%s peer=%s response=%r",
+                user_id,
+                peer_id,
+                response,
+            )
+            return False
         log.warning(
             "Заблокированный пользователь удалён из беседы: user=%s peer=%s",
             user_id,
             peer_id,
         )
         return True
-    except ApiError as err:
+    except Exception as err:
         log.error(
             "Не удалось удалить пользователя user=%s peer=%s: %s",
             user_id,
@@ -136,8 +168,8 @@ def event_field(event_obj, name: str, default=None):
         return getattr(event_obj, name, default)
 
 
-def handle_chat_update(vk, event) -> None:
-    """Remove configured users immediately when they join the blocklist chat."""
+def handle_chat_update(vk, event, conn=None) -> None:
+    """Enforce the social-chat blacklist and the optional legacy blocklist chat."""
     obj = event_object(event)
     if not obj:
         return
@@ -146,12 +178,6 @@ def handle_chat_update(vk, event) -> None:
     if peer_id <= 0:
         chat_id = message_field(obj, "chat_id")
         peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
-
-    if (
-        peer_id != config.BLOCKLIST_CHAT_PEER_ID
-        or peer_id == config.CHAT_PEER_ID
-    ):
-        return
 
     action = event_field(obj, "action")
     if isinstance(action, dict):
@@ -169,7 +195,12 @@ def handle_chat_update(vk, event) -> None:
     except (TypeError, ValueError):
         member_id = 0
 
-    if member_id in config.BLOCKED_USER_IDS:
+    if peer_id == config.CHAT_PEER_ID:
+        if conn is not None and db.is_chat_blacklisted(conn, member_id):
+            remove_user_from_chat(vk, peer_id, member_id)
+        return
+
+    if peer_id == config.BLOCKLIST_CHAT_PEER_ID and member_id in config.BLOCKED_USER_IDS:
         remove_user_from_chat(vk, peer_id, member_id)
 
 
@@ -201,6 +232,46 @@ def blocklist_watchdog(vk) -> None:
         except Exception:
             log.error("Ошибка blocklist watchdog:\n%s", traceback.format_exc())
         time.sleep(5)
+
+
+def scan_chat_blacklist(vk, conn) -> None:
+    blocked_ids = set(db.get_chat_blacklist(conn))
+    if not blocked_ids:
+        return
+
+    try:
+        offset = 0
+        present_ids = set()
+        while True:
+            response = vk.messages.getConversationMembers(
+                peer_id=config.CHAT_PEER_ID,
+                count=1000,
+                offset=offset,
+            )
+            members = response.get("items", []) if isinstance(response, dict) else []
+            if not members:
+                break
+            present_ids.update({
+                int(member.get("member_id", 0))
+                for member in members
+                if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
+            })
+            if len(members) < 1000:
+                break
+            offset += len(members)
+        for user_id in present_ids & blocked_ids:
+            remove_user_from_chat(vk, config.CHAT_PEER_ID, user_id)
+    except Exception:
+        log.error("Ошибка проверки чёрного списка социальной беседы:\n%s", traceback.format_exc())
+
+
+def chat_blacklist_watchdog(vk, conn) -> None:
+    while True:
+        try:
+            scan_chat_blacklist(vk, conn)
+        except Exception:
+            log.exception("Ошибка проверки чёрного списка")
+        time.sleep(60)
 
 
 def message_text(message) -> str:
@@ -236,6 +307,51 @@ def has_sticker_attachment(message) -> bool:
         ).lower() == "sticker"
         for attachment in message_attachments(message)
     )
+
+
+def sticker_fingerprint(message) -> str | None:
+    stickers = []
+    for attachment in message_attachments(message):
+        attachment_type = str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower()
+        if attachment_type != "sticker":
+            continue
+        sticker = (
+            attachment.get("sticker", {})
+            if isinstance(attachment, dict)
+            else getattr(attachment, "sticker", {})
+        )
+        if not sticker:
+            continue
+        if isinstance(sticker, dict):
+            sticker_id = sticker.get("sticker_id", sticker.get("id"))
+            product_id = sticker.get("product_id", "")
+            if sticker_id is not None:
+                stickers.append(f"{product_id}:{sticker_id}")
+                continue
+            stickers.append(json.dumps(sticker, ensure_ascii=False, sort_keys=True, default=str))
+        else:
+            stickers.append(str(sticker))
+    return json.dumps(sorted(stickers), ensure_ascii=False) if stickers else None
+
+
+def has_four_identical_words(text: str) -> bool:
+    words = re.findall(r"[^\W_]+(?:['’][^\W_]+)*", normalized_text(text), flags=re.UNICODE)
+    return any(
+        words[index] == words[index + 1] == words[index + 2] == words[index + 3]
+        for index in range(len(words) - 3)
+    )
+
+
+def is_spam_message(conn, message, user_id: int, peer_id: int, now: int) -> bool:
+    if has_four_identical_words(message_text(message)):
+        return True
+    return db.track_sticker_streak(
+        conn, peer_id, user_id, sticker_fingerprint(message), now
+    ) >= 4
 
 
 def normalized_text(text: str) -> str:
@@ -324,6 +440,7 @@ def classify_media(message):
 def send_bot_message(
     vk, message: str, *, temporary: bool = False, peer_id: int | None = None,
     delete_after_seconds: int | None = None, depends_on: int | None = None,
+    keyboard: dict | None = None,
 ) -> int:
     delay = (config.BOT_REASON_DELETE_SECONDS if delete_after_seconds is None
              else max(1, int(delete_after_seconds)))
@@ -332,6 +449,7 @@ def send_bot_message(
         "peer_id": peer_id or config.CHAT_PEER_ID, "message": message,
         "temporary": temporary, "delay": delay,
         "depends_on": depends_on,
+        "keyboard": keyboard,
     })
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int, deletion_id=None) -> None:
@@ -578,6 +696,122 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     publish_daily_stats(vk, conn, stat_date)
     return True
 
+
+def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    match = re.fullmatch(r"/чс(?:\s+(.*))?", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    if from_id not in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Команда чёрного списка доступна только администраторам.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    argument = (match.group(1) or "").strip()
+    if not argument:
+        send_bot_message(
+            vk,
+            "Команды чёрного списка:\n/чс @username — добавить в ЧС\n"
+            "/чс снять @username — убрать из ЧС\n/чс список — показать список",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    if argument.casefold() == "список":
+        blocked_ids = db.get_chat_blacklist(conn)
+        text_out = (
+            "📋 Чёрный список пуст."
+            if not blocked_ids
+            else "📋 Чёрный список социальной беседы:\n" + "\n".join(f"• @id{uid}" for uid in blocked_ids)
+        )
+        send_bot_message(vk, text_out, temporary=True, delete_after_seconds=120)
+        return True
+
+    remove = False
+    target_text = argument
+    remove_match = re.match(r"^снять\s+(.+)$", argument, re.IGNORECASE)
+    if remove_match:
+        remove = True
+        target_text = remove_match.group(1).strip()
+
+    target_id = resolve_target_user_id(vk, target_text)
+    if target_id <= 0:
+        send_bot_message(
+            vk,
+            "❗ Укажи пользователя как @username или @id123.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    if remove:
+        if db.remove_chat_blacklist(conn, target_id):
+            response = f"✅ @id{target_id} удалён из чёрного списка."
+        else:
+            response = f"ℹ️ @id{target_id} не найден в чёрном списке."
+        send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+        return True
+
+    if target_id in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Администраторов нельзя добавить в чёрный список.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    added = db.add_chat_blacklist(conn, target_id, from_id, now)
+    removed = remove_user_from_chat(vk, config.CHAT_PEER_ID, target_id)
+    if added and removed:
+        response = f"🚫 @id{target_id} добавлен в ЧС и удалён из беседы."
+    elif added:
+        response = f"🚫 @id{target_id} добавлен в ЧС. VK пока не подтвердил удаление; при входе бот удалит его снова."
+    elif removed:
+        response = f"ℹ️ @id{target_id} уже в ЧС; повторное удаление из беседы выполнено."
+    else:
+        response = f"ℹ️ @id{target_id} уже в ЧС. При повторном входе бот удалит его автоматически."
+    send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+    return True
+
+
+def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    if not re.fullmatch(r"/menu", text.strip(), re.IGNORECASE):
+        return False
+
+    local_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    day_start = int(datetime.combine(local_date, datetime.min.time(), tzinfo=config.CHAT_TZ).timestamp())
+    next_day = local_date + timedelta(days=1)
+    day_end = int(datetime.combine(next_day, datetime.min.time(), tzinfo=config.CHAT_TZ).timestamp())
+    if not db.claim_daily_command_slot(conn, from_id, "menu_daily", 1, day_start, day_end, now):
+        if db.claim_daily_command_slot(conn, from_id, "menu_limit_notice", 1, day_start, day_end, now):
+            send_bot_message(
+                vk,
+                "⏳ Ты уже открывал меню сегодня. Следующий вызов будет доступен после 00:00 по Москве.",
+                temporary=True,
+                delete_after_seconds=120,
+            )
+        return True
+
+    send_bot_message(
+        vk,
+        "🤖 МЕНЮ БОТА\n\n"
+        "👤 /profile — посмотреть свой профиль и репутацию\n"
+        "⭐ /rep @username — повысить репутацию\n"
+        "⭐ /rep - @username — понизить репутацию\n"
+        "🦸 /мут @username — команда Героя чата\n\n"
+        "Нажми «Руководство», чтобы открыть статью с правилами и командами.",
+        keyboard=menu_keyboard(),
+        temporary=True,
+        delete_after_seconds=120,
+    )
+    return True
+
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
@@ -732,9 +966,15 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
 
 def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     stripped = text.strip()
+    if stripped.casefold() in {"👤 мой профиль", "мой профиль"}:
+        return handle_profile_command(vk, conn, from_id, "/profile", now)
     if not stripped.startswith("/"):
         return False
 
+    if handle_blacklist_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_menu_command(vk, conn, from_id, stripped, now):
+        return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
     if handle_profile_command(vk, conn, from_id, stripped, now):
@@ -759,7 +999,7 @@ def cleanup_tick(conn, now=None):
     with db.atomic(conn):
         for message_id, peer_id in db.get_due_bot_messages(conn, now):
             db.enqueue(conn, "delete", {"params": {
-                "message_ids": str(message_id), "delete_for_all": 1,
+                "peer_id": peer_id, "message_ids": str(message_id), "delete_for_all": 1,
             }, "peer_id": peer_id})
             db.remove_bot_message(conn, message_id)
         timestamp = int(time.time()) if now is None else now
@@ -791,6 +1031,10 @@ def process_message(vk, conn, message) -> None:
     if event_field(message, "action") or message_field(message, "out"):
         return
 
+    if is_bot_feature_chat(peer_id) and db.is_chat_blacklisted(conn, from_id):
+        remove_user_from_chat(vk, peer_id, from_id)
+        return
+
     # Administrators retain moderation exemptions, but can use every feature command.
     if from_id in config.ADMIN_IDS:
         if is_bot_feature_chat(peer_id):
@@ -814,13 +1058,26 @@ def process_message(vk, conn, message) -> None:
         return
 
     if handle_content_violation(vk, conn, message, from_id, peer_id):
+        if is_bot_feature_chat(peer_id):
+            db.track_sticker_streak(conn, peer_id, from_id, None, now)
         return
 
     if is_bot_feature_chat(peer_id):
-        if handle_command(vk, conn, from_id, text, now):
+        command_handled = handle_command(vk, conn, from_id, text, now)
+        if command_handled or text.strip().startswith("/"):
+            db.track_sticker_streak(conn, peer_id, from_id, None, now)
             return
-        if text.strip().startswith("/"):
-            return  # Unknown commands do not compete for the activity title.
+        if is_spam_message(conn, message, from_id, peer_id, now):
+            deleted = delete_message(vk, message)
+            muted = apply_mute(
+                vk, peer_id, from_id, reason=config.SPAM_MUTE_REASON,
+                deletion_id=deleted, now=now,
+            )
+            log.warning(
+                "Спам: user=%s peer=%s deleted=%s muted=%s",
+                from_id, peer_id, deleted, muted,
+            )
+            return
         db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
         return
 
@@ -972,8 +1229,14 @@ def execute_operation(vk, conn, row, now):
             if dependency['status'] != 'done':
                 return
         # peer_ids requests a structured response with the conversation-scoped ID.
-        response = vk.messages.send(peer_ids=str(payload["peer_id"]),
-            random_id=row["id"], message=payload["message"])
+        send_params = {
+            "peer_ids": str(payload["peer_id"]),
+            "random_id": row["id"],
+            "message": payload["message"],
+        }
+        if payload.get("keyboard"):
+            send_params["keyboard"] = json.dumps(payload["keyboard"], ensure_ascii=False)
+        response = vk.messages.send(**send_params)
         message_id, cmid = parse_sent_message(response, payload["peer_id"])
         with db.atomic(conn):
             if payload["temporary"]:
@@ -1158,6 +1421,13 @@ def run_forever() -> None:
     )
     vk = session.get_api()
 
+    threading.Thread(
+        target=chat_blacklist_watchdog,
+        args=(vk, conn),
+        name="chat-blacklist-watchdog",
+        daemon=True,
+    ).start()
+
     if (
         config.BLOCKED_USER_IDS
         and config.BLOCKLIST_CHAT_PEER_ID > 0
@@ -1206,7 +1476,7 @@ def run_forever() -> None:
                         handle_new_message(vk, conn, message)
 
                 elif str(getattr(event, "type", "")) == "chat_update":
-                    handle_chat_update(vk, event)
+                    handle_chat_update(vk, event, conn)
 
         except (KeyboardInterrupt, SystemExit):
             raise

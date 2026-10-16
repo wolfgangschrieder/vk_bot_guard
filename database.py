@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 
 class Connection(sqlite3.Connection):
@@ -152,6 +152,17 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (6, int(time.time())))
 
+        if current < 7:
+            _migration_7(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (7, int(time.time())))
+            current = 7
+
+        if current < 8:
+            _migration_8(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (8, int(time.time())))
+
         conn.commit()
 
 
@@ -286,6 +297,88 @@ def _migration_6(conn):
         delete_at INTEGER NOT NULL,
         UNIQUE(peer_id, message_id, cmid)
     )""")
+
+
+def _migration_7(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_blacklist (
+        user_id INTEGER PRIMARY KEY,
+        added_by INTEGER NOT NULL,
+        added_at INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_blacklist_added_at ON chat_blacklist(added_at)")
+
+
+def _migration_8(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS spam_sticker_streak (
+        peer_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        sticker_key TEXT NOT NULL,
+        streak INTEGER NOT NULL DEFAULT 1,
+        last_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_id, user_id)
+    )""")
+
+
+def track_sticker_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                         sticker_key: str | None, now=None) -> int:
+    """Track consecutive identical sticker messages by a user in one chat."""
+    timestamp = int(time.time()) if now is None else int(now)
+    with atomic(conn):
+        if not sticker_key:
+            conn.execute(
+                "DELETE FROM spam_sticker_streak WHERE peer_id = ? AND user_id = ?",
+                (int(peer_id), int(user_id)),
+            )
+            return 0
+
+        row = conn.execute(
+            "SELECT sticker_key, streak, last_at FROM spam_sticker_streak "
+            "WHERE peer_id = ? AND user_id = ?",
+            (int(peer_id), int(user_id)),
+        ).fetchone()
+        if row and row["sticker_key"] == sticker_key and timestamp - row["last_at"] <= 600:
+            streak = int(row["streak"]) + 1
+        else:
+            streak = 1
+        conn.execute(
+            "INSERT INTO spam_sticker_streak(peer_id, user_id, sticker_key, streak, last_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(peer_id, user_id) DO UPDATE SET "
+            "sticker_key = excluded.sticker_key, streak = excluded.streak, last_at = excluded.last_at",
+            (int(peer_id), int(user_id), str(sticker_key), streak, timestamp),
+        )
+        return streak
+
+
+def add_chat_blacklist(conn: sqlite3.Connection, user_id: int, added_by: int, now=None) -> bool:
+    timestamp = int(time.time()) if now is None else int(now)
+    with atomic(conn):
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO chat_blacklist(user_id, added_by, added_at) VALUES (?, ?, ?)",
+            (int(user_id), int(added_by), timestamp),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def remove_chat_blacklist(conn: sqlite3.Connection, user_id: int) -> bool:
+    with atomic(conn):
+        cursor = conn.execute("DELETE FROM chat_blacklist WHERE user_id = ?", (int(user_id),))
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def is_chat_blacklisted(conn: sqlite3.Connection, user_id: int) -> bool:
+    with _lock:
+        return conn.execute(
+            "SELECT 1 FROM chat_blacklist WHERE user_id = ?", (int(user_id),)
+        ).fetchone() is not None
+
+
+def get_chat_blacklist(conn: sqlite3.Connection) -> list[int]:
+    with _lock:
+        return [int(row["user_id"]) for row in conn.execute(
+            "SELECT user_id FROM chat_blacklist ORDER BY added_at, user_id"
+        )]
 
 
 def _get_or_create(
@@ -773,6 +866,44 @@ def get_command_cooldown(
             (user_id, command, target_user_id),
         ).fetchone()
     return int(row["last_used_at"]) if row else 0
+
+
+def claim_daily_command_slot(
+    conn: sqlite3.Connection,
+    user_id: int,
+    command: str,
+    slot_count: int,
+    day_start: int,
+    day_end: int,
+    now: int,
+) -> int:
+    """Claim one of a bounded number of daily slots without adding a schema table."""
+    if slot_count < 1 or day_start >= day_end:
+        return 0
+    with atomic(conn):
+        for slot in range(1, slot_count + 1):
+            row = conn.execute(
+                "SELECT last_used_at FROM command_cooldowns "
+                "WHERE user_id = ? AND command = ? AND target_user_id = ?",
+                (user_id, command, slot),
+            ).fetchone()
+            if row and day_start <= int(row["last_used_at"]) < day_end:
+                continue
+            if row:
+                conn.execute(
+                    "UPDATE command_cooldowns SET last_used_at = ? "
+                    "WHERE user_id = ? AND command = ? AND target_user_id = ?",
+                    (now, user_id, command, slot),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO command_cooldowns(user_id, command, target_user_id, last_used_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (user_id, command, slot, now),
+                )
+            conn.commit()
+            return slot
+    return 0
 
 
 def set_command_cooldown(

@@ -144,6 +144,15 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
 
+    def test_chat_blacklist_add_remove_and_idempotency(self):
+        self.assertTrue(db.add_chat_blacklist(self.conn, 42, 99, now=1000))
+        self.assertFalse(db.add_chat_blacklist(self.conn, 42, 77, now=1001))
+        self.assertTrue(db.is_chat_blacklisted(self.conn, 42))
+        self.assertEqual(db.get_chat_blacklist(self.conn), [42])
+        self.assertTrue(db.remove_chat_blacklist(self.conn, 42))
+        self.assertFalse(db.remove_chat_blacklist(self.conn, 42))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 42))
+
     def test_legacy_database_survives_migration(self):
         self.conn.close()
         path = Path(self.tmp.name) / "legacy.db"
