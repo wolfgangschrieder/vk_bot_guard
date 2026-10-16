@@ -557,11 +557,18 @@ def publish_daily_stats(vk, conn, stat_date: date) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     top3 = stats["top_users"][:3]
     month = config.MONTH_NAMES[stat_date.month - 1]
+    activity = (
+        f"{stats['activity_percent']}% от среднего за 7 дней"
+        if stats["activity_percent"] is not None
+        else "нет базы для сравнения за 7 дней"
+    )
 
     report = (
         f"📊 СТАТИСТИКА ЧАТА\n"
         f"#{stat_date.day}{month}\n\n"
         f"💬 Сообщений за день: {stats['messages']}\n"
+        f"👥 Активных участников: {stats['active_users']}\n"
+        f"⚡ Активность чата: {activity}\n"
         f"📷 Фото: {stats['photos']}\n"
         f"🎬 Видео: {stats['videos']}\n"
         f"🎵 Музыка: {stats['music']}\n"

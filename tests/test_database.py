@@ -1,9 +1,10 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+import config
 import database as db
 
 
@@ -80,6 +81,38 @@ class DatabaseTests(unittest.TestCase):
             },
             {"photos": 2, "videos": 3, "music": 4, "voices": 5},
         )
+
+    def test_daily_active_users_and_activity_vs_previous_seven_days(self):
+        stat_date = date(2026, 10, 9)
+        for days_ago in range(1, 8):
+            timestamp = int(datetime.combine(
+                stat_date - timedelta(days=days_ago), time(12), config.CHAT_TZ
+            ).timestamp())
+            for index in range(10):
+                db.record_message(self.conn, 10 + index % 2, timestamp)
+
+        today = int(datetime.combine(stat_date, time(12), config.CHAT_TZ).timestamp())
+        for _ in range(13):
+            db.record_message(self.conn, 10, today)
+        for _ in range(2):
+            db.record_message(self.conn, 20, today)
+        db.record_mute(self.conn, 30, today)
+
+        stats = db.get_daily_stats(self.conn, stat_date)
+
+        self.assertEqual(stats["active_users"], 2)
+        self.assertEqual(stats["activity_average_messages"], 10)
+        self.assertEqual(stats["activity_percent"], 150)
+
+    def test_activity_percent_is_unavailable_without_historical_messages(self):
+        stat_date = date(2026, 10, 9)
+        timestamp = int(datetime.combine(stat_date, time(12), config.CHAT_TZ).timestamp())
+        db.record_message(self.conn, 10, timestamp)
+
+        stats = db.get_daily_stats(self.conn, stat_date)
+
+        self.assertEqual(stats["active_users"], 1)
+        self.assertIsNone(stats["activity_percent"])
 
     def test_daily_user_stats(self):
         timestamp = 1_760_000_000

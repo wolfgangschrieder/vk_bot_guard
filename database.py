@@ -640,6 +640,7 @@ def get_daily_stats(
     stat_date: date,
 ) -> dict:
     key = stat_date.isoformat()
+    history_start = (stat_date - timedelta(days=7)).isoformat()
     with _lock:
         total = conn.execute(
             "SELECT messages, mutes, photos, videos, music, voices FROM daily_stats WHERE stat_date = ?",
@@ -655,10 +656,27 @@ def get_daily_stats(
             """,
             (key,),
         ).fetchall()
+        active_users = conn.execute(
+            "SELECT COUNT(*) FROM daily_user_stats "
+            "WHERE stat_date = ? AND messages > 0",
+            (key,),
+        ).fetchone()[0]
+        history_messages = conn.execute(
+            "SELECT COALESCE(SUM(messages), 0) FROM daily_stats "
+            "WHERE stat_date >= ? AND stat_date < ?",
+            (history_start, key),
+        ).fetchone()[0]
+
+    messages = int(total["messages"]) if total else 0
+    average_messages = int(history_messages or 0) / 7
+    activity_percent = round(messages / average_messages * 100) if average_messages else None
 
     return {
         "date": key,
-        "messages": int(total["messages"]) if total else 0,
+        "messages": messages,
+        "active_users": int(active_users or 0),
+        "activity_percent": activity_percent,
+        "activity_average_messages": average_messages,
         "mutes": int(total["mutes"]) if total else 0,
         "photos": int(total["photos"]) if total else 0,
         "videos": int(total["videos"]) if total else 0,

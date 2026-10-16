@@ -258,6 +258,20 @@ class BotTests(unittest.TestCase):
         stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
         self.assertEqual((stats['messages'], stats['photos']), (1, 1))
 
+    def test_daily_report_publishes_active_users_and_activity_percent(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        stats = {
+            'date': stat_date.isoformat(), 'messages': 120, 'active_users': 18,
+            'activity_percent': 150, 'activity_average_messages': 80,
+            'photos': 0, 'videos': 0, 'music': 0, 'voices': 0, 'top_users': [],
+        }
+        with patch.object(db, 'get_daily_stats', return_value=stats):
+            self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date))
+
+        report = self.queued('send')[0]['message']
+        self.assertIn('👥 Активных участников: 18', report)
+        self.assertIn('⚡ Активность чата: 150% от среднего за 7 дней', report)
+
     def test_failed_inbox_transaction_rolls_back_all_effects_and_retries(self):
         original = bot.process_message
         def fail(vk, conn, message):
