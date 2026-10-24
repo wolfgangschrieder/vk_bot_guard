@@ -137,6 +137,28 @@ class StorageTests(unittest.TestCase):
             self.assertEqual([j[1] for j in reopened.pending_public(2000000999)], [1234568])
             reopened.close()
 
+    def test_atomic_state_and_public_message_and_dedup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "atomic.db")
+            table = Table()
+            table.join(101)
+            self.assertEqual(
+                store.save(2000000999, table, 0, event_id="event-1",
+                           public_message="Player joined"), 1
+            )
+            self.assertEqual(store.load(2000000999)[0], 1)
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            self.assertIsNone(
+                store.save(2000000999, table, 0, event_id="event-1",
+                           public_message="Duplicate")
+            )
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            with self.assertRaises(ValueError):
+                store.save(2000000999, table, 0, event_id="event-2",
+                           public_message="Stale")
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
