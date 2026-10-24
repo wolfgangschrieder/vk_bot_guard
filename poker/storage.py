@@ -4,6 +4,7 @@ This module never opens or migrates moderator.db.
 """
 import json
 import sqlite3
+from secrets import randbelow
 from dataclasses import asdict
 from pathlib import Path
 
@@ -75,7 +76,7 @@ class PokerStore:
         ).fetchone()
         return (row[0], deserialize(row[1])) if row else (0, None)
 
-    def save(self, room_id, table, expected_revision, event_id=None):
+    def save(self, room_id, table, expected_revision, event_id=None, public_message=None):
         """Atomic optimistic revision check + optional VK event deduplication.
 
         Returns new revision, or None for a previously processed event.
@@ -106,6 +107,8 @@ class PokerStore:
                     "INSERT INTO poker_processed_events(room_id,event_id) VALUES (?,?)",
                     (room_id, str(event_id)),
                 )
+            if public_message:
+                self._insert_public(room_id, public_message)
         return revision + 1
 
     def save_hand_with_private_cards(self, room_id, table, expected_revision, messages, event_id=None):
@@ -198,6 +201,13 @@ class PokerStore:
             )
             if cursor.rowcount != 1:
                 raise ValueError("Private delivery job not found")
+
+    def _insert_public(self, room_id, message):
+        random_id = randbelow(2147483647) + 1
+        self.conn.execute(
+            "INSERT INTO poker_public_outbox(room_id,random_id,message) VALUES (?,?,?)",
+            (room_id, random_id, message),
+        )
 
     def enqueue_public(self, room_id, random_id, message):
         """Queue public chat message with a stable VK idempotency key."""
