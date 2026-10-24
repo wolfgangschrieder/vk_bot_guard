@@ -44,5 +44,44 @@ class PrivateCardTests(unittest.TestCase):
             self.assertEqual(len(vk.messages.calls), 1)
             store.close()
 
+    def test_uncertain_vk_failure_retries_same_private_cards_after_restart(self):
+        class UncertainMessages(FakeMessages):
+            def __init__(self):
+                super().__init__()
+                self.seen = set()
+                self.fail_once = True
+            def send(self, **kwargs):
+                key = (kwargs["peer_id"], kwargs["random_id"])
+                self.calls.append(kwargs)
+                self.seen.add(key)
+                if self.fail_once:
+                    self.fail_once = False
+                    raise ConnectionError("VK accepted message but response was lost")
+                return 123
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "poker.db"
+            store = PokerStore(path)
+            store.enqueue_private_cards(77, 1, {
+                42: (4321, "first private hand"),
+                43: (4322, "second private hand"),
+            })
+            vk = FakeVK()
+            vk.messages = UncertainMessages()
+            adapter = VkPrivateCards(vk, 123)
+            with self.assertRaises(ConnectionError):
+                adapter.deliver_pending(store, 77, 1)
+            self.assertEqual(store.private_delivery_status(77, 1), (2, 0))
+            store.close()
+            reopened = PokerStore(path)
+            self.assertEqual(adapter.deliver_pending(reopened, 77, 1), 2)
+            self.assertEqual(store.path, reopened.path)
+            self.assertEqual(vk.messages.calls[0]["random_id"],
+                             vk.messages.calls[1]["random_id"])
+            self.assertEqual(len(vk.messages.seen), 2)
+            self.assertEqual(reopened.private_delivery_status(77, 1), (2, 2))
+            self.assertEqual(adapter.deliver_pending(reopened, 77, 1), 0)
+            reopened.close()
+
 if __name__ == "__main__":
     unittest.main()
