@@ -163,6 +163,34 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.expire_turn(started + 90), (current, "check"))
         self.assertEqual(table.stage, "flop")
 
+    def test_three_way_unequal_allins_conserve_chips(self):
+        table = Table()
+        for uid in (1, 2, 3):
+            table.join(uid)
+            table.ready(uid)
+        table.players[1].stack = 500
+        table.players[2].stack = 1500
+        table.players[3].stack = 3000
+        table.start()
+        self.assertEqual(table.turn, 1)
+        table.act(1, "allin")
+        table.act(2, "allin")
+        table.act(3, "call")
+        self.assertEqual(table.stage, "complete")
+        self.assertEqual(len(table.board), 5)
+        self.assertEqual(sum(p.stack for p in table.players.values()), 5000)
+        self.assertEqual(sum(table.payouts.values()), 3500)
+        self.assertTrue(all(p.stack >= 0 for p in table.players.values()))
+
+    def test_fresh_session_does_not_reuse_hand_number(self):
+        table = self.make_table()
+        table.act(table.turn, "fold")
+        table.new_session()
+        for uid in table.players:
+            table.ready(uid)
+        table.start()
+        self.assertEqual(table.hand_number, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
