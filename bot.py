@@ -338,19 +338,17 @@ def sticker_fingerprint(message) -> str | None:
     return json.dumps(sorted(stickers), ensure_ascii=False) if stickers else None
 
 
-def has_four_identical_words(text: str) -> bool:
-    words = re.findall(r"[^\W_]+(?:['’][^\W_]+)*", normalized_text(text), flags=re.UNICODE)
-    return any(
-        words[index] == words[index + 1] == words[index + 2] == words[index + 3]
-        for index in range(len(words) - 3)
-    )
+def repeated_content_fingerprint(message):
+    sticker_key = sticker_fingerprint(message)
+    if sticker_key:
+        return f"sticker:{sticker_key}"
+    text = normalized_text(message_text(message))
+    return f"text:{text}" if text else None
 
 
 def is_spam_message(conn, message, user_id: int, peer_id: int, now: int) -> bool:
-    if has_four_identical_words(message_text(message)):
-        return True
-    return db.track_sticker_streak(
-        conn, peer_id, user_id, sticker_fingerprint(message), now
+    return db.track_spam_streak(
+        conn, peer_id, user_id, repeated_content_fingerprint(message), now
     ) >= 4
 
 
@@ -1084,29 +1082,27 @@ def process_message(vk, conn, message) -> None:
             db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
         return
 
+    if handle_content_violation(vk, conn, message, from_id, peer_id):
+        if is_bot_feature_chat(peer_id):
+            db.track_spam_streak(conn, peer_id, from_id, None, now)
+        return
+
     if is_bot_feature_chat(peer_id) and any(
         re.search(r"(?<!\w)@all(?!\w)", message_text(item), re.IGNORECASE)
         for item in moderated_contents(message)
     ):
         deleted = delete_message(vk, message)
-        muted = apply_mute(vk, peer_id, from_id, reason=config.ALL_COMMAND_MUTE_REASON, deletion_id=deleted)
+        db.track_spam_streak(conn, peer_id, from_id, None, now)
         log.warning(
-            "Запрещённая @all-команда: user=%s deleted=%s muted=%s",
-            from_id,
-            deleted,
-            muted,
+            "Удалена запрещённая @all-команда: user=%s deleted=%s",
+            from_id, deleted,
         )
-        return
-
-    if handle_content_violation(vk, conn, message, from_id, peer_id):
-        if is_bot_feature_chat(peer_id):
-            db.track_sticker_streak(conn, peer_id, from_id, None, now)
         return
 
     if is_bot_feature_chat(peer_id):
         command_handled = handle_command(vk, conn, from_id, text, now)
         if command_handled or text.strip().startswith("/"):
-            db.track_sticker_streak(conn, peer_id, from_id, None, now)
+            db.track_spam_streak(conn, peer_id, from_id, None, now)
             return
         if is_spam_message(conn, message, from_id, peer_id, now):
             deleted = delete_message(vk, message)

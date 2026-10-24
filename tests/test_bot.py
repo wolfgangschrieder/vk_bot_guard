@@ -92,23 +92,54 @@ class BotTests(unittest.TestCase):
         self.vk.messages.removeChatUser.assert_not_called()
         self.assertIn('только администраторам', self.queued('send')[0]['message'])
 
-    def test_four_repeated_words_mute_only_in_social_chat(self):
+    def test_four_identical_messages_mute_only_in_social_chat(self):
+        for mid in range(1, 4):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('одно и то же', mid=mid, peer=config.CHAT_PEER_ID),
+            )
+        self.assertEqual(self.queued('mute'), [])
+
         bot.handle_new_message(
             self.vk, self.conn,
-            self.message('да да, да да', peer=config.CHAT_PEER_ID),
+            self.message('одно и то же', mid=4, peer=config.CHAT_PEER_ID),
         )
         mute = self.queued('mute')[0]
         self.assertEqual(mute['peer_id'], config.CHAT_PEER_ID)
         self.assertEqual(mute['until'] - self.now, 3600)
-        self.assertEqual(mute['reason'], 'Спам запрещен!')
+        self.assertEqual(
+            mute['reason'],
+            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
+        )
         self.assertEqual(len(self.queued('delete')), 1)
+        self.drain()
+        self.assertTrue(any(
+            item['message'] == (
+                'Test User, Спам запрещен! Сообщение удалено! '
+                'Доступ ограничен на 1 час!'
+            )
+            for item in self.queued('send')
+        ))
 
         self.vk.messages.delete.reset_mock()
         bot.handle_new_message(
             self.vk, self.conn,
-            self.message('да да да да', peer=config.MODERATION_CHAT_PEER_ID, mid=2),
+            self.message('одно и то же', peer=config.MODERATION_CHAT_PEER_ID, mid=5),
         )
         self.assertEqual(len(self.queued('mute')), 1)
+
+    def test_different_message_breaks_identical_message_streak(self):
+        for mid in (1, 2):
+            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
+        bot.handle_new_message(self.vk, self.conn, self.message('другое', mid=3))
+        for mid in (4, 5):
+            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_at_all_message_is_deleted_without_mute(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('всем привет @all'))
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(self.queued('mute'), [])
 
     def test_four_identical_consecutive_stickers_mute_and_queue_reason(self):
         for mid in range(1, 5):
@@ -117,12 +148,18 @@ class BotTests(unittest.TestCase):
                 attachments=[{'type': 'sticker', 'sticker': {'sticker_id': 77, 'product_id': 1}}],
             ))
         mute = self.queued('mute')[0]
-        self.assertEqual(mute['reason'], 'Спам запрещен!')
+        self.assertEqual(
+            mute['reason'],
+            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
+        )
         self.assertEqual(mute['until'] - self.now, 3600)
         self.assertEqual(len(self.queued('delete')), 1)
         self.drain()
         self.assertTrue(any(
-            item['message'] == 'Test User, Спам запрещен!'
+            item['message'] == (
+                'Test User, Спам запрещен! Сообщение удалено! '
+                'Доступ ограничен на 1 час!'
+            )
             for item in self.queued('send')
         ))
         self.assertEqual(

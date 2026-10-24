@@ -388,12 +388,12 @@ def _migration_10(conn):
         )
 
 
-def track_sticker_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
-                         sticker_key: str | None, now=None) -> int:
-    """Track consecutive identical sticker messages by a user in one chat."""
+def track_spam_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                      content_key: str | None, now=None) -> int:
+    """Track consecutive identical text or sticker messages by a user in one chat."""
     timestamp = int(time.time()) if now is None else int(now)
     with atomic(conn):
-        if not sticker_key:
+        if not content_key:
             conn.execute(
                 "DELETE FROM spam_sticker_streak WHERE peer_id = ? AND user_id = ?",
                 (int(peer_id), int(user_id)),
@@ -405,7 +405,7 @@ def track_sticker_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
             "WHERE peer_id = ? AND user_id = ?",
             (int(peer_id), int(user_id)),
         ).fetchone()
-        if row and row["sticker_key"] == sticker_key and timestamp - row["last_at"] <= 600:
+        if row and row["sticker_key"] == content_key and timestamp - row["last_at"] <= 600:
             streak = int(row["streak"]) + 1
         else:
             streak = 1
@@ -413,7 +413,7 @@ def track_sticker_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
             "INSERT INTO spam_sticker_streak(peer_id, user_id, sticker_key, streak, last_at) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(peer_id, user_id) DO UPDATE SET "
             "sticker_key = excluded.sticker_key, streak = excluded.streak, last_at = excluded.last_at",
-            (int(peer_id), int(user_id), str(sticker_key), streak, timestamp),
+            (int(peer_id), int(user_id), str(content_key), streak, timestamp),
         )
         return streak
 
