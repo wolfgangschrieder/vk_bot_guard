@@ -109,6 +109,18 @@ class StorageTests(unittest.TestCase):
             self.assertFalse(store.is_processed(77, "atomic-failure"))
             store.close()
 
+    def test_legacy_snapshot_gets_owner_on_deserialization(self):
+        import json
+        from poker.storage import serialize, deserialize
+        from poker.engine import Table
+        table = Table()
+        table.join(101)
+        table.join(202)
+        raw = json.loads(serialize(table))
+        raw.pop("owner_id")
+        restored = deserialize(json.dumps(raw))
+        self.assertEqual(restored.owner_id, 101)
+
 
 if __name__ == "__main__":
     unittest.main()
