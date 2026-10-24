@@ -85,6 +85,30 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.pending_private_cards(88, 1), [])
             store.close()
 
+    def test_atomic_deal_rolls_back_outbox_if_snapshot_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            table = Table()
+            for uid in (101, 202):
+                table.join(uid)
+                table.ready(uid)
+            table.start()
+            store.conn.execute(
+                "CREATE TRIGGER fail_poker_state BEFORE INSERT ON poker_state "
+                "BEGIN SELECT RAISE(ABORT, 'forced failure'); END"
+            )
+            store.conn.commit()
+            with self.assertRaises(Exception):
+                store.save_hand_with_private_cards(
+                    77, table, 0,
+                    {101: (9001, "card A"), 202: (9002, "card B")},
+                    "atomic-failure",
+                )
+            self.assertEqual(store.load(77), (0, None))
+            self.assertEqual(store.pending_private_cards(77, 1), [])
+            self.assertFalse(store.is_processed(77, "atomic-failure"))
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
