@@ -191,6 +191,21 @@ class TableTests(unittest.TestCase):
         table.start()
         self.assertEqual(table.hand_number, 2)
 
+    def test_owner_transfers_when_leaving_lobby(self):
+        table = Table()
+        table.join(101)
+        table.join(202)
+        table.join(303)
+        self.assertEqual(table.owner_id, 101)
+        table.leave(101)
+        self.assertEqual(table.owner_id, 202)
+        table.leave(202)
+        self.assertEqual(table.owner_id, 303)
+        table.leave(303)
+        self.assertEqual(table.owner_id, 0)
+        table.join(404)
+        self.assertEqual(table.owner_id, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
