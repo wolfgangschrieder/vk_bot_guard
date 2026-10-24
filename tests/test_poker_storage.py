@@ -40,6 +40,24 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.load(2), (0, None))
             store.close()
 
+    def test_private_outbox_survives_restart_and_retries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "poker.db"
+            store = PokerStore(path)
+            store.enqueue_private_cards(123, 7, {42: (12345, "secret hole cards")})
+            store.enqueue_private_cards(123, 7, {42: (12345, "secret hole cards")})
+            self.assertEqual(store.pending_private_cards(123, 7),
+                             [(42, 12345, "secret hole cards")])
+            with self.assertRaises(ValueError):
+                store.enqueue_private_cards(123, 7, {42: (67890, "different cards")})
+            store.close()
+            reopened = PokerStore(path)
+            self.assertEqual(reopened.pending_private_cards(123, 7),
+                             [(42, 12345, "secret hole cards")])
+            reopened.mark_private_delivered(123, 7, 42)
+            self.assertEqual(reopened.pending_private_cards(123, 7), [])
+            reopened.close()
+
 
 if __name__ == "__main__":
     unittest.main()
