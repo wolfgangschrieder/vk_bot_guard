@@ -1008,7 +1008,7 @@ def poker_turn_watchdog(vk):
         try:
             with POKER_LOCK:
                 response = POKER_COMMANDS.process_expired_turn()
-                    if response:
+                if response:
                     send_bot_message(
                         vk, response, peer_id=config.POKER_CHAT_PEER_ID
                     )
