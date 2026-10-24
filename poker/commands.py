@@ -1,8 +1,4 @@
-"""VK-neutral command dispatcher for ASTRA Poker Room.
-
-This is intentionally NOT wired into bot.py yet. The integration layer must
-supply a verified private-message delivery implementation before dealing.
-"""
+"""VK-neutral command dispatcher for ASTRA Poker Room."""
 from secrets import randbelow
 from time import time
 from .engine import Table
@@ -197,10 +193,15 @@ class PokerCommands:
                     for p in table.seated()
                 }
                 saved = self.store.save_hand_with_private_cards(
-                    self.room_id, table, revision, messages, event_id=event_id
+                    self.room_id, table, revision, messages, event_id=event_id,
+                    public_message=(
+                        f"♠ Раздача #{table.hand_number} началась. "
+                        "Закрытые карты отправляются в личные сообщения."
+                    ),
                 )
                 if saved is None:
                     return None
+                self.last_public_queued = True
                 return self._deliver_and_report(table)
             elif cmd == "next":
                 if user_id not in table.players:
