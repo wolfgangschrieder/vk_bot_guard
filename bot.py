@@ -1053,7 +1053,7 @@ def run_forever() -> None:
     if config.POKER_CHAT_PEER_ID:
         poker_store = PokerStore(config.BASE_DIR / "poker.db")
         POKER_COMMANDS = PokerCommands(poker_store, config.POKER_CHAT_PEER_ID)
-        log.info("Poker lobby enabled for peer_id=%s; dealing disabled", config.POKER_CHAT_PEER_ID)
+        log.info("Poker room enabled for peer_id=%s; private delivery configured after VK login", config.POKER_CHAT_PEER_ID)
     ACTIVE_CONN = conn
 
     log.info("База готова: %s", config.DB_PATH)
@@ -1082,11 +1082,7 @@ def run_forever() -> None:
                     config.POKER_CHAT_PEER_ID, poker_table.hand_number
                 )
                 if total == len(poker_table.players) and delivered < total:
-                    POKER_COMMANDS.private_delivery.deliver_pending(
-                        POKER_COMMANDS.store,
-                        config.POKER_CHAT_PEER_ID,
-                        poker_table.hand_number,
-                    )
+                    POKER_COMMANDS._deliver_and_report(poker_table)
                     log.info(
                         "Poker recovery: delivered %s/%s private cards",
                         total, total,
