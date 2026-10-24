@@ -83,6 +83,30 @@ class PokerCommands:
             return "⏳ Ожидаем доставки карт."
         return format_table(table)
 
+    def process_expired_turn(self, now=None):
+        """Apply and persist at most one expired action for this room.
+
+        Invoke from a serialized scheduler; returns a chat-safe update or None.
+        """
+        revision, table = self.store.load(self.room_id)
+        if table is None or table.stage not in ("preflop", "flop", "turn", "river"):
+            return None
+        total, delivered = self.store.private_delivery_status(
+            self.room_id, table.hand_number
+        )
+        if total != len(table.players) or delivered != total:
+            return None
+        result = table.expire_turn(now)
+        if result is None:
+            return None
+        self.store.save(self.room_id, table, revision)
+        user_id, action = result
+        return (
+            f"⏱ [id{user_id}|Игрок] не сделал ход за "
+            f"{table.turn_timeout_seconds} секунд: {action.upper()}.\\n"
+            + format_table(table)
+        )
+
     def handle(self, user_id, text, event_id):
         """Return a chat reply, or None for a non-poker message.
 
