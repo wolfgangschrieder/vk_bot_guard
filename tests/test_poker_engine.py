@@ -250,6 +250,24 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.turn, 1)
         table.act(1, "call")
 
+    def test_nine_players_check_down_to_showdown(self):
+        table = self.make_table(9)
+        self.assertEqual(table.turn, 4)
+        starting_chips = sum(p.stack + p.committed for p in table.players.values())
+        for _ in range(9):
+            current = table.turn
+            owed = table.current_bet - table.players[current].street_bet
+            table.act(current, "call" if owed else "check")
+        self.assertEqual(table.stage, "flop")
+        for street in ("turn", "river", "complete"):
+            for _ in range(9):
+                table.act(table.turn, "check")
+            self.assertEqual(table.stage, street)
+        self.assertEqual(len(table.board), 5)
+        self.assertEqual(sum(p.stack for p in table.players.values()), starting_chips)
+        self.assertEqual(sum(table.payouts.values()), 150)
+        self.assertEqual(len(set(table.board)), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
