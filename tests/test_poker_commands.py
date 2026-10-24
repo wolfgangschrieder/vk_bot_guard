@@ -113,6 +113,18 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(store.private_delivery_status(2000000999, 3), (2, 2))
             store.close()
 
+    def test_unseated_user_cannot_reset_or_start_game(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999)
+            bot.handle(101, "/join", "join101")
+            bot.handle(202, "/join", "join202")
+            for command in ("/start", "/next", "/newsession"):
+                self.assertIn("Only seated players",
+                              bot.handle(999, command, "other" + command))
+            self.assertEqual(store.load(2000000999)[1].stage, "waiting")
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
