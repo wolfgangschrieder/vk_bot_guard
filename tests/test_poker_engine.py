@@ -103,7 +103,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.stage, "preflop")
         self.assertEqual(table.turn, 1)
         self.assertEqual(table.players[2].street_bet, 40)
-        table.act(1, "call")
+        table.act(1, "check")
         self.assertEqual(table.stage, "complete")
         self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
 
