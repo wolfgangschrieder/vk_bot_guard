@@ -161,6 +161,8 @@ class PokerCommands:
             elif cmd in ("ready", "unready"):
                 table.ready(user_id, cmd == "ready")
             elif cmd == "start":
+                if user_id not in table.players:
+                    raise ValueError("Only seated players may start a hand")
                 if self.private_delivery is None:
                     return "Раздача пока отключена: личная доставка карт не настроена."
                 for player in table.seated():
@@ -185,8 +187,12 @@ class PokerCommands:
                     return None
                 return self._deliver_and_report(table)
             elif cmd == "next":
+                if user_id not in table.players:
+                    raise ValueError("Only seated players may advance the game")
                 table.reset()
             elif cmd == "newsession":
+                if user_id not in table.players:
+                    raise ValueError("Only seated players may reset the session")
                 table.new_session()
             elif cmd in ("fold", "check", "call", "raise", "allin"):
                 if self.private_delivery is None:
