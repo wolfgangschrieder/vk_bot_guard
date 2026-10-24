@@ -58,6 +58,33 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(reopened.pending_private_cards(123, 7), [])
             reopened.close()
 
+    def test_dealt_hand_and_outbox_are_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            table = Table()
+            for uid in (101, 202):
+                table.join(uid)
+                table.ready(uid)
+            table.start()
+            messages = {uid: (uid + 1000, "private cards")
+                        for uid in table.players}
+            self.assertEqual(
+                store.save_hand_with_private_cards(77, table, 0, messages, "deal-1"),
+                1,
+            )
+            self.assertEqual(len(store.pending_private_cards(77, 1)), 2)
+            self.assertIsNone(
+                store.save_hand_with_private_cards(77, table, 1, messages, "deal-1")
+            )
+            self.assertEqual(store.load(77)[0], 1)
+            with self.assertRaises(ValueError):
+                store.save_hand_with_private_cards(
+                    88, table, 0, {101: (1101, "missing player")}, "deal-2"
+                )
+            self.assertEqual(store.load(88), (0, None))
+            self.assertEqual(store.pending_private_cards(88, 1), [])
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
