@@ -906,7 +906,10 @@ def handle_new_message(vk, conn, message) -> None:
         with POKER_LOCK:
             response = POKER_COMMANDS.handle(from_id, text, str(event_id))
             if response:
-                poker_queue_public(vk, response)
+                if POKER_COMMANDS.last_public_queued:
+                    poker_flush_public(vk)
+                else:
+                    poker_queue_public(vk, response)
         return
 
     if not is_target_chat(peer_id):
@@ -1036,7 +1039,7 @@ def poker_turn_watchdog(vk):
         try:
             with POKER_LOCK:
                 response = POKER_COMMANDS.process_expired_turn()
-                if response:
+                if response and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, response)
                 else:
                     poker_flush_public(vk)
