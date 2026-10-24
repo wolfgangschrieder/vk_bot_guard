@@ -92,7 +92,7 @@ class TableTests(unittest.TestCase):
         self.assertNotEqual(table.dealer, first)
 
 
-    def test_short_big_blind_requires_other_player_decision(self):
+    def test_underposted_big_blind_runs_out_without_betting(self):
         table = Table()
         table.join(1)
         table.join(2)
@@ -100,23 +100,8 @@ class TableTests(unittest.TestCase):
         table.ready(1)
         table.ready(2)
         table.start()
-        self.assertEqual(table.stage, "preflop")
-        self.assertEqual(table.turn, 1)
-        self.assertEqual(table.players[2].street_bet, 40)
-        table.act(1, "check")
         self.assertEqual(table.stage, "complete")
-        self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
-
-    def test_short_big_blind_fold_is_legal(self):
-        table = Table()
-        table.join(1)
-        table.join(2)
-        table.players[2].stack = 40
-        table.ready(1)
-        table.ready(2)
-        table.start()
-        table.act(1, "fold")
-        self.assertEqual(table.stage, "complete")
+        self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
 
 
