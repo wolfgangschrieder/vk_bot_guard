@@ -161,6 +161,15 @@ class PokerStore:
                     (room_id, hand_number, user_id, random_id, message),
                 )
 
+    def private_delivery_status(self, room_id, hand_number):
+        """Return (total, delivered) for a hand's durable card jobs."""
+        row = self.conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(delivered), 0) "
+            "FROM poker_private_outbox WHERE room_id=? AND hand_number=?",
+            (room_id, hand_number),
+        ).fetchone()
+        return (int(row[0]), int(row[1]))
+
     def pending_private_cards(self, room_id, hand_number):
         return self.conn.execute(
             "SELECT user_id,random_id,message FROM poker_private_outbox "
