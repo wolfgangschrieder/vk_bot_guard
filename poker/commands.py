@@ -4,6 +4,7 @@ This is intentionally NOT wired into bot.py yet. The integration layer must
 supply a verified private-message delivery implementation before dealing.
 """
 from secrets import randbelow
+from time import time
 from .engine import Table
 from .private_cards import format_hole_cards
 
@@ -73,6 +74,9 @@ class PokerCommands:
         self.private_delivery = private_delivery
 
     def _deliver_and_report(self, table):
+        before_total, before_delivered = self.store.private_delivery_status(
+            self.room_id, table.hand_number
+        )
         try:
             self.private_delivery.deliver_pending(
                 self.store, self.room_id, table.hand_number
@@ -84,6 +88,12 @@ class PokerCommands:
         )
         if total != len(table.players) or delivered != total:
             return "⏳ Ожидаем доставки карт."
+        if before_delivered < total and table.turn:
+            revision, persisted = self.store.load(self.room_id)
+            if persisted is not None and persisted.hand_number == table.hand_number:
+                persisted.turn_started_at = time()
+                self.store.save(self.room_id, persisted, revision)
+                table.turn_started_at = persisted.turn_started_at
         return format_table(table)
 
     def process_expired_turn(self, now=None):
