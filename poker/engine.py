@@ -254,7 +254,7 @@ class Table:
         self.deck = []
         self.board = []
         self.payouts = {}
-        self.hand_number = 0
+        # Keep hand numbers monotonic: private-card outbox keys must never repeat.
         self.dealer = 0
         self.last_dealer = 0
 
