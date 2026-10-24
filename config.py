@@ -58,6 +58,17 @@ if BLOCKLIST_CHAT_PEER_ID and BLOCKLIST_CHAT_PEER_ID < 2_000_000_000:
         "BLOCKLIST_CHAT_PEER_ID должен быть peer_id VK-беседы или 0 для отключения."
     )
 
+# Poker lobby is opt-in. Zero keeps it disabled.
+try:
+    POKER_CHAT_PEER_ID = int(os.getenv("POKER_CHAT_PEER_ID", "0").strip() or "0")
+except ValueError as exc:
+    raise SystemExit("POKER_CHAT_PEER_ID должен быть целым числом.") from exc
+if POKER_CHAT_PEER_ID and (
+    POKER_CHAT_PEER_ID < 2_000_000_000
+    or POKER_CHAT_PEER_ID in {CHAT_PEER_ID, MODERATION_CHAT_PEER_ID}
+):
+    raise SystemExit("POKER_CHAT_PEER_ID должен быть отдельной VK-беседой или 0.")
+
 ADMIN_IDS = {
     int(part.strip())
     for part in os.getenv("ADMIN_IDS", "").split(",")
