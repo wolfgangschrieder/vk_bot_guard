@@ -40,6 +40,42 @@ class EvaluatorTests(unittest.TestCase):
         payouts = settle_pots(amounts, hands, board, [1, 2, 3])
         self.assertEqual(sum(payouts.values()), sum(amounts.values()))
 
+    def test_nine_player_side_pots_and_folded_dead_money(self):
+        board = ["2c", "4d", "6h", "8s", "Tc"]
+        hands = {
+            1: ["As", "Ad"], 2: ["Ks", "Kd"], 3: ["Qs", "Qd"],
+            4: ["Js", "Jd"], 5: ["9s", "9d"], 6: ["7s", "7d"],
+            7: ["5s", "5d"], 8: ["3s", "3d"],
+        }
+        contributions = {
+            1: 100, 2: 200, 3: 300, 4: 400, 5: 500,
+            6: 600, 7: 700, 8: 800, 9: 800,
+        }
+        payouts = settle_pots(contributions, hands, board, list(range(1, 10)))
+        self.assertEqual(sum(payouts.values()), 4400)
+        self.assertEqual(payouts[1], 900)
+        self.assertEqual(payouts[2], 800)
+        self.assertEqual(payouts[3], 700)
+        self.assertEqual(payouts[4], 600)
+        self.assertEqual(payouts[5], 500)
+        self.assertEqual(payouts[6], 400)
+        self.assertEqual(payouts[7], 300)
+        self.assertEqual(payouts[8], 200)
+        self.assertEqual(payouts[9], 0)
+
+    def test_odd_chip_goes_to_first_winner_clockwise(self):
+        board = ["Ah", "Kh", "Qh", "Jh", "Th"]
+        hands = {1: ["2c", "3d"], 2: ["4c", "5d"], 3: ["6c", "7d"]}
+        payouts = settle_pots(
+            {1: 101, 2: 101, 3: 101}, hands, board, [3, 1, 2]
+        )
+        self.assertEqual(payouts, {1: 101, 2: 101, 3: 101})
+        payouts = settle_pots(
+            {1: 101, 2: 101, 3: 101, 4: 100},
+            hands, board, [3, 1, 2, 4]
+        )
+        self.assertEqual(payouts, {1: 134, 2: 134, 3: 135, 4: 0})
+
 
 if __name__ == "__main__":
     unittest.main()
