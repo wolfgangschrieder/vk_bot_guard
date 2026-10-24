@@ -1,0 +1,29 @@
+name: Poker engine tests
+on:
+  push:
+    branches:
+      - feature/astra-poker-room
+    paths:
+      - 'poker/**'
+      - 'tests/test_poker*.py'
+      - '.github/workflows/poker-tests.yml'
+  pull_request:
+    paths:
+      - 'poker/**'
+      - 'tests/test_poker*.py'
+      - '.github/workflows/poker-tests.yml'
+permissions:
+  contents: read
+jobs:
+  poker-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Poker unit tests
+        run: python -m unittest discover -s tests -p 'test_poker*.py' -v
