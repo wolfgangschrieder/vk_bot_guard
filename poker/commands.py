@@ -110,6 +110,8 @@ class PokerCommands:
                 )
                 if total == len(table.players) and delivered < total:
                     return self._deliver_and_report(table)
+                if total != len(table.players):
+                    return "⚠️ Неполная очередь карт. Игра приостановлена."
             return format_table(table)
         try:
             if cmd == "join":
