@@ -120,9 +120,24 @@ class CommandTests(unittest.TestCase):
             bot.handle(101, "/join", "join101")
             bot.handle(202, "/join", "join202")
             for command in ("/start", "/next", "/newsession"):
-                self.assertIn("Only seated players",
+                self.assertIn("Only",
                               bot.handle(999, command, "other" + command))
             self.assertEqual(store.load(2000000999)[1].stage, "waiting")
+            store.close()
+
+    def test_only_owner_can_reset_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999)
+            bot.handle(101, "/join", "j1")
+            bot.handle(202, "/join", "j2")
+            self.assertEqual(store.load(2000000999)[1].owner_id, 101)
+            self.assertIn("Only the table owner",
+                          bot.handle(202, "/newsession", "denied"))
+            self.assertIn("WAITING", bot.handle(101, "/newsession", "allowed"))
+            bot.handle(101, "/leave", "left")
+            self.assertEqual(store.load(2000000999)[1].owner_id, 202)
+            self.assertIn("WAITING", bot.handle(202, "/newsession", "new-owner"))
             store.close()
 
 
