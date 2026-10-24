@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 10
 
 
 class Connection(sqlite3.Connection):
@@ -147,6 +147,34 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
                 (5, int(time.time())),
             )
 
+        if current < 6:
+            _migration_6(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (6, int(time.time())))
+
+        if current < 7:
+            _migration_7(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (7, int(time.time())))
+            current = 7
+
+        if current < 8:
+            _migration_8(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (8, int(time.time())))
+            current = 8
+
+        if current < 9:
+            _migration_9(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (9, int(time.time())))
+            current = 9
+
+        if current < 10:
+            _migration_10(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (10, int(time.time())))
+
         conn.commit()
 
 
@@ -267,6 +295,159 @@ def _migration_5(conn):
         mutes INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY(stat_date, peer_id, user_id)
     )""")
+
+
+def _migration_6(conn):
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(outbox)')}
+    if 'status' not in columns:
+        conn.execute("ALTER TABLE outbox ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+    conn.execute("UPDATE outbox SET status = 'done' WHERE done_at > 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS outbox_status_due ON outbox(status, next_attempt, id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS cleanup_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, peer_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL DEFAULT 0, cmid INTEGER NOT NULL DEFAULT 0,
+        delete_at INTEGER NOT NULL,
+        UNIQUE(peer_id, message_id, cmid)
+    )""")
+
+
+def _migration_7(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_blacklist (
+        user_id INTEGER PRIMARY KEY,
+        added_by INTEGER NOT NULL,
+        added_at INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_blacklist_added_at ON chat_blacklist(added_at)")
+
+
+def _migration_8(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS spam_sticker_streak (
+        peer_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        sticker_key TEXT NOT NULL,
+        streak INTEGER NOT NULL DEFAULT 1,
+        last_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_id, user_id)
+    )""")
+
+
+def _migration_9(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_stat_records (
+        metric TEXT PRIMARY KEY,
+        record_value REAL NOT NULL,
+        stat_date TEXT NOT NULL
+    )""")
+
+    active = conn.execute(
+        "SELECT stat_date, COUNT(*) AS value FROM daily_user_stats "
+        "WHERE messages > 0 GROUP BY stat_date ORDER BY stat_date"
+    ).fetchall()
+    if active:
+        best_active = max(active, key=lambda row: int(row["value"]))
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("active_users", int(best_active["value"]), best_active["stat_date"]),
+        )
+
+    daily_rows = conn.execute(
+        "SELECT stat_date, messages FROM daily_stats ORDER BY stat_date"
+    ).fetchall()
+    messages_by_date = {row["stat_date"]: int(row["messages"] or 0) for row in daily_rows}
+    best_activity = None
+    for row in daily_rows:
+        current_date = date.fromisoformat(row["stat_date"])
+        previous_messages = sum(
+            messages_by_date.get((current_date - timedelta(days=offset)).isoformat(), 0)
+            for offset in range(1, 8)
+        )
+        if previous_messages <= 0:
+            continue
+        activity = round(int(row["messages"] or 0) * 700 / previous_messages)
+        if best_activity is None or activity > best_activity["value"]:
+            best_activity = {"value": activity, "stat_date": row["stat_date"]}
+    if best_activity is not None:
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("activity_percent", best_activity["value"], best_activity["stat_date"]),
+        )
+
+
+def _migration_10(conn):
+    """Replace the relative activity record with the all-time daily message high."""
+    best_messages = conn.execute(
+        "SELECT stat_date, messages FROM daily_stats WHERE messages > 0 "
+        "ORDER BY messages DESC, stat_date ASC LIMIT 1"
+    ).fetchone()
+    conn.execute("DELETE FROM chat_stat_records WHERE metric = 'activity_percent'")
+    if best_messages:
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?) "
+            "ON CONFLICT(metric) DO UPDATE SET record_value = excluded.record_value, "
+            "stat_date = excluded.stat_date",
+            ("daily_messages", int(best_messages["messages"]), best_messages["stat_date"]),
+        )
+
+
+def track_spam_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                      content_key: str | None, now=None) -> int:
+    """Track consecutive identical text or sticker messages by a user in one chat."""
+    timestamp = int(time.time()) if now is None else int(now)
+    with atomic(conn):
+        if not content_key:
+            conn.execute(
+                "DELETE FROM spam_sticker_streak WHERE peer_id = ? AND user_id = ?",
+                (int(peer_id), int(user_id)),
+            )
+            return 0
+
+        row = conn.execute(
+            "SELECT sticker_key, streak, last_at FROM spam_sticker_streak "
+            "WHERE peer_id = ? AND user_id = ?",
+            (int(peer_id), int(user_id)),
+        ).fetchone()
+        if row and row["sticker_key"] == content_key and timestamp - row["last_at"] <= 600:
+            streak = int(row["streak"]) + 1
+        else:
+            streak = 1
+        conn.execute(
+            "INSERT INTO spam_sticker_streak(peer_id, user_id, sticker_key, streak, last_at) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(peer_id, user_id) DO UPDATE SET "
+            "sticker_key = excluded.sticker_key, streak = excluded.streak, last_at = excluded.last_at",
+            (int(peer_id), int(user_id), str(content_key), streak, timestamp),
+        )
+        return streak
+
+
+def add_chat_blacklist(conn: sqlite3.Connection, user_id: int, added_by: int, now=None) -> bool:
+    timestamp = int(time.time()) if now is None else int(now)
+    with atomic(conn):
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO chat_blacklist(user_id, added_by, added_at) VALUES (?, ?, ?)",
+            (int(user_id), int(added_by), timestamp),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def remove_chat_blacklist(conn: sqlite3.Connection, user_id: int) -> bool:
+    with atomic(conn):
+        cursor = conn.execute("DELETE FROM chat_blacklist WHERE user_id = ?", (int(user_id),))
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def is_chat_blacklisted(conn: sqlite3.Connection, user_id: int) -> bool:
+    with _lock:
+        return conn.execute(
+            "SELECT 1 FROM chat_blacklist WHERE user_id = ?", (int(user_id),)
+        ).fetchone() is not None
+
+
+def get_chat_blacklist(conn: sqlite3.Connection) -> list[int]:
+    with _lock:
+        return [int(row["user_id"]) for row in conn.execute(
+            "SELECT user_id FROM chat_blacklist ORDER BY added_at, user_id"
+        )]
 
 
 def _get_or_create(
@@ -528,6 +709,7 @@ def get_daily_stats(
     stat_date: date,
 ) -> dict:
     key = stat_date.isoformat()
+    history_start = (stat_date - timedelta(days=7)).isoformat()
     with _lock:
         total = conn.execute(
             "SELECT messages, mutes, photos, videos, music, voices FROM daily_stats WHERE stat_date = ?",
@@ -543,10 +725,27 @@ def get_daily_stats(
             """,
             (key,),
         ).fetchall()
+        active_users = conn.execute(
+            "SELECT COUNT(*) FROM daily_user_stats "
+            "WHERE stat_date = ? AND messages > 0",
+            (key,),
+        ).fetchone()[0]
+        history_messages = conn.execute(
+            "SELECT COALESCE(SUM(messages), 0) FROM daily_stats "
+            "WHERE stat_date >= ? AND stat_date < ?",
+            (history_start, key),
+        ).fetchone()[0]
+
+    messages = int(total["messages"]) if total else 0
+    average_messages = int(history_messages or 0) / 7
+    activity_percent = round(messages / average_messages * 100) if average_messages else None
 
     return {
         "date": key,
-        "messages": int(total["messages"]) if total else 0,
+        "messages": messages,
+        "active_users": int(active_users or 0),
+        "activity_percent": activity_percent,
+        "activity_average_messages": average_messages,
         "mutes": int(total["mutes"]) if total else 0,
         "photos": int(total["photos"]) if total else 0,
         "videos": int(total["videos"]) if total else 0,
@@ -556,6 +755,63 @@ def get_daily_stats(
             (int(row["user_id"]), int(row["messages"])) for row in top
         ],
     }
+
+
+def record_daily_chat_stats(conn: sqlite3.Connection, stat_date: date) -> dict[str, int]:
+    """Persist new all-time highs for active users and daily message count."""
+    stats = get_daily_stats(conn, stat_date)
+    candidates = {
+        "active_users": stats["active_users"],
+        "daily_messages": stats["messages"],
+    }
+    new_records = {}
+    with atomic(conn):
+        for metric, value in candidates.items():
+            if value is None or value <= 0:
+                continue
+            row = conn.execute(
+                "SELECT record_value FROM chat_stat_records WHERE metric = ?",
+                (metric,),
+            ).fetchone()
+            if row is None or value > row["record_value"]:
+                conn.execute(
+                    "INSERT INTO chat_stat_records(metric, record_value, stat_date) "
+                    "VALUES (?, ?, ?) ON CONFLICT(metric) DO UPDATE SET "
+                    "record_value = excluded.record_value, stat_date = excluded.stat_date",
+                    (metric, value, stat_date.isoformat()),
+                )
+                new_records[metric] = int(value)
+    return new_records
+
+
+def get_chat_stat_records(conn: sqlite3.Connection) -> dict[str, dict]:
+    with _lock:
+        rows = conn.execute(
+            "SELECT metric, record_value, stat_date FROM chat_stat_records"
+        ).fetchall()
+    return {
+        row["metric"]: {
+            "value": int(row["record_value"]),
+            "stat_date": row["stat_date"],
+        }
+        for row in rows
+    }
+
+
+def get_hero_message_record(conn: sqlite3.Connection, candidate=None):
+    """Return the all-time daily message record, including an uncommitted candidate."""
+    with _lock:
+        row = conn.execute(
+            "SELECT stat_date, user_id, messages FROM king_history "
+            "ORDER BY messages DESC, stat_date ASC, user_id ASC LIMIT 1"
+        ).fetchone()
+    record = (
+        (row["stat_date"], int(row["user_id"]), int(row["messages"]))
+        if row else None
+    )
+    if candidate and (record is None or candidate[2] > record[2]):
+        record = candidate
+    return record
 
 
 def get_weekly_stats(
@@ -756,6 +1012,44 @@ def get_command_cooldown(
     return int(row["last_used_at"]) if row else 0
 
 
+def claim_daily_command_slot(
+    conn: sqlite3.Connection,
+    user_id: int,
+    command: str,
+    slot_count: int,
+    day_start: int,
+    day_end: int,
+    now: int,
+) -> int:
+    """Claim one of a bounded number of daily slots without adding a schema table."""
+    if slot_count < 1 or day_start >= day_end:
+        return 0
+    with atomic(conn):
+        for slot in range(1, slot_count + 1):
+            row = conn.execute(
+                "SELECT last_used_at FROM command_cooldowns "
+                "WHERE user_id = ? AND command = ? AND target_user_id = ?",
+                (user_id, command, slot),
+            ).fetchone()
+            if row and day_start <= int(row["last_used_at"]) < day_end:
+                continue
+            if row:
+                conn.execute(
+                    "UPDATE command_cooldowns SET last_used_at = ? "
+                    "WHERE user_id = ? AND command = ? AND target_user_id = ?",
+                    (now, user_id, command, slot),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO command_cooldowns(user_id, command, target_user_id, last_used_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (user_id, command, slot, now),
+                )
+            conn.commit()
+            return slot
+    return 0
+
+
 def set_command_cooldown(
     conn: sqlite3.Connection,
     user_id: int,
@@ -870,14 +1164,14 @@ def due_operations(conn, now=None):
     now = int(time.time()) if now is None else now
     with _lock:
         return conn.execute(
-            'SELECT * FROM outbox WHERE done_at = 0 AND next_attempt <= ? ORDER BY id LIMIT 100',
+            "SELECT * FROM outbox WHERE status = 'pending' AND next_attempt <= ? ORDER BY id LIMIT 100",
             (now,),
         ).fetchall()
 
 
 def finish_operation(conn, operation_id, now=None):
     with _lock:
-        conn.execute('UPDATE outbox SET done_at = ? WHERE id = ?',
+        conn.execute("UPDATE outbox SET done_at = ?, status = 'done' WHERE id = ?",
                      (int(time.time()) if now is None else now, operation_id))
         conn.commit()
 
@@ -892,13 +1186,31 @@ def retry_operation(conn, operation_id, error, now=None):
         conn.commit()
 
 
+def stop_operation(conn, operation_id, error, status='failed', *, attempted=False):
+    if status not in {'failed', 'cancelled'}:
+        raise ValueError(status)
+    with _lock:
+        conn.execute('UPDATE outbox SET status = ?, last_error = ?, attempts = attempts + ? WHERE id = ?',
+                     (status, str(error)[:500], int(attempted), operation_id))
+        conn.commit()
+
+
+def queue_cleanup(conn, peer_id, message_id, cmid, delete_at):
+    if message_id <= 0 and cmid <= 0:
+        raise ValueError('A message identifier is required for cleanup')
+    with _lock:
+        conn.execute('INSERT OR IGNORE INTO cleanup_tasks(peer_id, message_id, cmid, delete_at) '
+                     'VALUES (?, ?, ?, ?)', (peer_id, message_id, cmid, delete_at))
+        conn.commit()
+
+
 def mute_deadline(conn, peer_id, user_id):
     with _lock:
         row = conn.execute('SELECT mute_until FROM users WHERE peer_id = ? AND user_id = ?',
                            (peer_id, user_id)).fetchone()
         deadline = int(row['mute_until']) if row else 0
         # Include queued restrictions, without treating them as confirmed VK mutes.
-        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND done_at = 0"):
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row['payload'])
             if payload['peer_id'] == peer_id and payload['user_id'] == user_id:
                 deadline = max(deadline, payload['until'])

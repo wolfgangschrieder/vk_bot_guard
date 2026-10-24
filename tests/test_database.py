@@ -1,9 +1,10 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+import config
 import database as db
 
 
@@ -81,6 +82,111 @@ class DatabaseTests(unittest.TestCase):
             {"photos": 2, "videos": 3, "music": 4, "voices": 5},
         )
 
+    def test_daily_active_users_and_activity_vs_previous_seven_days(self):
+        stat_date = date(2026, 10, 9)
+        for days_ago in range(1, 8):
+            timestamp = int(datetime.combine(
+                stat_date - timedelta(days=days_ago), time(12), config.CHAT_TZ
+            ).timestamp())
+            for index in range(10):
+                db.record_message(self.conn, 10 + index % 2, timestamp)
+
+        today = int(datetime.combine(stat_date, time(12), config.CHAT_TZ).timestamp())
+        for _ in range(13):
+            db.record_message(self.conn, 10, today)
+        for _ in range(2):
+            db.record_message(self.conn, 20, today)
+        db.record_mute(self.conn, 30, today)
+
+        stats = db.get_daily_stats(self.conn, stat_date)
+
+        self.assertEqual(stats["active_users"], 2)
+        self.assertEqual(stats["activity_average_messages"], 10)
+        self.assertEqual(stats["activity_percent"], 150)
+
+    def test_activity_percent_is_unavailable_without_historical_messages(self):
+        stat_date = date(2026, 10, 9)
+        timestamp = int(datetime.combine(stat_date, time(12), config.CHAT_TZ).timestamp())
+        db.record_message(self.conn, 10, timestamp)
+
+        stats = db.get_daily_stats(self.conn, stat_date)
+
+        self.assertEqual(stats["active_users"], 1)
+        self.assertIsNone(stats["activity_percent"])
+
+    def test_daily_chat_records_are_saved_only_when_beaten(self):
+        first_day = date(2026, 10, 1)
+        first_timestamp = int(datetime.combine(first_day, time(12), config.CHAT_TZ).timestamp())
+        db.record_message(self.conn, 10, first_timestamp)
+        db.record_message(self.conn, 20, first_timestamp)
+        self.assertEqual(
+            db.record_daily_chat_stats(self.conn, first_day),
+            {"active_users": 2, "daily_messages": 2},
+        )
+
+        second_day = first_day + timedelta(days=1)
+        second_timestamp = int(datetime.combine(second_day, time(12), config.CHAT_TZ).timestamp())
+        for user_id in (10, 20, 30):
+            for _ in range(14 // 3 + (user_id == 10)):
+                db.record_message(self.conn, user_id, second_timestamp)
+        records = db.record_daily_chat_stats(self.conn, second_day)
+
+        self.assertEqual(records["active_users"], 3)
+        self.assertEqual(records["daily_messages"], 13)
+        self.assertEqual(db.record_daily_chat_stats(self.conn, second_day), {})
+
+    def test_record_migration_backfills_existing_daily_history(self):
+        first_day = date(2026, 10, 1)
+        for day, user_messages in (
+            (first_day, ((10, 4), (20, 4))),
+            (first_day + timedelta(days=1), ((10, 8), (20, 4), (30, 4))),
+        ):
+            timestamp = int(datetime.combine(day, time(12), config.CHAT_TZ).timestamp())
+            for user_id, message_count in user_messages:
+                for _ in range(message_count):
+                    db.record_message(self.conn, user_id, timestamp)
+
+        self.conn.execute("DROP TABLE chat_stat_records")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version >= 9")
+        self.conn.commit()
+        migrated = db.connect(str(Path(self.tmp.name) / "test.db"))
+        rows = {
+            row["metric"]: (row["record_value"], row["stat_date"])
+            for row in migrated.execute("SELECT * FROM chat_stat_records")
+        }
+
+        self.assertEqual(rows["active_users"], (3.0, "2026-10-02"))
+        self.assertEqual(rows["daily_messages"], (16.0, "2026-10-02"))
+        self.assertNotIn("activity_percent", rows)
+        migrated.close()
+
+    def test_migration_10_replaces_relative_record_with_daily_message_record(self):
+        first_day = date(2026, 10, 1)
+        for day, count in ((first_day, 8), (first_day + timedelta(days=1), 16),
+                           (first_day + timedelta(days=2), 12)):
+            timestamp = int(datetime.combine(day, time(12), config.CHAT_TZ).timestamp())
+            for index in range(count):
+                db.record_message(self.conn, 100 + index % 3, timestamp)
+
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("activity_percent", 9999, first_day.isoformat()),
+        )
+        self.conn.execute("DELETE FROM schema_migrations WHERE version = 10")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, 0)"
+        )
+        self.conn.commit()
+
+        migrated = db.connect(str(Path(self.tmp.name) / "test.db"))
+        records = {
+            row["metric"]: (row["record_value"], row["stat_date"])
+            for row in migrated.execute("SELECT * FROM chat_stat_records")
+        }
+        self.assertEqual(records["daily_messages"], (16.0, "2026-10-02"))
+        self.assertNotIn("activity_percent", records)
+        migrated.close()
+
     def test_daily_user_stats(self):
         timestamp = 1_760_000_000
         db.record_message(self.conn, 10, timestamp)
@@ -143,6 +249,15 @@ class DatabaseTests(unittest.TestCase):
     def test_scheduler_event_is_idempotent(self):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
+
+    def test_chat_blacklist_add_remove_and_idempotency(self):
+        self.assertTrue(db.add_chat_blacklist(self.conn, 42, 99, now=1000))
+        self.assertFalse(db.add_chat_blacklist(self.conn, 42, 77, now=1001))
+        self.assertTrue(db.is_chat_blacklisted(self.conn, 42))
+        self.assertEqual(db.get_chat_blacklist(self.conn), [42])
+        self.assertTrue(db.remove_chat_blacklist(self.conn, 42))
+        self.assertFalse(db.remove_chat_blacklist(self.conn, 42))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 42))
 
     def test_legacy_database_survives_migration(self):
         self.conn.close()

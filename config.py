@@ -74,11 +74,14 @@ RATE_LIMIT_SECONDS = 60 * 60
 MUTE_SECONDS = 60 * 60
 PROFILE_COOLDOWN_SECONDS = 3 * 24 * 60 * 60
 BOT_REASON_DELETE_SECONDS = 10 * 60
+SOCIAL_MUTE_NOTICE_DELETE_SECONDS = 5 * 60
 ALL_COMMAND_DELETE_SECONDS = 60
 MODERATION_REASON_DELETE_SECONDS = 60
 SCHEDULER_INTERVAL_SECONDS = 20
 HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 SCHEDULER_CATCHUP_DAYS = 7
+DELIVERY_MAX_ATTEMPTS = 12
+SEND_MAX_AGE_SECONDS = 6 * 60 * 60
 
 API_VERSION = "5.199"
 RECONNECT_DELAY = 5
@@ -137,10 +140,6 @@ STICKER_MUTE_REASON = (
     "🚫 Стикеры в этом чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
 )
 
-ALL_COMMAND_MUTE_REASON = (
-    "@all -Здесь такие команды запрещены"
-)
-
 PORN_SALE_MUTE_REASON = (
     "🔞 Продажа порно запрещена. Сообщение удалено, доступ ограничен на 1 час."
 )
@@ -148,6 +147,10 @@ PORN_SALE_MUTE_REASON = (
 CARD_PHONE_MUTE_REASON = (
     "💳 Публикация банковских карт и номеров телефонов запрещена. "
     "Сообщение удалено, доступ ограничен на 1 час."
+)
+
+SPAM_MUTE_REASON = (
+    "Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!"
 )
 
 POLITICAL_MUTE_REASON = (

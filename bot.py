@@ -28,6 +28,26 @@ logging.basicConfig(
 log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
+USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
+
+
+def menu_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[
+            {
+                "action": {"type": "text", "label": "👤 Мой профиль"},
+                "color": "primary",
+            },
+            {
+                "action": {
+                    "type": "open_link",
+                    "link": USER_GUIDE_URL,
+                    "label": "📖 Руководство",
+                },
+            },
+        ]],
+    }
 
 
 class TimeoutSession(requests.Session):
@@ -55,14 +75,18 @@ def delete_message(vk, message) -> int:
     message_id = message_field(message, "id")
     cmid = message_field(message, "conversation_message_id")
     peer_id = message_field(message, "peer_id")
-    if message_id > 0:
-        params = {"message_ids": str(message_id), "delete_for_all": 1}
-    elif cmid > 0 and peer_id > 0:
-        params = {"peer_id": peer_id, "conversation_message_ids": str(cmid), "delete_for_all": 1}
+    # In group conversations, prefer the conversation-scoped ID and include
+    # the peer. A global message ID without its destination is ambiguous for
+    # community tokens and may be rejected by VK for messages authored by
+    # other participants.
+    if cmid > 0 and peer_id >= CHAT_PEER_START:
+        params = {"peer_id": peer_id, "cmids": str(cmid), "delete_for_all": 1}
+    elif message_id > 0:
+        params = {"peer_id": peer_id, "message_ids": str(message_id), "delete_for_all": 1}
     else:
         log.error("Нельзя удалить сообщение без id/cmid: peer=%s", peer_id)
         return 0
-    return db.enqueue(ACTIVE_CONN, "delete", {"params": params})
+    return db.enqueue(ACTIVE_CONN, "delete", {"params": params, "peer_id": peer_id})
 
 def apply_mute(vk, peer_id: int, user_id: int, *, reason=None, king_id=None, now=None, deletion_id=None) -> bool:
     now = int(time.time()) if now is None else int(now)
@@ -81,14 +105,22 @@ def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
         return False
 
     try:
-        vk.messages.removeChatUser(chat_id=chat_id, user_id=user_id)
+        response = vk.messages.removeChatUser(chat_id=chat_id, user_id=user_id)
+        if response not in (1, True):
+            log.error(
+                "VK не подтвердил удаление пользователя user=%s peer=%s response=%r",
+                user_id,
+                peer_id,
+                response,
+            )
+            return False
         log.warning(
             "Заблокированный пользователь удалён из беседы: user=%s peer=%s",
             user_id,
             peer_id,
         )
         return True
-    except ApiError as err:
+    except Exception as err:
         log.error(
             "Не удалось удалить пользователя user=%s peer=%s: %s",
             user_id,
@@ -136,8 +168,8 @@ def event_field(event_obj, name: str, default=None):
         return getattr(event_obj, name, default)
 
 
-def handle_chat_update(vk, event) -> None:
-    """Remove configured users immediately when they join the blocklist chat."""
+def handle_chat_update(vk, event, conn=None) -> None:
+    """Enforce the social-chat blacklist and the optional legacy blocklist chat."""
     obj = event_object(event)
     if not obj:
         return
@@ -146,12 +178,6 @@ def handle_chat_update(vk, event) -> None:
     if peer_id <= 0:
         chat_id = message_field(obj, "chat_id")
         peer_id = CHAT_PEER_START + chat_id if chat_id > 0 else 0
-
-    if (
-        peer_id != config.BLOCKLIST_CHAT_PEER_ID
-        or peer_id == config.CHAT_PEER_ID
-    ):
-        return
 
     action = event_field(obj, "action")
     if isinstance(action, dict):
@@ -169,7 +195,12 @@ def handle_chat_update(vk, event) -> None:
     except (TypeError, ValueError):
         member_id = 0
 
-    if member_id in config.BLOCKED_USER_IDS:
+    if peer_id == config.CHAT_PEER_ID:
+        if conn is not None and db.is_chat_blacklisted(conn, member_id):
+            remove_user_from_chat(vk, peer_id, member_id)
+        return
+
+    if peer_id == config.BLOCKLIST_CHAT_PEER_ID and member_id in config.BLOCKED_USER_IDS:
         remove_user_from_chat(vk, peer_id, member_id)
 
 
@@ -201,6 +232,46 @@ def blocklist_watchdog(vk) -> None:
         except Exception:
             log.error("Ошибка blocklist watchdog:\n%s", traceback.format_exc())
         time.sleep(5)
+
+
+def scan_chat_blacklist(vk, conn) -> None:
+    blocked_ids = set(db.get_chat_blacklist(conn))
+    if not blocked_ids:
+        return
+
+    try:
+        offset = 0
+        present_ids = set()
+        while True:
+            response = vk.messages.getConversationMembers(
+                peer_id=config.CHAT_PEER_ID,
+                count=1000,
+                offset=offset,
+            )
+            members = response.get("items", []) if isinstance(response, dict) else []
+            if not members:
+                break
+            present_ids.update({
+                int(member.get("member_id", 0))
+                for member in members
+                if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
+            })
+            if len(members) < 1000:
+                break
+            offset += len(members)
+        for user_id in present_ids & blocked_ids:
+            remove_user_from_chat(vk, config.CHAT_PEER_ID, user_id)
+    except Exception:
+        log.error("Ошибка проверки чёрного списка социальной беседы:\n%s", traceback.format_exc())
+
+
+def chat_blacklist_watchdog(vk, conn) -> None:
+    while True:
+        try:
+            scan_chat_blacklist(vk, conn)
+        except Exception:
+            log.exception("Ошибка проверки чёрного списка")
+        time.sleep(60)
 
 
 def message_text(message) -> str:
@@ -236,6 +307,49 @@ def has_sticker_attachment(message) -> bool:
         ).lower() == "sticker"
         for attachment in message_attachments(message)
     )
+
+
+def sticker_fingerprint(message) -> str | None:
+    stickers = []
+    for attachment in message_attachments(message):
+        attachment_type = str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower()
+        if attachment_type != "sticker":
+            continue
+        sticker = (
+            attachment.get("sticker", {})
+            if isinstance(attachment, dict)
+            else getattr(attachment, "sticker", {})
+        )
+        if not sticker:
+            continue
+        if isinstance(sticker, dict):
+            sticker_id = sticker.get("sticker_id", sticker.get("id"))
+            product_id = sticker.get("product_id", "")
+            if sticker_id is not None:
+                stickers.append(f"{product_id}:{sticker_id}")
+                continue
+            stickers.append(json.dumps(sticker, ensure_ascii=False, sort_keys=True, default=str))
+        else:
+            stickers.append(str(sticker))
+    return json.dumps(sorted(stickers), ensure_ascii=False) if stickers else None
+
+
+def repeated_content_fingerprint(message):
+    sticker_key = sticker_fingerprint(message)
+    if sticker_key:
+        return f"sticker:{sticker_key}"
+    text = normalized_text(message_text(message))
+    return f"text:{text}" if text else None
+
+
+def is_spam_message(conn, message, user_id: int, peer_id: int, now: int) -> bool:
+    return db.track_spam_streak(
+        conn, peer_id, user_id, repeated_content_fingerprint(message), now
+    ) >= 4
 
 
 def normalized_text(text: str) -> str:
@@ -324,6 +438,7 @@ def classify_media(message):
 def send_bot_message(
     vk, message: str, *, temporary: bool = False, peer_id: int | None = None,
     delete_after_seconds: int | None = None, depends_on: int | None = None,
+    keyboard: dict | None = None,
 ) -> int:
     delay = (config.BOT_REASON_DELETE_SECONDS if delete_after_seconds is None
              else max(1, int(delete_after_seconds)))
@@ -332,13 +447,14 @@ def send_bot_message(
         "peer_id": peer_id or config.CHAT_PEER_ID, "message": message,
         "temporary": temporary, "delay": delay,
         "depends_on": depends_on,
+        "keyboard": keyboard,
     })
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int, deletion_id=None) -> None:
     delete_after = (
         config.MODERATION_REASON_DELETE_SECONDS
         if is_moderation_chat(peer_id)
-        else config.BOT_REASON_DELETE_SECONDS
+        else config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS
     )
     names = get_user_names(vk, [user_id])
     user_name = names.get(user_id) or "Пользователь"
@@ -356,23 +472,24 @@ def record_successful_mute(conn, user_id: int, peer_id: int, now=None) -> None:
     db.record_mute(conn, user_id, now, peer_id=peer_id)
 
 def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> bool:
-    text = message_text(message)
+    contents = list(moderated_contents(message))
+    texts = [message_text(item) for item in contents]
 
     if is_moderation_chat(peer_id):
-        if contains_porn_sale_term(text):
+        if any(contains_porn_sale_term(text) for text in texts):
             reason = config.PORN_SALE_MUTE_REASON
-        elif has_sticker_attachment(message):
+        elif any(has_sticker_attachment(item) for item in contents):
             reason = config.STICKER_MUTE_REASON
-        elif has_media_attachment(message):
+        elif any(has_media_attachment(item) for item in contents):
             reason = config.MEDIA_MUTE_REASON
-        elif contains_any_prohibited_term(text):
+        elif any(contains_any_prohibited_term(text) for text in texts):
             reason = config.PROSTITUTION_MUTE_REASON
         else:
             return False
     elif is_bot_feature_chat(peer_id):
         # В 2000000002 слова из запрещённой лексики не являются
         # основанием для мута. Здесь модерируем только карты/телефоны.
-        if contains_card_or_phone(text):
+        if any(contains_card_or_phone(text) for text in texts):
             reason = config.CARD_PHONE_MUTE_REASON
         else:
             return False
@@ -389,6 +506,16 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
         muted,
     )
     return True
+
+
+def moderated_contents(message):
+    """Inspect explicit forwards; replying to a message does not republish it."""
+    pending = [message]
+    while pending:
+        item = pending.pop()
+        yield item
+        forwards = event_field(item, 'fwd_messages', []) or []
+        pending.extend(child for child in forwards if isinstance(child, dict))
 
 
 def mention(user_id: int, name: str | None = None) -> str:
@@ -424,15 +551,22 @@ def format_top(vk, rows, medals: tuple[str, ...]) -> str:
     return "\n".join(lines) if lines else "Пока нет сообщений."
 
 
-def publish_daily_stats(vk, conn, stat_date: date) -> bool:
+def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     top3 = stats["top_users"][:3]
     month = config.MONTH_NAMES[stat_date.month - 1]
+    activity = (
+        f"{stats['activity_percent']}% от среднего за 7 дней"
+        if stats["activity_percent"] is not None
+        else "нет базы для сравнения за 7 дней"
+    )
 
     report = (
         f"📊 СТАТИСТИКА ЧАТА\n"
         f"#{stat_date.day}{month}\n\n"
         f"💬 Сообщений за день: {stats['messages']}\n"
+        f"👥 Активных участников: {stats['active_users']}\n"
+        f"⚡ Активность чата: {activity}\n"
         f"📷 Фото: {stats['photos']}\n"
         f"🎬 Видео: {stats['videos']}\n"
         f"🎵 Музыка: {stats['music']}\n"
@@ -440,6 +574,20 @@ def publish_daily_stats(vk, conn, stat_date: date) -> bool:
         f"🏆 ТОП-3 АКТИВНЫХ\n"
         f"{format_top(vk, top3, ('🥇', '🥈', '🥉'))}"
     )
+    if include_records:
+        records = db.get_chat_stat_records(conn)
+        record_lines = []
+        for metric, label, suffix in (
+            ("active_users", "👥 Рекорд активных участников", ""),
+            ("daily_messages", "⚡ Рекорд активности чата", " сообщений за день"),
+        ):
+            record = records.get(metric)
+            if record:
+                record_day = date.fromisoformat(record["stat_date"]).strftime("%d.%m.%Y")
+                record_lines.append(f"{label}: {record['value']}{suffix} ({record_day})")
+            else:
+                record_lines.append(f"{label}: пока нет данных")
+        report += "\n\n📈 РЕКОРДЫ ЧАТА\n" + "\n".join(record_lines)
     return send_bot_message(vk, report) > 0
 
 
@@ -464,6 +612,7 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
+    db.record_daily_chat_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
@@ -477,12 +626,30 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         return True
 
     names = get_user_names(vk, [user_id])
+    hero_record = db.get_hero_message_record(
+        conn, (stat_date.isoformat(), user_id, messages)
+    )
     text = (
         f"🦸 ГЕРОЙ ЧАТА\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
+    if hero_record:
+        record_date, record_user_id, record_messages = hero_record
+        record_name = names.get(record_user_id)
+        if record_user_id not in names:
+            record_name = get_user_names(vk, [record_user_id]).get(record_user_id)
+        record_day = date.fromisoformat(record_date).strftime("%d.%m.%Y")
+        is_new = record_date == stat_date.isoformat()
+        new_label = " — новый рекорд" if is_new else ""
+        hero_record_line = (
+            f"🏆 Рекорд Героя чата: {mention(record_user_id, record_name)} — "
+            f"{record_messages} сообщ. за день ({record_day}){new_label}"
+        )
+    else:
+        hero_record_line = "🏆 Рекорд Героя чата: пока нет данных"
+    text += "\n\n" + hero_record_line
     sent = send_bot_message(vk, text)
     if sent <= 0:
         return False
@@ -565,6 +732,123 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
 
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     publish_daily_stats(vk, conn, stat_date)
+    return True
+
+
+def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    match = re.fullmatch(r"/чс(?:\s+(.*))?", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    if from_id not in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Команда чёрного списка доступна только администраторам.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    argument = (match.group(1) or "").strip()
+    if not argument:
+        send_bot_message(
+            vk,
+            "Команды чёрного списка:\n/чс @username — добавить в ЧС\n"
+            "/чс снять @username — убрать из ЧС\n/чс список — показать список",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    if argument.casefold() == "список":
+        blocked_ids = db.get_chat_blacklist(conn)
+        text_out = (
+            "📋 Чёрный список пуст."
+            if not blocked_ids
+            else "📋 Чёрный список социальной беседы:\n" + "\n".join(f"• @id{uid}" for uid in blocked_ids)
+        )
+        send_bot_message(vk, text_out, temporary=True, delete_after_seconds=120)
+        return True
+
+    remove = False
+    target_text = argument
+    remove_match = re.match(r"^снять\s+(.+)$", argument, re.IGNORECASE)
+    if remove_match:
+        remove = True
+        target_text = remove_match.group(1).strip()
+
+    target_id = resolve_target_user_id(vk, target_text)
+    if target_id <= 0:
+        send_bot_message(
+            vk,
+            "❗ Укажи пользователя как @username или @id123.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    if remove:
+        if db.remove_chat_blacklist(conn, target_id):
+            response = f"✅ @id{target_id} удалён из чёрного списка."
+        else:
+            response = f"ℹ️ @id{target_id} не найден в чёрном списке."
+        send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+        return True
+
+    if target_id in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Администраторов нельзя добавить в чёрный список.",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    added = db.add_chat_blacklist(conn, target_id, from_id, now)
+    removed = remove_user_from_chat(vk, config.CHAT_PEER_ID, target_id)
+    if added and removed:
+        response = f"🚫 @id{target_id} добавлен в ЧС и удалён из беседы."
+    elif added:
+        response = f"🚫 @id{target_id} добавлен в ЧС. VK пока не подтвердил удаление; при входе бот удалит его снова."
+    elif removed:
+        response = f"ℹ️ @id{target_id} уже в ЧС; повторное удаление из беседы выполнено."
+    else:
+        response = f"ℹ️ @id{target_id} уже в ЧС. При повторном входе бот удалит его автоматически."
+    notice_delay = config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS if added else 120
+    send_bot_message(vk, response, temporary=True, delete_after_seconds=notice_delay)
+    return True
+
+
+def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    if not re.fullmatch(r"/menu", text.strip(), re.IGNORECASE):
+        return False
+
+    local_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    day_start = int(datetime.combine(local_date, datetime.min.time(), tzinfo=config.CHAT_TZ).timestamp())
+    next_day = local_date + timedelta(days=1)
+    day_end = int(datetime.combine(next_day, datetime.min.time(), tzinfo=config.CHAT_TZ).timestamp())
+    if not db.claim_daily_command_slot(conn, from_id, "menu_daily", 1, day_start, day_end, now):
+        if db.claim_daily_command_slot(conn, from_id, "menu_limit_notice", 1, day_start, day_end, now):
+            send_bot_message(
+                vk,
+                "⏳ Ты уже открывал меню сегодня. Следующий вызов будет доступен после 00:00 по Москве.",
+                temporary=True,
+                delete_after_seconds=120,
+            )
+        return True
+
+    send_bot_message(
+        vk,
+        "🤖 МЕНЮ БОТА\n\n"
+        "👤 /profile — посмотреть свой профиль и репутацию\n"
+        "⭐ /rep @username — повысить репутацию\n"
+        "⭐ /rep - @username — понизить репутацию\n"
+        "🦸 /мут @username — команда Героя чата\n\n"
+        "Нажми «Руководство», чтобы открыть статью с правилами и командами.",
+        keyboard=menu_keyboard(),
+        temporary=True,
+        delete_after_seconds=120,
+    )
     return True
 
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
@@ -721,9 +1005,15 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
 
 def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     stripped = text.strip()
+    if stripped.casefold() in {"👤 мой профиль", "мой профиль"}:
+        return handle_profile_command(vk, conn, from_id, "/profile", now)
     if not stripped.startswith("/"):
         return False
 
+    if handle_blacklist_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_menu_command(vk, conn, from_id, stripped, now):
+        return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
     if handle_profile_command(vk, conn, from_id, stripped, now):
@@ -748,9 +1038,15 @@ def cleanup_tick(conn, now=None):
     with db.atomic(conn):
         for message_id, peer_id in db.get_due_bot_messages(conn, now):
             db.enqueue(conn, "delete", {"params": {
-                "message_ids": str(message_id), "delete_for_all": 1,
-            }})
+                "peer_id": peer_id, "message_ids": str(message_id), "delete_for_all": 1,
+            }, "peer_id": peer_id})
             db.remove_bot_message(conn, message_id)
+        timestamp = int(time.time()) if now is None else now
+        for row in conn.execute('SELECT * FROM cleanup_tasks WHERE delete_at <= ?', (timestamp,)).fetchall():
+            params = ({'peer_id': row['peer_id'], 'cmids': str(row['cmid']), 'delete_for_all': 1}
+                      if row['cmid'] > 0 else {'message_ids': str(row['message_id']), 'delete_for_all': 1})
+            db.enqueue(conn, 'delete', {'params': params, 'peer_id': row['peer_id']})
+            conn.execute('DELETE FROM cleanup_tasks WHERE id = ?', (row['id'],))
 
 
 def scheduler_watchdog(vk, conn) -> None:
@@ -774,6 +1070,10 @@ def process_message(vk, conn, message) -> None:
     if event_field(message, "action") or message_field(message, "out"):
         return
 
+    if is_bot_feature_chat(peer_id) and db.is_chat_blacklisted(conn, from_id):
+        remove_user_from_chat(vk, peer_id, from_id)
+        return
+
     # Administrators retain moderation exemptions, but can use every feature command.
     if from_id in config.ADMIN_IDS:
         if is_bot_feature_chat(peer_id):
@@ -782,25 +1082,39 @@ def process_message(vk, conn, message) -> None:
             db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
         return
 
-    if is_bot_feature_chat(peer_id) and re.search(r"(?<!\w)@all(?!\w)", text, re.IGNORECASE):
+    if handle_content_violation(vk, conn, message, from_id, peer_id):
+        if is_bot_feature_chat(peer_id):
+            db.track_spam_streak(conn, peer_id, from_id, None, now)
+        return
+
+    if is_bot_feature_chat(peer_id) and any(
+        re.search(r"(?<!\w)@all(?!\w)", message_text(item), re.IGNORECASE)
+        for item in moderated_contents(message)
+    ):
         deleted = delete_message(vk, message)
-        muted = apply_mute(vk, peer_id, from_id, reason=config.ALL_COMMAND_MUTE_REASON, deletion_id=deleted)
+        db.track_spam_streak(conn, peer_id, from_id, None, now)
         log.warning(
-            "Запрещённая @all-команда: user=%s deleted=%s muted=%s",
-            from_id,
-            deleted,
-            muted,
+            "Удалена запрещённая @all-команда: user=%s deleted=%s",
+            from_id, deleted,
         )
         return
 
-    if handle_content_violation(vk, conn, message, from_id, peer_id):
-        return
-
     if is_bot_feature_chat(peer_id):
-        if handle_command(vk, conn, from_id, text, now):
+        command_handled = handle_command(vk, conn, from_id, text, now)
+        if command_handled or text.strip().startswith("/"):
+            db.track_spam_streak(conn, peer_id, from_id, None, now)
             return
-        if text.strip().startswith("/"):
-            return  # Unknown commands do not compete for the activity title.
+        if is_spam_message(conn, message, from_id, peer_id, now):
+            deleted = delete_message(vk, message)
+            muted = apply_mute(
+                vk, peer_id, from_id, reason=config.SPAM_MUTE_REASON,
+                deletion_id=deleted, now=now,
+            )
+            log.warning(
+                "Спам: user=%s peer=%s deleted=%s muted=%s",
+                from_id, peer_id, deleted, muted,
+            )
+            return
         db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
         return
 
@@ -832,7 +1146,7 @@ def process_message(vk, conn, message) -> None:
 
 def pending_king_mute(conn, user_id, local_date):
     with db._lock:
-        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND done_at = 0"):
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row["payload"])
             request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
             if payload.get("king_id") == user_id and request_date == local_date:
@@ -881,27 +1195,100 @@ def process_inbox(vk, conn):
             db.retry_inbox(conn, row["event_key"])
 
 
+class DeliveryError(RuntimeError):
+    def __init__(self, message, *, code=None, permanent=False):
+        super().__init__(message)
+        self.code = code
+        self.permanent = permanent
+
+
+def check_embedded_error(item):
+    error = item.get('error')
+    if error:
+        raise DeliveryError(str(error.get('message', error.get('error_msg', 'VK rejected operation'))),
+                            code=error.get('code', error.get('error_code')))
+
+
+def parse_sent_message(response, peer_id):
+    if isinstance(response, list):
+        matches = [item for item in response if isinstance(item, dict) and item.get('peer_id') == peer_id]
+        if len(matches) != 1:
+            raise DeliveryError('Ответ отправки не содержит единственного нужного адресата', permanent=True)
+        item = matches[0]
+        check_embedded_error(item)
+        message_id = int(item.get('message_id', 0) or 0)
+        cmid = int(item.get('conversation_message_id', 0) or 0)
+        if message_id > 0 or cmid > 0:
+            return message_id, cmid
+    elif isinstance(response, int) and not isinstance(response, bool) and response > 0:
+        return response, 0  # Compatibility with legacy numeric API responses.
+    # A zero/unknown answer may follow a real send. Never automatically resend it.
+    raise DeliveryError('Неоднозначный ответ отправки: нет ID; требуется проверка в чате', permanent=True)
+
+
+def validate_deleted_messages(response, params):
+    if isinstance(response, list):
+        if not response:
+            raise DeliveryError('Пустой ответ удаления')
+        cmids = str(params.get('cmids', '')).split(',') if params.get('cmids') else []
+        message_ids = str(params.get('message_ids', '')).split(',') if params.get('message_ids') else []
+        seen = set()
+        for item in response:
+            if not isinstance(item, dict):
+                raise DeliveryError('Некорректный элемент ответа удаления')
+            check_embedded_error(item)
+            if item.get('response') != 1:
+                raise DeliveryError('VK не подтвердил удаление', permanent=True)
+            if cmids:
+                if item.get('peer_id') != params.get('peer_id'):
+                    raise DeliveryError('Удаление подтверждено для другой беседы', permanent=True)
+                seen.add(str(item.get('conversation_message_id', 0)))
+            else:
+                seen.add(str(item.get('message_id', 0)))
+        if not set(cmids or message_ids).issubset(seen):
+            raise DeliveryError('Часть сообщений не подтверждена в ответе удаления', permanent=True)
+    elif isinstance(response, dict):
+        expected = set(str(params.get('message_ids', '')).split(','))
+        if not expected or '' in expected or not expected.issubset(response) or any(response[key] != 1 for key in expected):
+            raise DeliveryError('VK не подтвердил удаление всех ID', permanent=True)
+    elif response != 1:
+        raise DeliveryError('Некорректный ответ удаления', permanent=True)
+
+
 def execute_operation(vk, conn, row, now):
     payload = json.loads(row["payload"])
     if row["kind"] == "send":
         if payload.get("depends_on"):
             with db._lock:
-                dependency = conn.execute("SELECT done_at FROM outbox WHERE id = ?", (payload["depends_on"],)).fetchone()
-            if dependency and not dependency["done_at"]:
+                dependency = conn.execute("SELECT status FROM outbox WHERE id = ?", (payload["depends_on"],)).fetchone()
+            if dependency is None or dependency['status'] in {'failed', 'cancelled'}:
+                raise DeliveryError("Удаление не подтверждено; уведомление заблокировано", permanent=True)
+            if dependency['status'] != 'done':
                 return
-        # Positive SQLite IDs are unique and persistent across restarts.
-        message_id = int(vk.messages.send(peer_id=payload["peer_id"],
-            random_id=row["id"], message=payload["message"]) or 0)
-        if not message_id:
-            raise RuntimeError("VK не вернул ID отправленного сообщения")
+        # peer_ids requests a structured response with the conversation-scoped ID.
+        send_params = {
+            "peer_ids": str(payload["peer_id"]),
+            "random_id": row["id"],
+            "message": payload["message"],
+        }
+        if payload.get("keyboard"):
+            send_params["keyboard"] = json.dumps(payload["keyboard"], ensure_ascii=False)
+        response = vk.messages.send(**send_params)
+        message_id, cmid = parse_sent_message(response, payload["peer_id"])
         with db.atomic(conn):
             if payload["temporary"]:
-                db.queue_bot_message(conn, message_id, payload["peer_id"], now + payload["delay"])
+                if cmid:
+                    db.queue_cleanup(conn, payload["peer_id"], message_id, cmid, now + payload["delay"])
+                else:
+                    db.queue_bot_message(conn, message_id, payload["peer_id"], now + payload["delay"])
             db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "delete":
-        result = vk.messages.delete(**payload["params"])
-        if not result or (isinstance(result, dict) and any(not value for value in result.values())):
-            raise RuntimeError("VK не подтвердил удаление сообщения")
+        params = dict(payload["params"])
+        # Normalize jobs created before v6 without rewriting their stored payload.
+        if 'conversation_message_ids' in params:
+            params['cmids'] = params.pop('conversation_message_ids')
+        response = vk.messages.delete(**params)
+        validate_deleted_messages(response, params)
         db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "mute":
         remaining = payload["until"] - now
@@ -916,6 +1303,8 @@ def execute_operation(vk, conn, row, now):
             return
         result = vk.messages.changeConversationMemberRestrictions(peer_id=payload["peer_id"],
             member_ids=str(payload["user_id"]), action="ro", **{"for": remaining})
+        if isinstance(result, dict):
+            check_embedded_error(result)
         if not result:
             raise RuntimeError("VK не подтвердил ограничение")
         with db.atomic(conn):
@@ -925,7 +1314,10 @@ def execute_operation(vk, conn, row, now):
                 db.set_command_cooldown(conn, payload["king_id"], "king_mute", 0, now)
                 names = get_user_names(vk, [payload["user_id"]])
                 send_bot_message(vk, config.KING_MUTE_MESSAGE.format(
-                    mention=mention(payload["user_id"], names.get(payload["user_id"]))))
+                    mention=mention(payload["user_id"], names.get(payload["user_id"]))),
+                    temporary=True,
+                    peer_id=payload["peer_id"],
+                    delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS)
             elif payload.get("reason"):
                 send_mute_reason(vk, payload["user_id"], payload["reason"], payload["peer_id"], payload.get("deletion_id"))
             db.finish_operation(conn, row["id"], now)
@@ -941,13 +1333,32 @@ def deliver_outbox(vk, conn, now=None):
     ACTIVE_CONN = conn
     with DELIVERY_LOCK:
         for row in db.due_operations(conn, now):
+            timestamp = int(time.time()) if now is None else now
             try:
-                execute_operation(vk, conn, row, int(time.time()) if now is None else now)
+                payload = json.loads(row['payload'])
+                peer_id = payload.get('peer_id') or payload.get('params', {}).get('peer_id')
+                if peer_id and not is_target_chat(int(peer_id)):
+                    db.stop_operation(conn, row['id'], 'Чат исключён из текущей конфигурации', 'cancelled')
+                    continue
+                if row['kind'] == 'send' and timestamp - row['created_at'] > config.SEND_MAX_AGE_SECONDS:
+                    db.stop_operation(conn, row['id'], 'Сообщение устарело до доставки', 'cancelled')
+                    continue
+                if row['attempts'] >= config.DELIVERY_MAX_ATTEMPTS:
+                    db.stop_operation(conn, row['id'], row['last_error'] + '; исчерпаны попытки')
+                    continue
+                execute_operation(vk, conn, row, timestamp)
             except Exception as error:
-                label = f"{type(error).__name__}: code={getattr(error, 'code', 'n/a')}"
-                log.warning("Действие VK будет повторено: operation=%s kind=%s error=%s",
-                            row["id"], row["kind"], label)
-                db.retry_operation(conn, row["id"], label, now)
+                code = getattr(error, 'code', None)
+                label = f"{type(error).__name__}: code={code if code is not None else 'n/a'}"
+                if isinstance(error, DeliveryError):
+                    label += '; ' + str(error)
+                permanent = code in {5, 15, 100, 113, 917, 922, 924, 925, 927, 932, 935, 945, 946, 947}
+                if permanent or getattr(error, 'permanent', False) or row['attempts'] + 1 >= config.DELIVERY_MAX_ATTEMPTS:
+                    db.stop_operation(conn, row['id'], label, attempted=True)
+                    log.error("Действие требует исправления: operation=%s kind=%s error=%s", row['id'], row['kind'], label)
+                else:
+                    log.warning("Действие VK будет повторено: operation=%s kind=%s error=%s", row['id'], row['kind'], label)
+                    db.retry_operation(conn, row['id'], label, timestamp)
 
 
 def delivery_watchdog(vk, conn):
@@ -984,7 +1395,8 @@ def scheduler_tick(vk, conn, now=None):
                                        (f"daily:{yesterday.isoformat()}", publish_daily_stats)):
                     if not db.scheduler_event_claimed(conn, key):
                         queued = (publisher(vk, conn, yesterday, announce=(cursor == now.date()))
-                                  if publisher is publish_king else publisher(vk, conn, yesterday))
+                                  if publisher is publish_king
+                                  else publisher(vk, conn, yesterday, include_records=True))
                         if queued:
                             db.claim_scheduler_event(conn, key, int(now.timestamp()))
             hours = [hour for hour in (6, 12, 18) if lower < midnight.replace(hour=hour) <= now]
@@ -1050,6 +1462,13 @@ def run_forever() -> None:
     )
     vk = session.get_api()
 
+    threading.Thread(
+        target=chat_blacklist_watchdog,
+        args=(vk, conn),
+        name="chat-blacklist-watchdog",
+        daemon=True,
+    ).start()
+
     if (
         config.BLOCKED_USER_IDS
         and config.BLOCKLIST_CHAT_PEER_ID > 0
@@ -1098,7 +1517,7 @@ def run_forever() -> None:
                         handle_new_message(vk, conn, message)
 
                 elif str(getattr(event, "type", "")) == "chat_update":
-                    handle_chat_update(vk, event)
+                    handle_chat_update(vk, event, conn)
 
         except (KeyboardInterrupt, SystemExit):
             raise
