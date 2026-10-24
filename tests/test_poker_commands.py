@@ -140,6 +140,28 @@ class CommandTests(unittest.TestCase):
             self.assertIn("WAITING", bot.handle(202, "/newsession", "new-owner"))
             store.close()
 
+    def test_private_delivery_restarts_turn_clock_after_delay(self):
+        from unittest.mock import patch
+        class Delivery:
+            def can_message(self, uid):
+                return True
+            def deliver_pending(self, store, room, hand):
+                for uid, random_id, msg in store.pending_private_cards(room, hand):
+                    store.mark_private_delivered(room, hand, uid)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, private_delivery=Delivery())
+            for uid in (101, 202):
+                bot.handle(uid, "/join", "j" + str(uid))
+                bot.handle(uid, "/ready", "r" + str(uid))
+            with patch("poker.commands.time", return_value=2000000000.0):
+                bot.handle(101, "/start", "start-delayed")
+            table = store.load(2000000999)[1]
+            self.assertEqual(table.turn_started_at, 2000000000.0)
+            self.assertIsNone(bot.process_expired_turn(now=2000000089.0))
+            self.assertIsNotNone(bot.process_expired_turn(now=2000000090.0))
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
