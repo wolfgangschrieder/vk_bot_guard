@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import bot
@@ -21,6 +22,7 @@ class BotTests(unittest.TestCase):
         self.vk.messages.send.return_value = 100
         self.vk.messages.delete.return_value = 1
         self.vk.messages.changeConversationMemberRestrictions.return_value = 1
+        self.vk.messages.removeChatUser.return_value = 1
         self.vk.users.get.side_effect = self.profiles
         self.now = int(datetime(2026, 10, 9, 14, tzinfo=config.CHAT_TZ).timestamp())
         self.clock = patch('time.time', return_value=self.now)
@@ -69,8 +71,256 @@ class BotTests(unittest.TestCase):
 
     def test_profile_alias_and_admin_commands(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @kenaya', uid=99))
-        self.assertIn('[id10|', self.queued('send')[0]['message'])
+        profile = self.queued('send')[0]['message']
+        self.assertIn('[id10|', profile)
+        self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertNotIn('Герой чата:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
+
+    def test_profile_shows_reputation_hero_activity_and_best_day(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        daily_counts = {
+            today: 34,
+            today - timedelta(days=1): 61,
+            today - timedelta(days=2): 20,
+            today - timedelta(days=3): 20,
+            today - timedelta(days=4): 15,
+            today - timedelta(days=5): 12,
+            today - timedelta(days=6): 20,
+        }
+        for stat_date, count in daily_counts.items():
+            timestamp = int(datetime.combine(
+                stat_date, datetime.min.time(), tzinfo=config.CHAT_TZ
+            ).timestamp())
+            for _ in range(count):
+                db.record_message(self.conn, 10, timestamp)
+        for offset in range(3):
+            db.save_king(self.conn, today - timedelta(days=offset + 1), 10, 5)
+        for index in range(12):
+            self.conn.execute(
+                'INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) '
+                'VALUES (?, 10, ?, 1, ?)',
+                (100 + index, f'week-{index}', self.now),
+            )
+        self.conn.commit()
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @kenaya', uid=99))
+        profile = self.queued('send')[0]['message']
+        self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertIn('⭐ Репутация: +12', profile)
+        self.assertIn('🏆 Герой чата: 3 раза', profile)
+        self.assertIn('Сегодня: 34 сообщения', profile)
+        self.assertIn('За 7 дней: 182 сообщения', profile)
+        self.assertIn('8 октября — 61 сообщение', profile)
+
+    def test_admin_can_add_and_remove_social_chat_blacklist_entry(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))
+        self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
+        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
+        self.assertIn('добавлен в ЧС', self.queued('send')[0]['message'])
+        self.assertEqual(self.queued('send')[0]['delay'], 300)
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/чс снять @kenaya', uid=99, mid=2))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
+        self.assertIn('удалён из чёрного списка', self.queued('send')[-1]['message'])
+        self.assertEqual(self.queued('send')[-1]['delay'], 120)
+
+    def test_non_admin_cannot_change_blacklist(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=1))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
+        self.vk.messages.removeChatUser.assert_not_called()
+        self.assertIn('только администраторам', self.queued('send')[0]['message'])
+
+    def test_four_identical_messages_mute_only_in_social_chat(self):
+        for mid in range(1, 4):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('одно и то же', mid=mid, peer=config.CHAT_PEER_ID),
+            )
+        self.assertEqual(self.queued('mute'), [])
+
+        bot.handle_new_message(
+            self.vk, self.conn,
+            self.message('одно и то же', mid=4, peer=config.CHAT_PEER_ID),
+        )
+        mute = self.queued('mute')[0]
+        self.assertEqual(mute['peer_id'], config.CHAT_PEER_ID)
+        self.assertEqual(mute['until'] - self.now, 3600)
+        self.assertEqual(
+            mute['reason'],
+            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
+        )
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.drain()
+        self.assertTrue(any(
+            item['message'] == (
+                'Test User, Спам запрещен! Сообщение удалено! '
+                'Доступ ограничен на 1 час!'
+            )
+            for item in self.queued('send')
+        ))
+
+        self.vk.messages.delete.reset_mock()
+        bot.handle_new_message(
+            self.vk, self.conn,
+            self.message('одно и то же', peer=config.MODERATION_CHAT_PEER_ID, mid=5),
+        )
+        self.assertEqual(len(self.queued('mute')), 1)
+
+    def test_links_are_deleted_and_muted_only_in_strict_chat_with_reason(self):
+        message = self.message(
+            'Переходите сюда https://example.com/page',
+            peer=config.MODERATION_CHAT_PEER_ID,
+        )
+        bot.handle_new_message(self.vk, self.conn, message)
+        mute = self.queued('mute')[0]
+        self.assertEqual(mute['peer_id'], config.MODERATION_CHAT_PEER_ID)
+        self.assertEqual(mute['until'] - self.now, 3600)
+        self.assertEqual(mute['reason'], config.LINK_MUTE_REASON)
+        self.assertEqual(len(self.queued('delete')), 1)
+
+        bot.handle_new_message(
+            self.vk, self.conn,
+            self.message('https://example.com', peer=config.CHAT_PEER_ID, mid=2),
+        )
+        self.assertEqual(len(self.queued('mute')), 1)
+
+    def test_link_attachment_is_moderated_in_strict_chat(self):
+        bot.handle_new_message(self.vk, self.conn, self.message(
+            '', peer=config.MODERATION_CHAT_PEER_ID,
+            attachments=[{'type': 'link', 'link': {'url': 'https://example.com'}}],
+        ))
+        self.assertEqual(self.queued('mute')[0]['reason'], config.LINK_MUTE_REASON)
+
+    def test_requested_prohibited_phrases_mute_in_strict_chat(self):
+        for mid, text in enumerate(
+            ('Без предоплат', 'расход', 'на коммерческой основе', 'деньги'), 1
+        ):
+            bot.handle_new_message(self.vk, self.conn, self.message(
+                text, uid=mid, peer=config.MODERATION_CHAT_PEER_ID, mid=mid,
+            ))
+        mutes = self.queued('mute')
+        self.assertEqual(len(mutes), 4)
+        self.assertTrue(all(item['until'] - self.now == 3600 for item in mutes))
+        self.assertTrue(all(
+            item['reason'] == config.PROHIBITED_WORDS_MUTE_REASON for item in mutes
+        ))
+
+    def test_different_message_breaks_identical_message_streak(self):
+        for mid in (1, 2):
+            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
+        bot.handle_new_message(self.vk, self.conn, self.message('другое', mid=3))
+        for mid in (4, 5):
+            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_at_all_message_is_deleted_without_mute(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('всем привет @all'))
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_four_identical_consecutive_stickers_mute_and_queue_reason(self):
+        for mid in range(1, 5):
+            bot.handle_new_message(self.vk, self.conn, self.message(
+                '', mid=mid,
+                attachments=[{'type': 'sticker', 'sticker': {'sticker_id': 77, 'product_id': 1}}],
+            ))
+        mute = self.queued('mute')[0]
+        self.assertEqual(
+            mute['reason'],
+            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
+        )
+        self.assertEqual(mute['until'] - self.now, 3600)
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.drain()
+        self.assertTrue(any(
+            item['message'] == (
+                'Test User, Спам запрещен! Сообщение удалено! '
+                'Доступ ограничен на 1 час!'
+            )
+            for item in self.queued('send')
+        ))
+        self.assertEqual(
+            self.conn.execute('SELECT delete_at FROM bot_messages').fetchone()[0],
+            self.now + 300,
+        )
+
+    def test_non_sticker_breaks_repeated_sticker_streak(self):
+        sticker = [{'type': 'sticker', 'sticker': {'sticker_id': 77}}]
+        for mid in (1, 2):
+            bot.handle_new_message(self.vk, self.conn, self.message('', mid=mid, attachments=sticker))
+        bot.handle_new_message(self.vk, self.conn, self.message('обычное сообщение', mid=3))
+        for mid in (4, 5):
+            bot.handle_new_message(self.vk, self.conn, self.message('', mid=mid, attachments=sticker))
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_blacklist_is_kept_when_vk_does_not_confirm_removal(self):
+        self.vk.messages.removeChatUser.return_value = 0
+        bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))
+        self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
+        self.assertIn('VK пока не подтвердил удаление', self.queued('send')[0]['message'])
+
+    def test_blacklisted_user_is_removed_on_message_and_reinvite(self):
+        db.add_chat_blacklist(self.conn, 10, 99, self.now)
+        bot.handle_new_message(self.vk, self.conn, self.message('hello', uid=10))
+        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
+
+        event = SimpleNamespace(obj={
+            'peer_id': config.CHAT_PEER_ID,
+            'action': {'type': 'chat_invite_user', 'member_id': 10},
+        })
+        bot.handle_chat_update(self.vk, event, self.conn)
+        self.assertEqual(self.vk.messages.removeChatUser.call_count, 2)
+
+    def test_startup_scan_removes_blacklisted_members(self):
+        db.add_chat_blacklist(self.conn, 10, 99, self.now)
+        self.vk.messages.getConversationMembers.return_value = {
+            'items': [{'member_id': 10}, {'member_id': 11}],
+        }
+        bot.scan_chat_blacklist(self.vk, self.conn)
+        self.vk.messages.getConversationMembers.assert_called_once_with(
+            peer_id=config.CHAT_PEER_ID, count=1000, offset=0,
+        )
+        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
+
+    def test_public_menu_has_profile_and_user_guide_buttons(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/menu', uid=1))
+        payload = self.queued('send')[0]
+        self.assertIn('/profile', payload['message'])
+        self.assertTrue(payload['temporary'])
+        self.assertEqual(payload['delay'], 120)
+        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
+            'type': 'text', 'label': '👤 Мой профиль',
+        })
+        self.assertEqual(payload['keyboard']['buttons'][0][1]['action'], {
+            'type': 'open_link',
+            'link': 'https://vk.ru/topic-234090559_68552562?offset=0',
+            'label': '📖 Руководство',
+        })
+        bot.deliver_outbox(self.vk, self.conn, self.now)
+        keyboard = json.loads(self.vk.messages.send.call_args.kwargs['keyboard'])
+        self.assertTrue(keyboard['inline'])
+        self.assertEqual(keyboard, payload['keyboard'])
+        bot.handle_new_message(self.vk, self.conn, self.message('👤 Мой профиль', mid=2))
+        self.assertIn('ПРОФИЛЬ', self.queued('send')[-1]['message'])
+
+    def test_menu_is_limited_to_one_call_per_local_day(self):
+        for message_id in range(1, 3):
+            bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=message_id))
+        sends = self.queued('send')
+        self.assertEqual(len(sends), 2)  # One menu and one limit notice.
+        self.assertEqual(sum(bool(item['keyboard']) for item in sends), 1)
+        self.assertTrue(all(item['temporary'] and item['delay'] == 120 for item in sends))
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=3))
+        self.assertEqual(len(self.queued('send')), 2)  # No repeated limit notices.
+
+        next_day_now = self.now + 24 * 60 * 60
+        with patch('bot.time.time', return_value=next_day_now):
+            bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=4))
+        sends = self.queued('send')
+        self.assertEqual(sum(bool(item['keyboard']) for item in sends), 2)
 
     def test_reputation_without_sign_and_duplicate_silence(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/rep @kenaya'))
@@ -84,6 +334,35 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('delete')), 1)
         self.assertEqual(len(self.queued('mute')), 1)
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'profile'), 0)
+
+    def test_conversation_deletion_uses_cmid_and_peer_id(self):
+        event = self.message(
+            text='мп',
+            peer=config.MODERATION_CHAT_PEER_ID,
+            conversation_message_id=77,
+        )
+        bot.delete_message(self.vk, event)
+        params = self.queued('delete')[0]['params']
+        self.assertEqual(params, {
+            'peer_id': config.MODERATION_CHAT_PEER_ID,
+            'cmids': '77',
+            'delete_for_all': 1,
+        })
+
+    def test_global_id_deletion_still_includes_peer_id(self):
+        event = self.message(
+            text='мп',
+            peer=config.MODERATION_CHAT_PEER_ID,
+            conversation_message_id=0,
+            mid=123,
+        )
+        bot.delete_message(self.vk, event)
+        params = self.queued('delete')[0]['params']
+        self.assertEqual(params, {
+            'peer_id': config.MODERATION_CHAT_PEER_ID,
+            'message_ids': '123',
+            'delete_for_all': 1,
+        })
 
     def test_violations_commands_service_events_not_in_activity(self):
         events = [self.message('/stat', mid=1), self.message('+79991234567', mid=2),
@@ -99,6 +378,45 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, event)
         stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
         self.assertEqual((stats['messages'], stats['photos']), (1, 1))
+
+    def test_daily_report_publishes_active_users_and_activity_percent(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        stats = {
+            'date': stat_date.isoformat(), 'messages': 120, 'active_users': 18,
+            'activity_percent': 150, 'activity_average_messages': 80,
+            'photos': 0, 'videos': 0, 'music': 0, 'voices': 0, 'top_users': [],
+        }
+        self.conn.executemany(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            [
+                ('active_users', 72, '2026-10-16'),
+                ('daily_messages', 1900, '2026-10-07'),
+            ],
+        )
+        self.conn.commit()
+        with patch.object(db, 'get_daily_stats', return_value=stats):
+            self.assertTrue(bot.publish_daily_stats(
+                self.vk, self.conn, stat_date, include_records=True
+            ))
+
+        report = self.queued('send')[0]['message']
+        self.assertIn('👥 Активных участников: 18', report)
+        self.assertIn('⚡ Активность чата: 150% от среднего за 7 дней', report)
+        self.assertIn('👥 Рекорд активных участников: 72 (16.10.2026)', report)
+        self.assertIn('⚡ Рекорд активности чата: 1900 сообщений за день (07.10.2026)', report)
+
+    def test_intraday_daily_report_does_not_include_all_time_records(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        stats = {
+            'date': stat_date.isoformat(), 'messages': 3, 'active_users': 1,
+            'activity_percent': None, 'activity_average_messages': 0,
+            'photos': 0, 'videos': 0, 'music': 0, 'voices': 0, 'top_users': [],
+        }
+        with patch.object(db, 'get_daily_stats', return_value=stats):
+            self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date))
+        report = self.queued('send')[0]['message']
+        self.assertNotIn('Рекорд активных участников:', report)
+        self.assertNotIn('Рекорд активности чата:', report)
 
     def test_failed_inbox_transaction_rolls_back_all_effects_and_retries(self):
         original = bot.process_message
@@ -195,6 +513,11 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), 0)
         self.drain()
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), self.now)
+        king_notice = next(item for item in self.queued('send')
+                           if item['message'].startswith('🦸 Герой чата выдал мут'))
+        self.assertTrue(king_notice['temporary'])
+        self.assertEqual(king_notice['delay'], 300)
+        self.assertEqual(king_notice['peer_id'], config.CHAT_PEER_ID)
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id4', mid=3))
         self.assertEqual(len(self.queued('mute')), 1)
 
@@ -252,6 +575,41 @@ class BotTests(unittest.TestCase):
         count = len(reports)
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(len(self.queued('send')), count)
+        hero_report = next(text for text in reports if 'ГЕРОЙ ЧАТА' in text)
+        daily_report = next(text for text in reports if 'СТАТИСТИКА ЧАТА' in text)
+        self.assertNotIn('Рекорд активных участников:', hero_report)
+        self.assertNotIn('Рекорд активности чата:', hero_report)
+        self.assertIn('Рекорд активных участников:', daily_report)
+        self.assertIn('Рекорд активности чата:', daily_report)
+
+    def test_midnight_hero_announcement_always_publishes_existing_records(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
+        record_date = stat_date - timedelta(days=1)
+        db.save_king(self.conn, record_date, 42, 12)
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ('active_users', 9, record_date.isoformat()),
+        )
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ('daily_messages', 175, record_date.isoformat()),
+        )
+        self.conn.commit()
+        for _ in range(3):
+            db.record_message(self.conn, 1, self.now - 24 * 60 * 60)
+
+        self.assertTrue(bot.publish_king(self.vk, self.conn, stat_date))
+
+        report = self.queued('send')[0]['message']
+        self.assertNotIn('Рекорд активных участников:', report)
+        self.assertNotIn('Рекорд активности чата:', report)
+        self.assertIn('Рекорд Героя чата: [id42|Test User] — 12 сообщ. за день', report)
+        self.assertNotIn('новый рекорд', report)
+
+        self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date, include_records=True))
+        stats_report = self.queued('send')[1]['message']
+        self.assertIn('Рекорд активных участников: 9', stats_report)
+        self.assertIn('Рекорд активности чата: 175 сообщений за день', stats_report)
 
     def test_scheduler_rollback_retries_without_duplicate_king(self):
         yesterday = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
@@ -280,14 +638,14 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], self.now + 5)
 
     def test_migration_failure_is_atomic_and_retryable(self):
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 6')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
         self.conn.commit()
-        original = db._migration_6
+        original = db._migration_10
         def fail(conn):
             original(conn)
             conn.execute('CREATE TABLE temporary_migration_probe(id INTEGER)')
             raise RuntimeError('migration failed')
-        with patch.object(db, '_migration_6', side_effect=fail):
+        with patch.object(db, '_migration_10', side_effect=fail):
             with self.assertRaises(RuntimeError):
                 db.connect(self.path)
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name = 'temporary_migration_probe'").fetchone())
@@ -308,7 +666,7 @@ class BotTests(unittest.TestCase):
     def test_backup_api_preserves_wal_rows(self):
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('INSERT INTO users(user_id, peer_id, warnings) VALUES (77, 2000000001, 5)')
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 6')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
         self.conn.commit()
         migrated = db.connect(self.path)
         migrated.close()
@@ -330,7 +688,7 @@ class BotTests(unittest.TestCase):
              patch.object(bot, 'VkBotLongPoll', FakeLongPoll):
             with self.assertRaises(KeyboardInterrupt):
                 bot.run_forever()
-            self.assertEqual(thread.call_count, 3)
+            self.assertEqual(thread.call_count, 4)
 
     def operation(self, kind, payload):
         operation_id = db.enqueue(self.conn, kind, payload)

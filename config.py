@@ -74,6 +74,7 @@ RATE_LIMIT_SECONDS = 60 * 60
 MUTE_SECONDS = 60 * 60
 PROFILE_COOLDOWN_SECONDS = 3 * 24 * 60 * 60
 BOT_REASON_DELETE_SECONDS = 10 * 60
+SOCIAL_MUTE_NOTICE_DELETE_SECONDS = 5 * 60
 ALL_COMMAND_DELETE_SECONDS = 60
 MODERATION_REASON_DELETE_SECONDS = 60
 SCHEDULER_INTERVAL_SECONDS = 20
@@ -106,6 +107,9 @@ PROHIBITED_LEXICON = (
     "деньги",
     "не бюджет",
     "без предоплаты",
+    "без предоплат",
+    "расход",
+    "коммерческой основе",
     "скидки",
     "порно",
     "продам видео",
@@ -131,16 +135,20 @@ PROSTITUTION_MUTE_REASON = (
     "🚫 Проституция здесь запрещена. Сообщение удалено, доступ ограничен на 1 час."
 )
 
+LINK_MUTE_REASON = (
+    "Ссылки здесь запрещены. Сообщение удалено, доступ ограничен на 1 час."
+)
+
+PROHIBITED_WORDS_MUTE_REASON = (
+    "Запрещённые слова здесь запрещены. Сообщение удалено, доступ ограничен на 1 час."
+)
+
 MEDIA_MUTE_REASON = (
     "🎬 Музыка и видео в чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
 )
 
 STICKER_MUTE_REASON = (
     "🚫 Стикеры в этом чате запрещены. Сообщение удалено, доступ ограничен на 1 час."
-)
-
-ALL_COMMAND_MUTE_REASON = (
-    "@all -Здесь такие команды запрещены"
 )
 
 PORN_SALE_MUTE_REASON = (
@@ -150,6 +158,10 @@ PORN_SALE_MUTE_REASON = (
 CARD_PHONE_MUTE_REASON = (
     "💳 Публикация банковских карт и номеров телефонов запрещена. "
     "Сообщение удалено, доступ ограничен на 1 час."
+)
+
+SPAM_MUTE_REASON = (
+    "Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!"
 )
 
 POLITICAL_MUTE_REASON = (
