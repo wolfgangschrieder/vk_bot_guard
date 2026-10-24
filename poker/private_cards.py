@@ -38,6 +38,22 @@ class VkPrivateCards:
         result = self.vk.messages.isMessagesFromGroupAllowed(group_id=self.group_id, user_id=user_id)
         return bool(result.get("is_allowed", 0))
 
+    def deliver_pending(self, store, room_id, hand_number):
+        """Retry queued VK messages with their original random IDs.
+
+        An uncertain VK failure leaves the job pending for later retry.
+        """
+        delivered = 0
+        for user_id, random_id, message in store.pending_private_cards(room_id, hand_number):
+            self.vk.messages.send(
+                peer_id=user_id,
+                random_id=random_id,
+                message=message,
+            )
+            store.mark_private_delivered(room_id, hand_number, user_id)
+            delivered += 1
+        return delivered
+
     def send(self, user_id, hole, hand_number, random_id=None):
         if type(user_id) is not int or user_id <= 0:
             raise ValueError("Invalid user ID")
