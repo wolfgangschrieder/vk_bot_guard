@@ -1,6 +1,7 @@
 """Independent no-limit Hold'em table. No VK calls or persistence."""
 from dataclasses import dataclass, field
 from secrets import SystemRandom
+from time import time
 
 from .evaluator import DECK, settle_pots
 
@@ -36,6 +37,8 @@ class Table:
     hand_number: int = 0
     payouts: dict = field(default_factory=dict)
     last_dealer: int = 0
+    turn_started_at: float = 0.0
+    turn_timeout_seconds: int = 90
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -106,6 +109,7 @@ class Table:
         self.min_raise = self.big_blind
         self.stage = "preflop"
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
+        self.turn_started_at = time() if self.turn else 0.0
         actionable = self.actionable()
         if not actionable or (len(actionable) == 1 and actionable[0].street_bet >= self.current_bet):
             self.next_street()
@@ -157,6 +161,23 @@ class Table:
         p.acted = True
         self.progress(user_id)
 
+    def expire_turn(self, now=None):
+        """Apply a deterministic timeout: check for free, otherwise fold.
+
+        The caller must persist the resulting table before publishing anything.
+        Returns (user_id, action), or None if no turn has expired.
+        """
+        if self.stage not in ("preflop", "flop", "turn", "river") or not self.turn:
+            return None
+        now = time() if now is None else now
+        if not self.turn_started_at or now < self.turn_started_at + self.turn_timeout_seconds:
+            return None
+        user_id = self.turn
+        player = self.players[user_id]
+        action = "fold" if self.current_bet > player.street_bet else "check"
+        self.act(user_id, action)
+        return user_id, action
+
     def progress(self, last_actor):
         live = self.live()
         if len(live) == 1:
@@ -166,6 +187,7 @@ class Table:
             self.payouts = {winner.user_id: amount}
             self.stage = "complete"
             self.turn = 0
+            self.turn_started_at = 0.0
             return
         actionable = self.actionable()
         pending = [p for p in actionable if not p.acted or p.street_bet != self.current_bet]
@@ -175,6 +197,7 @@ class Table:
             self.next_street()
         else:
             self.turn = self.next_after(self.players[last_actor].seat, pending).user_id
+            self.turn_started_at = time()
 
     def next_street(self):
         while True:
@@ -192,6 +215,7 @@ class Table:
             self.min_raise = self.big_blind
             if len(self.actionable()) >= 2:
                 self.turn = self.next_after(self.dealer, self.actionable()).user_id
+                self.turn_started_at = time()
                 return
             # Nobody can bet any further: deal remaining board and resolve.
             if self.stage == "river":
@@ -207,6 +231,7 @@ class Table:
             self.players[user_id].stack += chips
         self.stage = "complete"
         self.turn = 0
+        self.turn_started_at = 0.0
 
     def new_session(self):
         """Start a new match with fresh virtual stacks, never during a hand."""
