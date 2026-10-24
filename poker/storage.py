@@ -45,6 +45,14 @@ class PokerStore:
         )
         self.conn.commit()
 
+    def is_processed(self, room_id, event_id):
+        """Return whether an incoming VK event was already committed."""
+        row = self.conn.execute(
+            "SELECT 1 FROM poker_processed_events WHERE room_id=? AND event_id=?",
+            (room_id, str(event_id)),
+        ).fetchone()
+        return row is not None
+
     def load(self, room_id):
         row = self.conn.execute(
             "SELECT revision, snapshot FROM poker_state WHERE room_id=?", (room_id,)
