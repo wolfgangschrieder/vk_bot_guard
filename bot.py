@@ -1008,10 +1008,10 @@ def poker_turn_watchdog(vk):
         try:
             with POKER_LOCK:
                 response = POKER_COMMANDS.process_expired_turn()
-            if response:
-                send_bot_message(
-                    vk, response, peer_id=config.POKER_CHAT_PEER_ID
-                )
+                    if response:
+                    send_bot_message(
+                        vk, response, peer_id=config.POKER_CHAT_PEER_ID
+                    )
         except Exception:
             log.exception("Poker turn timeout processing failed")
 
