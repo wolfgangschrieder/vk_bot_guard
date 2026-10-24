@@ -133,6 +133,8 @@ class Table:
                     raise ValueError("Raise too small")
                 self.commit(p, p.stack)
             else:
+                if not any(other.user_id != user_id for other in self.actionable()):
+                    raise ValueError("Cannot raise without another player able to respond")
                 if not p.can_raise:
                     raise ValueError("Betting not reopened")
                 increase = target - self.current_bet
