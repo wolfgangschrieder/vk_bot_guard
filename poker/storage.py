@@ -100,6 +100,39 @@ class PokerStore:
                 )
         return revision + 1
 
+    def save_hand_with_private_cards(self, room_id, table, expected_revision, messages, event_id=None):
+        """Atomically persist a newly dealt hand and every private card job.
+
+        messages maps user_id to (stable_random_id, message_text).
+        No VK network calls happen in this transaction.
+        """
+        if table.stage not in ("preflop", "flop", "turn", "river", "complete"):
+            raise ValueError("No dealt hand to persist")
+        if set(messages) != set(table.players):
+            raise ValueError("Must queue private cards for every seated player")
+        with self.conn:
+            if event_id is not None and self.is_processed(room_id, event_id):
+                return None
+            row = self.conn.execute(
+                "SELECT revision FROM poker_state WHERE room_id=?", (room_id,)
+            ).fetchone()
+            revision = row[0] if row else 0
+            if revision != expected_revision:
+                raise ValueError("Stale poker state revision")
+            self.enqueue_private_cards(room_id, table.hand_number, messages)
+            self.conn.execute(
+                "INSERT INTO poker_state(room_id,revision,snapshot) VALUES (?,?,?) "
+                "ON CONFLICT(room_id) DO UPDATE SET "
+                "revision=excluded.revision,snapshot=excluded.snapshot",
+                (room_id, revision + 1, serialize(table)),
+            )
+            if event_id is not None:
+                self.conn.execute(
+                    "INSERT INTO poker_processed_events(room_id,event_id) VALUES (?,?)",
+                    (room_id, str(event_id)),
+                )
+        return revision + 1
+
     def enqueue_private_cards(self, room_id, hand_number, messages):
         """Persist card deliveries before any network call.
 
