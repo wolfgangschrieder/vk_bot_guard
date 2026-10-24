@@ -104,6 +104,20 @@ class TableTests(unittest.TestCase):
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
 
+    def test_new_session_restores_all_stacks(self):
+        table = self.make_table()
+        table.act(1, "fold")
+        table.new_session()
+        self.assertEqual(table.stage, "waiting")
+        self.assertEqual(table.hand_number, 0)
+        self.assertEqual([p.stack for p in table.seated()], [10000, 10000])
+        self.assertTrue(all(not p.ready and not p.hole for p in table.seated()))
+
+    def test_new_session_cannot_interrupt_hand(self):
+        table = self.make_table()
+        with self.assertRaises(ValueError):
+            table.new_session()
+
 
 if __name__ == "__main__":
     unittest.main()
