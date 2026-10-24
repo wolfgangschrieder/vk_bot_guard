@@ -260,6 +260,7 @@ class Table:
             player.last_action_bet = 0
         self.stage = "waiting"
         self.turn = 0
+        self.turn_started_at = 0.0
         self.current_bet = 0
         self.min_raise = self.big_blind
         self.deck = []
