@@ -3,7 +3,9 @@
 This is intentionally NOT wired into bot.py yet. The integration layer must
 supply a verified private-message delivery implementation before dealing.
 """
+from secrets import randbelow
 from .engine import Table
+from .private_cards import format_hole_cards
 
 
 HELP = (
@@ -67,6 +69,20 @@ class PokerCommands:
         self.room_id = room_id
         self.private_delivery = private_delivery
 
+    def _deliver_and_report(self, table):
+        try:
+            self.private_delivery.deliver_pending(
+                self.store, self.room_id, table.hand_number
+            )
+        except Exception:
+            return "⏳ Раздача сохранена, доставка карт не завершена. Игра приостановлена."
+        total, delivered = self.store.private_delivery_status(
+            self.room_id, table.hand_number
+        )
+        if total != len(table.players) or delivered != total:
+            return "⏳ Ожидаем доставки карт."
+        return format_table(table)
+
     def handle(self, user_id, text, event_id):
         """Return a chat reply, or None for a non-poker message.
 
@@ -107,11 +123,35 @@ class PokerCommands:
             elif cmd == "start":
                 if self.private_delivery is None:
                     return "Раздача пока отключена: личная доставка карт не настроена."
-                # A reliable transactional outbox is required before activation.
-                return "Раздача пока отключена до реализации надёжной доставки карт."
+                for player in table.seated():
+                    try:
+                        permitted = self.private_delivery.can_message(player.user_id)
+                    except Exception:
+                        permitted = False
+                    if not permitted:
+                        return "⚠️ Каждый игрок должен разрешить сообщения от сообщества."
+                table.start()
+                messages = {
+                    p.user_id: (
+                        randbelow(2147483647) + 1,
+                        format_hole_cards(p.hole, table.hand_number),
+                    )
+                    for p in table.seated()
+                }
+                saved = self.store.save_hand_with_private_cards(
+                    self.room_id, table, revision, messages, event_id=event_id
+                )
+                if saved is None:
+                    return None
+                return self._deliver_and_report(table)
             elif cmd in ("fold", "check", "call", "raise", "allin"):
                 if self.private_delivery is None:
                     return "Игровые действия пока отключены."
+                total, delivered = self.store.private_delivery_status(
+                    self.room_id, table.hand_number
+                )
+                if total != len(table.players) or delivered != total:
+                    return "⏳ Доставка закрытых карт ещё не завершена."
                 table.act(user_id, cmd, amount)
             else:
                 return HELP
