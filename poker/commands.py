@@ -91,6 +91,14 @@ class PokerCommands:
             return format_table(table)
         try:
             if cmd == "join":
+                if self.private_delivery is not None:
+                    try:
+                        permitted = self.private_delivery.can_message(user_id)
+                    except Exception:
+                        permitted = False
+                    if not permitted:
+                        return ("⚠️ Разрешите личные сообщения от сообщества Астра "
+                                "и повторите /join, иначе закрытые карты не придут.")
                 table.join(user_id)
             elif cmd == "leave":
                 table.leave(user_id)
