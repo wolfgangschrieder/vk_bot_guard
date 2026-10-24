@@ -78,6 +78,41 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(len(vk.messages.calls), 3)
             reopened.close()
 
+    def test_complete_hand_next_hand_and_fresh_session(self):
+        class Delivery:
+            def can_message(self, uid):
+                return True
+            def deliver_pending(self, store, room, hand):
+                for uid, random_id, msg in store.pending_private_cards(room, hand):
+                    store.mark_private_delivered(room, hand, uid)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, private_delivery=Delivery())
+            for uid in (101, 202):
+                bot.handle(uid, "/join", "join" + str(uid))
+                bot.handle(uid, "/ready", "ready" + str(uid))
+            self.assertIn("PREFLOP", bot.handle(101, "/start", "start1"))
+            first = store.load(2000000999)[1]
+            self.assertEqual(first.hand_number, 1)
+            self.assertIn("COMPLETE", bot.handle(first.turn, "/fold", "fold1"))
+            self.assertIn("WAITING", bot.handle(101, "/next", "next1"))
+            for uid in (101, 202):
+                bot.handle(uid, "/ready", "ready2" + str(uid))
+            self.assertIn("PREFLOP", bot.handle(101, "/start", "start2"))
+            second = store.load(2000000999)[1]
+            self.assertEqual(second.hand_number, 2)
+            self.assertIn("COMPLETE", bot.handle(second.turn, "/fold", "fold2"))
+            self.assertIn("WAITING", bot.handle(101, "/newsession", "session2"))
+            fresh = store.load(2000000999)[1]
+            self.assertTrue(all(p.stack == 10000 for p in fresh.players.values()))
+            for uid in (101, 202):
+                bot.handle(uid, "/ready", "ready3" + str(uid))
+            self.assertIn("PREFLOP", bot.handle(101, "/start", "start3"))
+            self.assertEqual(store.load(2000000999)[1].hand_number, 3)
+            self.assertEqual(store.private_delivery_status(2000000999, 3), (2, 2))
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
