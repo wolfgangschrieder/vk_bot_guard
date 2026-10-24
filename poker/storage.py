@@ -119,7 +119,7 @@ class PokerStore:
             revision = row[0] if row else 0
             if revision != expected_revision:
                 raise ValueError("Stale poker state revision")
-            self.enqueue_private_cards(room_id, table.hand_number, messages)
+            self._insert_private_cards(room_id, table.hand_number, messages)
             self.conn.execute(
                 "INSERT INTO poker_state(room_id,revision,snapshot) VALUES (?,?,?) "
                 "ON CONFLICT(room_id) DO UPDATE SET "
@@ -134,32 +134,36 @@ class PokerStore:
         return revision + 1
 
     def enqueue_private_cards(self, room_id, hand_number, messages):
+        """Persist private messages in a standalone transaction."""
+        with self.conn:
+            self._insert_private_cards(room_id, hand_number, messages)
+
+    def _insert_private_cards(self, room_id, hand_number, messages):
         """Persist card deliveries before any network call.
 
         messages maps user_id to (stable_random_id, message_text).
         Existing jobs are never overwritten, even after a restart.
         """
-        with self.conn:
-            for user_id, (random_id, message) in messages.items():
-                if type(random_id) is not int or not 0 < random_id <= 2147483647:
-                    raise ValueError("Invalid VK random_id")
-                if not message:
-                    raise ValueError("Empty private message")
-                existing = self.conn.execute(
-                    "SELECT random_id, message FROM poker_private_outbox "
-                    "WHERE room_id=? AND hand_number=? AND user_id=?",
-                    (room_id, hand_number, user_id),
-                ).fetchone()
-                if existing:
-                    if existing != (random_id, message):
-                        raise ValueError("Conflicting private-card delivery")
-                    continue
-                self.conn.execute(
-                    "INSERT INTO poker_private_outbox "
-                    "(room_id,hand_number,user_id,random_id,message) "
-                    "VALUES (?,?,?,?,?)",
-                    (room_id, hand_number, user_id, random_id, message),
-                )
+        for user_id, (random_id, message) in messages.items():
+            if type(random_id) is not int or not 0 < random_id <= 2147483647:
+                raise ValueError("Invalid VK random_id")
+            if not message:
+                raise ValueError("Empty private message")
+            existing = self.conn.execute(
+                "SELECT random_id, message FROM poker_private_outbox "
+                "WHERE room_id=? AND hand_number=? AND user_id=?",
+                (room_id, hand_number, user_id),
+            ).fetchone()
+            if existing:
+                if existing != (random_id, message):
+                    raise ValueError("Conflicting private-card delivery")
+                continue
+            self.conn.execute(
+                "INSERT INTO poker_private_outbox "
+                "(room_id,hand_number,user_id,random_id,message) "
+                "VALUES (?,?,?,?,?)",
+                (room_id, hand_number, user_id, random_id, message),
+            )
 
     def private_delivery_status(self, room_id, hand_number):
         """Return (total, delivered) for a hand's durable card jobs."""
