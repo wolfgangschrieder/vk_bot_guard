@@ -53,6 +53,12 @@ class PokerStore:
             "PRIMARY KEY(room_id, hand_number, user_id), "
             "UNIQUE(random_id))"
         )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_public_outbox ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, "
+            "random_id INTEGER NOT NULL UNIQUE, message TEXT NOT NULL, "
+            "delivered INTEGER NOT NULL DEFAULT 0)"
+        )
         self.conn.commit()
 
     def is_processed(self, room_id, event_id):
@@ -192,6 +198,30 @@ class PokerStore:
             )
             if cursor.rowcount != 1:
                 raise ValueError("Private delivery job not found")
+
+    def enqueue_public(self, room_id, random_id, message):
+        """Queue public chat message with a stable VK idempotency key."""
+        if type(random_id) is not int or not 0 < random_id <= 2147483647:
+            raise ValueError("Invalid public random_id")
+        if not message:
+            raise ValueError("Empty public message")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO poker_public_outbox(room_id,random_id,message) "
+                "VALUES (?,?,?)", (room_id, random_id, message)
+            )
+
+    def pending_public(self, room_id):
+        return self.conn.execute(
+            "SELECT id,random_id,message FROM poker_public_outbox "
+            "WHERE room_id=? AND delivered=0 ORDER BY id", (room_id,)
+        ).fetchall()
+
+    def mark_public_delivered(self, job_id):
+        with self.conn:
+            self.conn.execute(
+                "UPDATE poker_public_outbox SET delivered=1 WHERE id=?", (job_id,)
+            )
 
     def close(self):
         self.conn.close()
