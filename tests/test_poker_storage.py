@@ -121,6 +121,22 @@ class StorageTests(unittest.TestCase):
         restored = deserialize(json.dumps(raw))
         self.assertEqual(restored.owner_id, 101)
 
+    def test_public_outbox_persists_across_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "public.db"
+            store = PokerStore(path)
+            store.enqueue_public(2000000999, 1234567, "First public update")
+            store.enqueue_public(2000000999, 1234568, "Second public update")
+            with self.assertRaises(Exception):
+                store.enqueue_public(2000000999, 1234567, "Duplicate")
+            store.close()
+            reopened = PokerStore(path)
+            jobs = reopened.pending_public(2000000999)
+            self.assertEqual([j[1] for j in jobs], [1234567, 1234568])
+            reopened.mark_public_delivered(jobs[0][0])
+            self.assertEqual([j[1] for j in reopened.pending_public(2000000999)], [1234568])
+            reopened.close()
+
 
 if __name__ == "__main__":
     unittest.main()
