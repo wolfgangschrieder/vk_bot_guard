@@ -553,7 +553,7 @@ def format_top(vk, rows, medals: tuple[str, ...]) -> str:
     return "\n".join(lines) if lines else "Пока нет сообщений."
 
 
-def publish_daily_stats(vk, conn, stat_date: date) -> bool:
+def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     top3 = stats["top_users"][:3]
     month = config.MONTH_NAMES[stat_date.month - 1]
@@ -576,6 +576,20 @@ def publish_daily_stats(vk, conn, stat_date: date) -> bool:
         f"🏆 ТОП-3 АКТИВНЫХ\n"
         f"{format_top(vk, top3, ('🥇', '🥈', '🥉'))}"
     )
+    if include_records:
+        records = db.get_chat_stat_records(conn)
+        record_lines = []
+        for metric, label, suffix in (
+            ("active_users", "👥 Рекорд активных участников", ""),
+            ("daily_messages", "⚡ Рекорд активности чата", " сообщений за день"),
+        ):
+            record = records.get(metric)
+            if record:
+                record_day = date.fromisoformat(record["stat_date"]).strftime("%d.%m.%Y")
+                record_lines.append(f"{label}: {record['value']}{suffix} ({record_day})")
+            else:
+                record_lines.append(f"{label}: пока нет данных")
+        report += "\n\n📈 РЕКОРДЫ ЧАТА\n" + "\n".join(record_lines)
     return send_bot_message(vk, report) > 0
 
 
@@ -600,7 +614,7 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
-    new_records = db.record_daily_chat_stats(conn, stat_date)
+    db.record_daily_chat_stats(conn, stat_date)
     if not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
@@ -614,7 +628,6 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         return True
 
     names = get_user_names(vk, [user_id])
-    stat_records = db.get_chat_stat_records(conn)
     hero_record = db.get_hero_message_record(
         conn, (stat_date.isoformat(), user_id, messages)
     )
@@ -624,22 +637,6 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
-    record_lines = []
-    for metric, label, suffix in (
-        ("active_users", "👥 Рекорд активных участников", ""),
-        ("daily_messages", "⚡ Рекорд активности чата", " сообщений за день"),
-    ):
-        record = stat_records.get(metric)
-        if record:
-            record_day = date.fromisoformat(record["stat_date"]).strftime("%d.%m.%Y")
-            is_new = metric in new_records and record["stat_date"] == stat_date.isoformat()
-            new_label = " — новый рекорд" if is_new else ""
-            record_lines.append(
-                f"{label}: {record['value']}{suffix} ({record_day}){new_label}"
-            )
-        else:
-            record_lines.append(f"{label}: пока нет данных")
-
     if hero_record:
         record_date, record_user_id, record_messages = hero_record
         record_name = names.get(record_user_id)
@@ -648,13 +645,13 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         record_day = date.fromisoformat(record_date).strftime("%d.%m.%Y")
         is_new = record_date == stat_date.isoformat()
         new_label = " — новый рекорд" if is_new else ""
-        record_lines.append(
+        hero_record_line = (
             f"🏆 Рекорд Героя чата: {mention(record_user_id, record_name)} — "
             f"{record_messages} сообщ. за день ({record_day}){new_label}"
         )
     else:
-        record_lines.append("🏆 Рекорд Героя чата: пока нет данных")
-    text += "\n\n" + "\n".join(record_lines)
+        hero_record_line = "🏆 Рекорд Героя чата: пока нет данных"
+    text += "\n\n" + hero_record_line
     sent = send_bot_message(vk, text)
     if sent <= 0:
         return False
@@ -1402,7 +1399,8 @@ def scheduler_tick(vk, conn, now=None):
                                        (f"daily:{yesterday.isoformat()}", publish_daily_stats)):
                     if not db.scheduler_event_claimed(conn, key):
                         queued = (publisher(vk, conn, yesterday, announce=(cursor == now.date()))
-                                  if publisher is publish_king else publisher(vk, conn, yesterday))
+                                  if publisher is publish_king
+                                  else publisher(vk, conn, yesterday, include_records=True))
                         if queued:
                             db.claim_scheduler_event(conn, key, int(now.timestamp()))
             hours = [hour for hour in (6, 12, 18) if lower < midnight.replace(hour=hour) <= now]

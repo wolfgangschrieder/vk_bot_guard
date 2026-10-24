@@ -271,12 +271,37 @@ class BotTests(unittest.TestCase):
             'activity_percent': 150, 'activity_average_messages': 80,
             'photos': 0, 'videos': 0, 'music': 0, 'voices': 0, 'top_users': [],
         }
+        self.conn.executemany(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            [
+                ('active_users', 72, '2026-10-16'),
+                ('daily_messages', 1900, '2026-10-07'),
+            ],
+        )
+        self.conn.commit()
         with patch.object(db, 'get_daily_stats', return_value=stats):
-            self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date))
+            self.assertTrue(bot.publish_daily_stats(
+                self.vk, self.conn, stat_date, include_records=True
+            ))
 
         report = self.queued('send')[0]['message']
         self.assertIn('👥 Активных участников: 18', report)
         self.assertIn('⚡ Активность чата: 150% от среднего за 7 дней', report)
+        self.assertIn('👥 Рекорд активных участников: 72 (16.10.2026)', report)
+        self.assertIn('⚡ Рекорд активности чата: 1900 сообщений за день (07.10.2026)', report)
+
+    def test_intraday_daily_report_does_not_include_all_time_records(self):
+        stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        stats = {
+            'date': stat_date.isoformat(), 'messages': 3, 'active_users': 1,
+            'activity_percent': None, 'activity_average_messages': 0,
+            'photos': 0, 'videos': 0, 'music': 0, 'voices': 0, 'top_users': [],
+        }
+        with patch.object(db, 'get_daily_stats', return_value=stats):
+            self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date))
+        report = self.queued('send')[0]['message']
+        self.assertNotIn('Рекорд активных участников:', report)
+        self.assertNotIn('Рекорд активности чата:', report)
 
     def test_failed_inbox_transaction_rolls_back_all_effects_and_retries(self):
         original = bot.process_message
@@ -435,11 +460,12 @@ class BotTests(unittest.TestCase):
         count = len(reports)
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(len(self.queued('send')), count)
-        self.assertTrue(any(
-            'Рекорд активных участников:' in item['message']
-            and 'новый рекорд' in item['message']
-            for item in self.queued('send')
-        ))
+        hero_report = next(text for text in reports if 'ГЕРОЙ ЧАТА' in text)
+        daily_report = next(text for text in reports if 'СТАТИСТИКА ЧАТА' in text)
+        self.assertNotIn('Рекорд активных участников:', hero_report)
+        self.assertNotIn('Рекорд активности чата:', hero_report)
+        self.assertIn('Рекорд активных участников:', daily_report)
+        self.assertIn('Рекорд активности чата:', daily_report)
 
     def test_midnight_hero_announcement_always_publishes_existing_records(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
@@ -460,10 +486,15 @@ class BotTests(unittest.TestCase):
         self.assertTrue(bot.publish_king(self.vk, self.conn, stat_date))
 
         report = self.queued('send')[0]['message']
-        self.assertIn('Рекорд активных участников: 9', report)
-        self.assertIn('Рекорд активности чата: 175 сообщений за день', report)
+        self.assertNotIn('Рекорд активных участников:', report)
+        self.assertNotIn('Рекорд активности чата:', report)
         self.assertIn('Рекорд Героя чата: [id42|Test User] — 12 сообщ. за день', report)
         self.assertNotIn('новый рекорд', report)
+
+        self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date, include_records=True))
+        stats_report = self.queued('send')[1]['message']
+        self.assertIn('Рекорд активных участников: 9', stats_report)
+        self.assertIn('Рекорд активности чата: 175 сообщений за день', stats_report)
 
     def test_scheduler_rollback_retries_without_duplicate_king(self):
         yesterday = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
