@@ -72,6 +72,7 @@ class PokerCommands:
         self.store = store
         self.room_id = room_id
         self.private_delivery = private_delivery
+        self.last_public_queued = False
 
     def _deliver_and_report(self, table):
         before_total, before_delivered = self.store.private_delivery_status(
@@ -119,13 +120,15 @@ class PokerCommands:
         result = table.expire_turn(now)
         if result is None:
             return None
-        self.store.save(self.room_id, table, revision)
         user_id, action = result
-        return (
+        response = (
             f"⏱ [id{user_id}|Игрок] не сделал ход за "
             f"{table.turn_timeout_seconds} секунд: {action.upper()}.\\n"
             + format_table(table)
         )
+        self.store.save(self.room_id, table, revision, public_message=response)
+        self.last_public_queued = True
+        return response
 
     def handle(self, user_id, text, event_id):
         """Return a chat reply, or None for a non-poker message.
@@ -133,6 +136,7 @@ class PokerCommands:
         Caller MUST serialize invocations per room. Do not publish a reply
         if the transaction fails. No live hand starts without private delivery.
         """
+        self.last_public_queued = False
         if event_id is not None and self.store.is_processed(self.room_id, event_id):
             return None
         try:
@@ -217,9 +221,14 @@ class PokerCommands:
                 table.act(user_id, cmd, amount)
             else:
                 return HELP
-            saved = self.store.save(self.room_id, table, revision, event_id=event_id)
+            response = format_table(table)
+            saved = self.store.save(
+                self.room_id, table, revision, event_id=event_id,
+                public_message=response,
+            )
             if saved is None:
                 return None
+            self.last_public_queued = True
         except (ValueError, KeyError) as exc:
             return f"⚠️ {exc}"
         return format_table(table)
