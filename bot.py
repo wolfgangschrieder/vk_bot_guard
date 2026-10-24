@@ -12,6 +12,8 @@ from vk_api.exceptions import ApiError, VkApiError
 
 import config
 import database as db
+from poker.commands import PokerCommands
+from poker.storage import PokerStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +25,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("vk_bot_guard")
 
+POKER_COMMANDS = None
 CHAT_PEER_START = 2_000_000_000
 
 
@@ -888,7 +891,22 @@ def handle_new_message(vk, conn, message) -> None:
     peer_id = message_field(message, "peer_id")
     text = message_text(message)
 
-    if from_id <= 0 or not is_target_chat(peer_id):
+    if from_id <= 0:
+        return
+
+    # Poker chat bypasses the two existing moderation pipelines.
+    if config.POKER_CHAT_PEER_ID and peer_id == config.POKER_CHAT_PEER_ID:
+        if POKER_COMMANDS is None:
+            return
+        event_id = message_field(message, "id")
+        if event_id <= 0:
+            return
+        response = POKER_COMMANDS.handle(from_id, text, str(event_id))
+        if response:
+            send_bot_message(vk, response, peer_id=peer_id)
+        return
+
+    if not is_target_chat(peer_id):
         return
 
     message_id = message_field(message, "id")
@@ -979,8 +997,12 @@ def handle_new_message(vk, conn, message) -> None:
 
 
 def run_forever() -> None:
-    global ACTIVE_CONN
+    global ACTIVE_CONN, POKER_COMMANDS
     conn = db.connect()
+    if config.POKER_CHAT_PEER_ID:
+        poker_store = PokerStore(config.BASE_DIR / "poker.db")
+        POKER_COMMANDS = PokerCommands(poker_store, config.POKER_CHAT_PEER_ID)
+        log.info("Poker lobby enabled for peer_id=%s; dealing disabled", config.POKER_CHAT_PEER_ID)
     ACTIVE_CONN = conn
 
     log.info("База готова: %s", config.DB_PATH)
