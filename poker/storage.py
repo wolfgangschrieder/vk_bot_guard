@@ -111,7 +111,7 @@ class PokerStore:
                 self._insert_public(room_id, public_message)
         return revision + 1
 
-    def save_hand_with_private_cards(self, room_id, table, expected_revision, messages, event_id=None):
+    def save_hand_with_private_cards(self, room_id, table, expected_revision, messages, event_id=None, public_message=None):
         """Atomically persist a newly dealt hand and every private card job.
 
         messages maps user_id to (stable_random_id, message_text).
@@ -142,6 +142,8 @@ class PokerStore:
                     "INSERT INTO poker_processed_events(room_id,event_id) VALUES (?,?)",
                     (room_id, str(event_id)),
                 )
+            if public_message:
+                self._insert_public(room_id, public_message)
         return revision + 1
 
     def enqueue_private_cards(self, room_id, hand_number, messages):
