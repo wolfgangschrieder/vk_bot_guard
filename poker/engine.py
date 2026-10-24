@@ -206,6 +206,31 @@ class Table:
         self.stage = "complete"
         self.turn = 0
 
+    def new_session(self):
+        """Start a new match with fresh virtual stacks, never during a hand."""
+        if self.stage not in ("waiting", "complete"):
+            raise ValueError("Cannot reset chips during an active hand")
+        for player in self.players.values():
+            player.stack = self.starting_stack
+            player.ready = False
+            player.folded = False
+            player.all_in = False
+            player.committed = 0
+            player.street_bet = 0
+            player.hole = ()
+            player.acted = False
+            player.can_raise = True
+        self.stage = "waiting"
+        self.turn = 0
+        self.current_bet = 0
+        self.min_raise = self.big_blind
+        self.deck = []
+        self.board = []
+        self.payouts = {}
+        self.hand_number = 0
+        self.dealer = 0
+        self.last_dealer = 0
+
     def reset(self):
         if self.stage != "complete":
             raise ValueError("Hand not complete")
