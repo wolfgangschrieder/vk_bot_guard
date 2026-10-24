@@ -96,6 +96,13 @@ class PokerCommands:
         )
         if total != len(table.players) or delivered != total:
             return None
+        # Legacy snapshots may not have a timestamp; initialize the clock
+        # without immediately penalizing a player after a restart.
+        if table.turn and not table.turn_started_at:
+            from time import time
+            table.turn_started_at = time() if now is None else now
+            self.store.save(self.room_id, table, revision)
+            return None
         result = table.expire_turn(now)
         if result is None:
             return None
