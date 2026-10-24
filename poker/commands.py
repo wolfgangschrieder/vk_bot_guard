@@ -13,6 +13,7 @@ HELP = (
     "/poker — стол, /join — занять место, /leave — выйти, "
     "/ready — готов, /unready — отменить готовность, "
     "/start — начать раздачу, /table — состояние, "
+    "/next — следующая раздача, /newsession — новая сессия (10000 фишек), "
     "/fold, /check, /call, /raise СУММА, /allin — действия."
 )
 
@@ -50,7 +51,7 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/fold", "/check", "/call", "/raise", "/allin",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin",
     }
     if cmd not in supported:
         return None
@@ -183,6 +184,10 @@ class PokerCommands:
                 if saved is None:
                     return None
                 return self._deliver_and_report(table)
+            elif cmd == "next":
+                table.reset()
+            elif cmd == "newsession":
+                table.new_session()
             elif cmd in ("fold", "check", "call", "raise", "allin"):
                 if self.private_delivery is None:
                     return "Игровые действия пока отключены."
