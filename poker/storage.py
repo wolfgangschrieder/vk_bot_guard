@@ -23,6 +23,8 @@ def deserialize(payload):
         for uid, data in players.items()
     }
     table.payouts = {int(uid): amount for uid, amount in table.payouts.items()}
+    if table.players and table.owner_id not in table.players:
+        table.owner_id = table.seated()[0].user_id
     return table
 
 
