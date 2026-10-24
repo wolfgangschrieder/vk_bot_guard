@@ -135,6 +135,34 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.stage, "complete")
         self.assertEqual(sum(p.stack for p in table.players.values()), 10080)
 
+    def test_timeout_folds_when_facing_bet(self):
+        table = Table()
+        for uid in (101, 202):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        current = table.turn
+        started = table.turn_started_at
+        self.assertIsNone(table.expire_turn(started + 89))
+        self.assertEqual(table.turn, current)
+        self.assertEqual(table.expire_turn(started + 90), (current, "fold"))
+        self.assertEqual(table.stage, "complete")
+        self.assertEqual(table.turn_started_at, 0.0)
+
+    def test_timeout_checks_when_no_call_required(self):
+        table = Table()
+        for uid in (101, 202):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        table.act(table.turn, "call")
+        table.act(table.turn, "check")
+        self.assertEqual(table.stage, "flop")
+        current = table.turn
+        started = table.turn_started_at
+        self.assertEqual(table.expire_turn(started + 90), (current, "check"))
+        self.assertEqual(table.stage, "flop")
+
 
 if __name__ == "__main__":
     unittest.main()
