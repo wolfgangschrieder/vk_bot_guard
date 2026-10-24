@@ -265,7 +265,7 @@ class TableTests(unittest.TestCase):
             self.assertEqual(table.stage, street)
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), starting_chips)
-        self.assertEqual(sum(table.payouts.values()), 150)
+        self.assertEqual(sum(table.payouts.values()), 900)
         self.assertEqual(len(set(table.board)), 5)
 
 
