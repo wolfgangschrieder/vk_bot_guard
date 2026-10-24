@@ -206,6 +206,50 @@ class TableTests(unittest.TestCase):
         table.join(404)
         self.assertEqual(table.owner_id, 404)
 
+    def test_cumulative_short_allins_reopen_raising(self):
+        table = self.make_table(4)
+        table.stage = "flop"
+        table.turn = 1
+        table.current_bet = 0
+        table.min_raise = 100
+        for p in table.players.values():
+            p.street_bet = 0
+            p.acted = False
+            p.can_raise = True
+            p.last_action_bet = 0
+        table.players[2].stack = 60
+        table.players[3].stack = 120
+        table.act(1, "check")
+        table.act(2, "allin")
+        self.assertEqual(table.current_bet, 60)
+        table.act(3, "allin")
+        self.assertEqual(table.current_bet, 120)
+        table.act(4, "call")
+        self.assertEqual(table.turn, 1)
+        table.act(1, "raise", 240)
+        self.assertEqual(table.current_bet, 240)
+
+    def test_one_short_allin_does_not_reopen_raising(self):
+        table = self.make_table(3)
+        table.stage = "flop"
+        table.turn = 1
+        table.current_bet = 0
+        table.min_raise = 100
+        for p in table.players.values():
+            p.street_bet = 0
+            p.acted = False
+            p.can_raise = True
+            p.last_action_bet = 0
+        table.players[2].stack = 60
+        table.act(1, "check")
+        table.act(2, "allin")
+        table.act(3, "call")
+        self.assertEqual(table.turn, 1)
+        with self.assertRaisesRegex(ValueError, "Betting not reopened"):
+            table.act(1, "raise", 200)
+        self.assertEqual(table.turn, 1)
+        table.act(1, "call")
+
 
 if __name__ == "__main__":
     unittest.main()
