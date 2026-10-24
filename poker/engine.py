@@ -35,6 +35,7 @@ class Table:
     board: list = field(default_factory=list)
     hand_number: int = 0
     payouts: dict = field(default_factory=dict)
+    last_dealer: int = 0
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -93,7 +94,8 @@ class Table:
         self.board = []
         self.payouts = {}
         self.hand_number += 1
-        self.dealer = self.next_after(self.dealer, ps).seat
+        self.dealer = self.next_after(self.last_dealer, ps).seat
+        self.last_dealer = self.dealer
         for p in ps:
             p.hole = (self.deck.pop(), self.deck.pop())
         sb = next(p for p in ps if p.seat == self.dealer) if len(ps) == 2 else self.next_after(self.dealer, ps)
@@ -104,6 +106,8 @@ class Table:
         self.min_raise = self.big_blind
         self.stage = "preflop"
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
+        if len(self.actionable()) < 2:
+            self.next_street()
 
     def act(self, user_id, action, amount=None):
         if self.stage not in ("preflop", "flop", "turn", "river") or self.turn != user_id:
@@ -121,10 +125,10 @@ class Table:
             self.commit(p, owed)
         elif action in ("raise", "allin"):
             target = amount if action == "raise" else p.street_bet + p.stack
-            if type(target) is not int or target > p.street_bet + p.stack:
+            if type(target) is not int or target <= p.street_bet or target > p.street_bet + p.stack:
                 raise ValueError("Invalid bet")
             if target <= self.current_bet:
-                if action != "allin":
+                if action != "allin" or p.stack > owed:
                     raise ValueError("Raise too small")
                 self.commit(p, p.stack)
             else:
@@ -162,6 +166,8 @@ class Table:
             return
         actionable = self.actionable()
         pending = [p for p in actionable if not p.acted or p.street_bet != self.current_bet]
+        if len(actionable) == 1 and actionable[0].street_bet >= self.current_bet:
+            pending = []
         if not pending:
             self.next_street()
         else:
