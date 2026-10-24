@@ -73,6 +73,8 @@ class PokerCommands:
         Caller MUST serialize invocations per room. Do not publish a reply
         if the transaction fails. No live hand starts without private delivery.
         """
+        if event_id is not None and self.store.is_processed(self.room_id, event_id):
+            return None
         try:
             parsed = parse_command(text)
         except ValueError as exc:
