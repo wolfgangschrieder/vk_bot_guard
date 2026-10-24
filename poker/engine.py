@@ -27,6 +27,7 @@ class Table:
     small_blind: int = 50
     big_blind: int = 100
     players: dict = field(default_factory=dict)
+    owner_id: int = 0
     stage: str = "waiting"
     dealer: int = 0
     turn: int = 0
@@ -62,12 +63,17 @@ class Table:
             raise ValueError("Cannot join")
         seat = next(i for i in range(1, 10) if all(p.seat != i for p in self.players.values()))
         self.players[user_id] = Player(user_id, seat, self.starting_stack)
+        if not self.owner_id:
+            self.owner_id = user_id
         return seat
 
     def leave(self, user_id):
         if self.stage != "waiting":
             raise ValueError("Hand in progress")
         del self.players[user_id]
+        if user_id == self.owner_id:
+            remaining = self.seated()
+            self.owner_id = remaining[0].user_id if remaining else 0
 
     def ready(self, user_id, value=True):
         if self.stage != "waiting":
@@ -262,6 +268,9 @@ class Table:
         if self.stage != "complete":
             raise ValueError("Hand not complete")
         self.players = {uid: p for uid, p in self.players.items() if p.stack > 0}
+        if self.owner_id not in self.players:
+            remaining = self.seated()
+            self.owner_id = remaining[0].user_id if remaining else 0
         for p in self.players.values():
             p.hole = ()
             p.ready = False
