@@ -104,6 +104,12 @@ class PokerCommands:
         if table is None:
             table = Table()
         if cmd in ("poker", "table"):
+            if table.stage in ("preflop", "flop", "turn", "river") and self.private_delivery is not None:
+                total, delivered = self.store.private_delivery_status(
+                    self.room_id, table.hand_number
+                )
+                if total == len(table.players) and delivered < total:
+                    return self._deliver_and_report(table)
             return format_table(table)
         try:
             if cmd == "join":
