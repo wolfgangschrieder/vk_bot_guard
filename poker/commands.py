@@ -98,6 +98,7 @@ class PokerCommands:
 
         Invoke from a serialized scheduler; returns a chat-safe update or None.
         """
+        self.last_public_queued = False
         revision, table = self.store.load(self.room_id)
         if table is None or table.stage not in ("preflop", "flop", "turn", "river"):
             return None
