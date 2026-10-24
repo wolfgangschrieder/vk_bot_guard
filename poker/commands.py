@@ -24,6 +24,8 @@ def format_table(table):
     lines = [f"♠ ASTRA POKER | {table.stage.upper()} | Раздача #{table.hand_number}"]
     for p in table.seated():
         flags = []
+        if p.user_id == table.owner_id:
+            flags.append("👑 владелец")
         if table.stage == "waiting":
             flags.append("готов" if p.ready else "ожидает")
         elif p.folded:
@@ -191,8 +193,8 @@ class PokerCommands:
                     raise ValueError("Only seated players may advance the game")
                 table.reset()
             elif cmd == "newsession":
-                if user_id not in table.players:
-                    raise ValueError("Only seated players may reset the session")
+                if user_id != table.owner_id:
+                    raise ValueError("Only the table owner may reset the session")
                 table.new_session()
             elif cmd in ("fold", "check", "call", "raise", "allin"):
                 if self.private_delivery is None:
