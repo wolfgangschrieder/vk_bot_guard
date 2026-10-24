@@ -43,6 +43,14 @@ class PokerStore:
             "room_id INTEGER NOT NULL, event_id TEXT NOT NULL, "
             "PRIMARY KEY(room_id, event_id))"
         )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_private_outbox ("
+            "room_id INTEGER NOT NULL, hand_number INTEGER NOT NULL, "
+            "user_id INTEGER NOT NULL, random_id INTEGER NOT NULL, "
+            "message TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, "
+            "PRIMARY KEY(room_id, hand_number, user_id), "
+            "UNIQUE(random_id))"
+        )
         self.conn.commit()
 
     def is_processed(self, room_id, event_id):
@@ -91,6 +99,51 @@ class PokerStore:
                     (room_id, str(event_id)),
                 )
         return revision + 1
+
+    def enqueue_private_cards(self, room_id, hand_number, messages):
+        """Persist card deliveries before any network call.
+
+        messages maps user_id to (stable_random_id, message_text).
+        Existing jobs are never overwritten, even after a restart.
+        """
+        with self.conn:
+            for user_id, (random_id, message) in messages.items():
+                if type(random_id) is not int or not 0 < random_id <= 2147483647:
+                    raise ValueError("Invalid VK random_id")
+                if not message:
+                    raise ValueError("Empty private message")
+                existing = self.conn.execute(
+                    "SELECT random_id, message FROM poker_private_outbox "
+                    "WHERE room_id=? AND hand_number=? AND user_id=?",
+                    (room_id, hand_number, user_id),
+                ).fetchone()
+                if existing:
+                    if existing != (random_id, message):
+                        raise ValueError("Conflicting private-card delivery")
+                    continue
+                self.conn.execute(
+                    "INSERT INTO poker_private_outbox "
+                    "(room_id,hand_number,user_id,random_id,message) "
+                    "VALUES (?,?,?,?,?)",
+                    (room_id, hand_number, user_id, random_id, message),
+                )
+
+    def pending_private_cards(self, room_id, hand_number):
+        return self.conn.execute(
+            "SELECT user_id,random_id,message FROM poker_private_outbox "
+            "WHERE room_id=? AND hand_number=? AND delivered=0 ORDER BY user_id",
+            (room_id, hand_number),
+        ).fetchall()
+
+    def mark_private_delivered(self, room_id, hand_number, user_id):
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE poker_private_outbox SET delivered=1 "
+                "WHERE room_id=? AND hand_number=? AND user_id=?",
+                (room_id, hand_number, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Private delivery job not found")
 
     def close(self):
         self.conn.close()
