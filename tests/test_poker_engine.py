@@ -118,6 +118,23 @@ class TableTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             table.new_session()
 
+    def test_no_raise_when_every_opponent_is_all_in(self):
+        table = Table()
+        for uid in (1, 2, 3):
+            table.join(uid)
+            table.ready(uid)
+        table.players[2].stack = 40
+        table.players[3].stack = 40
+        table.start()
+        self.assertEqual(table.turn, 1)
+        before = table.players[1].stack
+        with self.assertRaises(ValueError):
+            table.act(1, "raise", 500)
+        self.assertEqual(table.players[1].stack, before)
+        table.act(1, "call")
+        self.assertEqual(table.stage, "complete")
+        self.assertEqual(sum(p.stack for p in table.players.values()), 10080)
+
 
 if __name__ == "__main__":
     unittest.main()
