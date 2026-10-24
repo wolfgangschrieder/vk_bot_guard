@@ -905,8 +905,8 @@ def handle_new_message(vk, conn, message) -> None:
             return
         with POKER_LOCK:
             response = POKER_COMMANDS.handle(from_id, text, str(event_id))
-        if response:
-            send_bot_message(vk, response, peer_id=peer_id)
+            if response:
+                send_bot_message(vk, response, peer_id=peer_id)
         return
 
     if not is_target_chat(peer_id):
