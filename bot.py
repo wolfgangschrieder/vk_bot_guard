@@ -27,6 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("vk_bot_guard")
 
 POKER_COMMANDS = None
+POKER_LOCK = threading.RLock()
 CHAT_PEER_START = 2_000_000_000
 
 
@@ -902,7 +903,8 @@ def handle_new_message(vk, conn, message) -> None:
         event_id = message_field(message, "id")
         if event_id <= 0:
             return
-        response = POKER_COMMANDS.handle(from_id, text, str(event_id))
+        with POKER_LOCK:
+            response = POKER_COMMANDS.handle(from_id, text, str(event_id))
         if response:
             send_bot_message(vk, response, peer_id=peer_id)
         return
@@ -997,6 +999,23 @@ def handle_new_message(vk, conn, message) -> None:
     )
 
 
+def poker_turn_watchdog(vk):
+    """Expire turns in the dedicated poker room, never touching moderator.db."""
+    while True:
+        time.sleep(2)
+        if POKER_COMMANDS is None:
+            continue
+        try:
+            with POKER_LOCK:
+                response = POKER_COMMANDS.process_expired_turn()
+            if response:
+                send_bot_message(
+                    vk, response, peer_id=config.POKER_CHAT_PEER_ID
+                )
+        except Exception:
+            log.exception("Poker turn timeout processing failed")
+
+
 def run_forever() -> None:
     global ACTIVE_CONN, POKER_COMMANDS
     conn = db.connect()
@@ -1050,6 +1069,14 @@ def run_forever() -> None:
             log.exception(
                 "Poker private card recovery failed; betting remains gated"
             )
+
+    if POKER_COMMANDS is not None:
+        threading.Thread(
+            target=poker_turn_watchdog,
+            args=(vk,),
+            name="poker-turn-watchdog",
+            daemon=True,
+        ).start()
 
     if (
         config.BLOCKED_USER_IDS
