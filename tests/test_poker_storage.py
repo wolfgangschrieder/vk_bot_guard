@@ -159,6 +159,31 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(len(store.pending_public(2000000999)), 1)
             store.close()
 
+    def test_hand_private_and_public_jobs_commit_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "atomic-hand.db")
+            table = Table()
+            table.join(101)
+            table.join(202)
+            table.ready(101)
+            table.ready(202)
+            table.start()
+            messages = {uid: (1000 + uid, "Private cards") for uid in table.players}
+            self.assertEqual(
+                store.save_hand_with_private_cards(
+                    2000000999, table, 0, messages, event_id="start",
+                    public_message="Hand started",
+                ), 1
+            )
+            self.assertEqual(store.private_delivery_status(2000000999, 1), (2, 0))
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            self.assertIsNone(store.save_hand_with_private_cards(
+                2000000999, table, 0, messages, event_id="start",
+                public_message="Duplicate",
+            ))
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
