@@ -25,21 +25,27 @@ def format_hole_cards(hole, hand_number):
 
 
 class VkPrivateCards:
-    def __init__(self, vk):
+    def __init__(self, vk, group_id=None):
         self.vk = vk
+        self.group_id = group_id
 
     def can_message(self, user_id):
         """Best-effort permission preflight; VK may still reject the send."""
         if type(user_id) is not int or user_id <= 0:
             return False
-        result = self.vk.messages.isMessagesFromGroupAllowed(user_id=user_id)
+        if not self.group_id:
+            return False
+        result = self.vk.messages.isMessagesFromGroupAllowed(group_id=self.group_id, user_id=user_id)
         return bool(result.get("is_allowed", 0))
 
-    def send(self, user_id, hole, hand_number):
+    def send(self, user_id, hole, hand_number, random_id=None):
         if type(user_id) is not int or user_id <= 0:
             raise ValueError("Invalid user ID")
         # VK random_id must not be zero for retry-safe delivery.
-        random_id = randbelow(2_147_483_647) + 1
+        if random_id is None:
+            random_id = randbelow(2_147_483_647) + 1
+        if type(random_id) is not int or not 0 < random_id <= 2_147_483_647:
+            raise ValueError("Invalid VK random_id")
         return self.vk.messages.send(
             peer_id=user_id,
             random_id=random_id,
