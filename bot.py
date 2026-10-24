@@ -1021,6 +1021,35 @@ def run_forever() -> None:
     vk = session.get_api()
     if POKER_COMMANDS is not None:
         POKER_COMMANDS.private_delivery = VkPrivateCards(vk, config.GROUP_ID)
+        try:
+            poker_revision, poker_table = POKER_COMMANDS.store.load(
+                config.POKER_CHAT_PEER_ID
+            )
+            if poker_table is not None and poker_table.stage in (
+                "preflop", "flop", "turn", "river"
+            ):
+                total, delivered = POKER_COMMANDS.store.private_delivery_status(
+                    config.POKER_CHAT_PEER_ID, poker_table.hand_number
+                )
+                if total == len(poker_table.players) and delivered < total:
+                    POKER_COMMANDS.private_delivery.deliver_pending(
+                        POKER_COMMANDS.store,
+                        config.POKER_CHAT_PEER_ID,
+                        poker_table.hand_number,
+                    )
+                    log.info(
+                        "Poker recovery: delivered %s/%s private cards",
+                        total, total,
+                    )
+                elif total != len(poker_table.players):
+                    log.error(
+                        "Poker recovery blocked: outbox size %s, seated %s",
+                        total, len(poker_table.players),
+                    )
+        except Exception:
+            log.exception(
+                "Poker private card recovery failed; betting remains gated"
+            )
 
     if (
         config.BLOCKED_USER_IDS
