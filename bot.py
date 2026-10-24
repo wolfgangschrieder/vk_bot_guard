@@ -14,6 +14,7 @@ import config
 import database as db
 from poker.commands import PokerCommands
 from poker.storage import PokerStore
+from poker.private_cards import VkPrivateCards
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1018,6 +1019,8 @@ def run_forever() -> None:
         api_version=config.API_VERSION,
     )
     vk = session.get_api()
+    if POKER_COMMANDS is not None:
+        POKER_COMMANDS.private_delivery = VkPrivateCards(vk)
 
     if (
         config.BLOCKED_USER_IDS
