@@ -906,7 +906,7 @@ def handle_new_message(vk, conn, message) -> None:
         with POKER_LOCK:
             response = POKER_COMMANDS.handle(from_id, text, str(event_id))
             if response:
-                send_bot_message(vk, response, peer_id=peer_id)
+                poker_queue_public(vk, response)
         return
 
     if not is_target_chat(peer_id):
@@ -999,6 +999,34 @@ def handle_new_message(vk, conn, message) -> None:
     )
 
 
+def poker_queue_public(vk, message):
+    """Persist poker chat replies and retry with a stable VK random_id."""
+    from secrets import randbelow
+    if POKER_COMMANDS is None:
+        return
+    store = POKER_COMMANDS.store
+    store.enqueue_public(config.POKER_CHAT_PEER_ID, randbelow(2147483647) + 1, message)
+    poker_flush_public(vk)
+
+
+def poker_flush_public(vk):
+    """Send in FIFO order; a failed VK request remains queued for retry."""
+    if POKER_COMMANDS is None:
+        return
+    store = POKER_COMMANDS.store
+    for job_id, random_id, message in store.pending_public(config.POKER_CHAT_PEER_ID):
+        try:
+            vk.messages.send(
+                peer_id=config.POKER_CHAT_PEER_ID,
+                random_id=random_id,
+                message=message,
+            )
+        except Exception:
+            log.exception("Poker public notification delivery failed")
+            break
+        store.mark_public_delivered(job_id)
+
+
 def poker_turn_watchdog(vk):
     """Expire turns in the dedicated poker room, never touching moderator.db."""
     while True:
@@ -1009,9 +1037,9 @@ def poker_turn_watchdog(vk):
             with POKER_LOCK:
                 response = POKER_COMMANDS.process_expired_turn()
                 if response:
-                    send_bot_message(
-                        vk, response, peer_id=config.POKER_CHAT_PEER_ID
-                    )
+                    poker_queue_public(vk, response)
+                else:
+                    poker_flush_public(vk)
         except Exception:
             log.exception("Poker turn timeout processing failed")
 
