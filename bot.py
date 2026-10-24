@@ -1020,7 +1020,7 @@ def run_forever() -> None:
     )
     vk = session.get_api()
     if POKER_COMMANDS is not None:
-        POKER_COMMANDS.private_delivery = VkPrivateCards(vk)
+        POKER_COMMANDS.private_delivery = VkPrivateCards(vk, config.GROUP_ID)
 
     if (
         config.BLOCKED_USER_IDS
