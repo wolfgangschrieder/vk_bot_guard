@@ -5,6 +5,8 @@ on:
       - feature/astra-poker-room
     paths:
       - 'poker/**'
+      - 'bot.py'
+      - 'config.py'
       - 'tests/test_poker*.py'
       - '.github/workflows/poker-tests.yml'
   pull_request:
@@ -25,5 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Compile application and poker modules
+        run: python -m compileall -q bot.py config.py poker tests
       - name: Poker unit tests
         run: python -m unittest discover -s tests -p 'test_poker*.py' -v
