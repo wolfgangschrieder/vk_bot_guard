@@ -19,6 +19,7 @@ class Player:
     hole: tuple = ()
     acted: bool = False
     can_raise: bool = True
+    last_action_bet: int = 0
 
 
 @dataclass
@@ -97,6 +98,7 @@ class Table:
             p.folded = p.all_in = p.acted = False
             p.can_raise = True
             p.committed = p.street_bet = 0
+            p.last_action_bet = 0
             p.ready = False
         self.deck = list(DECK)
         SystemRandom().shuffle(self.deck)
@@ -145,7 +147,7 @@ class Table:
             else:
                 if not any(other.user_id != user_id for other in self.actionable()):
                     raise ValueError("Cannot raise without another player able to respond")
-                if not p.can_raise:
+                if not p.can_raise and (not p.acted or self.current_bet - p.last_action_bet < self.min_raise):
                     raise ValueError("Betting not reopened")
                 increase = target - self.current_bet
                 if increase < self.min_raise and target != p.street_bet + p.stack:
@@ -161,10 +163,11 @@ class Table:
                 else:
                     for other in self.actionable():
                         if other.user_id != user_id and other.acted:
-                            other.can_raise = False
+                            other.can_raise = (self.current_bet - other.last_action_bet >= self.min_raise)
         else:
             raise ValueError("Unknown action")
         p.acted = True
+        p.last_action_bet = self.current_bet
         self.progress(user_id)
 
     def expire_turn(self, now=None):
@@ -217,6 +220,7 @@ class Table:
                 p.street_bet = 0
                 p.acted = False
                 p.can_raise = True
+                p.last_action_bet = 0
             self.current_bet = 0
             self.min_raise = self.big_blind
             if len(self.actionable()) >= 2:
@@ -253,6 +257,7 @@ class Table:
             player.hole = ()
             player.acted = False
             player.can_raise = True
+            player.last_action_bet = 0
         self.stage = "waiting"
         self.turn = 0
         self.current_bet = 0
