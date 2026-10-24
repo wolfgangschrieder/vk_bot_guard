@@ -106,7 +106,8 @@ class Table:
         self.min_raise = self.big_blind
         self.stage = "preflop"
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
-        if len(self.actionable()) < 2:
+        actionable = self.actionable()
+        if not actionable or (len(actionable) == 1 and actionable[0].street_bet >= self.current_bet):
             self.next_street()
 
     def act(self, user_id, action, amount=None):
