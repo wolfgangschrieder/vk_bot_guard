@@ -121,7 +121,7 @@ class DatabaseTests(unittest.TestCase):
         db.record_message(self.conn, 20, first_timestamp)
         self.assertEqual(
             db.record_daily_chat_stats(self.conn, first_day),
-            {"active_users": 2},
+            {"active_users": 2, "daily_messages": 2},
         )
 
         second_day = first_day + timedelta(days=1)
@@ -132,7 +132,7 @@ class DatabaseTests(unittest.TestCase):
         records = db.record_daily_chat_stats(self.conn, second_day)
 
         self.assertEqual(records["active_users"], 3)
-        self.assertGreater(records["activity_percent"], 100)
+        self.assertEqual(records["daily_messages"], 13)
         self.assertEqual(db.record_daily_chat_stats(self.conn, second_day), {})
 
     def test_record_migration_backfills_existing_daily_history(self):
@@ -147,7 +147,7 @@ class DatabaseTests(unittest.TestCase):
                     db.record_message(self.conn, user_id, timestamp)
 
         self.conn.execute("DROP TABLE chat_stat_records")
-        self.conn.execute("DELETE FROM schema_migrations WHERE version = 9")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version >= 9")
         self.conn.commit()
         migrated = db.connect(str(Path(self.tmp.name) / "test.db"))
         rows = {
@@ -156,7 +156,35 @@ class DatabaseTests(unittest.TestCase):
         }
 
         self.assertEqual(rows["active_users"], (3.0, "2026-10-02"))
-        self.assertEqual(rows["activity_percent"], (1400.0, "2026-10-02"))
+        self.assertEqual(rows["daily_messages"], (16.0, "2026-10-02"))
+        self.assertNotIn("activity_percent", rows)
+        migrated.close()
+
+    def test_migration_10_replaces_relative_record_with_daily_message_record(self):
+        first_day = date(2026, 10, 1)
+        for day, count in ((first_day, 8), (first_day + timedelta(days=1), 16),
+                           (first_day + timedelta(days=2), 12)):
+            timestamp = int(datetime.combine(day, time(12), config.CHAT_TZ).timestamp())
+            for index in range(count):
+                db.record_message(self.conn, 100 + index % 3, timestamp)
+
+        self.conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
+            ("activity_percent", 9999, first_day.isoformat()),
+        )
+        self.conn.execute("DELETE FROM schema_migrations WHERE version = 10")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, 0)"
+        )
+        self.conn.commit()
+
+        migrated = db.connect(str(Path(self.tmp.name) / "test.db"))
+        records = {
+            row["metric"]: (row["record_value"], row["stat_date"])
+            for row in migrated.execute("SELECT * FROM chat_stat_records")
+        }
+        self.assertEqual(records["daily_messages"], (16.0, "2026-10-02"))
+        self.assertNotIn("activity_percent", records)
         migrated.close()
 
     def test_daily_user_stats(self):

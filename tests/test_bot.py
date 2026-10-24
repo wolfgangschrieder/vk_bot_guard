@@ -451,7 +451,7 @@ class BotTests(unittest.TestCase):
         )
         self.conn.execute(
             "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
-            ('activity_percent', 175, record_date.isoformat()),
+            ('daily_messages', 175, record_date.isoformat()),
         )
         self.conn.commit()
         for _ in range(3):
@@ -461,7 +461,7 @@ class BotTests(unittest.TestCase):
 
         report = self.queued('send')[0]['message']
         self.assertIn('Рекорд активных участников: 9', report)
-        self.assertIn('Рекорд активности чата: 175% от среднего за 7 дней', report)
+        self.assertIn('Рекорд активности чата: 175 сообщений за день', report)
         self.assertIn('Рекорд Героя чата: [id42|Test User] — 12 сообщ. за день', report)
         self.assertNotIn('новый рекорд', report)
 
@@ -492,14 +492,14 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], self.now + 5)
 
     def test_migration_failure_is_atomic_and_retryable(self):
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 9')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
         self.conn.commit()
-        original = db._migration_9
+        original = db._migration_10
         def fail(conn):
             original(conn)
             conn.execute('CREATE TABLE temporary_migration_probe(id INTEGER)')
             raise RuntimeError('migration failed')
-        with patch.object(db, '_migration_9', side_effect=fail):
+        with patch.object(db, '_migration_10', side_effect=fail):
             with self.assertRaises(RuntimeError):
                 db.connect(self.path)
         self.assertIsNone(self.conn.execute("SELECT name FROM sqlite_master WHERE name = 'temporary_migration_probe'").fetchone())
@@ -520,7 +520,7 @@ class BotTests(unittest.TestCase):
     def test_backup_api_preserves_wal_rows(self):
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('INSERT INTO users(user_id, peer_id, warnings) VALUES (77, 2000000001, 5)')
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 9')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
         self.conn.commit()
         migrated = db.connect(self.path)
         migrated.close()

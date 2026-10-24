@@ -627,7 +627,7 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
     record_lines = []
     for metric, label, suffix in (
         ("active_users", "👥 Рекорд активных участников", ""),
-        ("activity_percent", "⚡ Рекорд активности чата", "% от среднего за 7 дней"),
+        ("daily_messages", "⚡ Рекорд активности чата", " сообщений за день"),
     ):
         record = stat_records.get(metric)
         if record:

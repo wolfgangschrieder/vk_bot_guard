@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class Connection(sqlite3.Connection):
@@ -168,6 +168,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_9(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (9, int(time.time())))
+            current = 9
+
+        if current < 10:
+            _migration_10(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (10, int(time.time())))
 
         conn.commit()
 
@@ -363,6 +369,22 @@ def _migration_9(conn):
         conn.execute(
             "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
             ("activity_percent", best_activity["value"], best_activity["stat_date"]),
+        )
+
+
+def _migration_10(conn):
+    """Replace the relative activity record with the all-time daily message high."""
+    best_messages = conn.execute(
+        "SELECT stat_date, messages FROM daily_stats WHERE messages > 0 "
+        "ORDER BY messages DESC, stat_date ASC LIMIT 1"
+    ).fetchone()
+    conn.execute("DELETE FROM chat_stat_records WHERE metric = 'activity_percent'")
+    if best_messages:
+        conn.execute(
+            "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?) "
+            "ON CONFLICT(metric) DO UPDATE SET record_value = excluded.record_value, "
+            "stat_date = excluded.stat_date",
+            ("daily_messages", int(best_messages["messages"]), best_messages["stat_date"]),
         )
 
 
@@ -736,11 +758,11 @@ def get_daily_stats(
 
 
 def record_daily_chat_stats(conn: sqlite3.Connection, stat_date: date) -> dict[str, int]:
-    """Persist new all-time highs for daily active users and chat activity."""
+    """Persist new all-time highs for active users and daily message count."""
     stats = get_daily_stats(conn, stat_date)
     candidates = {
         "active_users": stats["active_users"],
-        "activity_percent": stats["activity_percent"],
+        "daily_messages": stats["messages"],
     }
     new_records = {}
     with atomic(conn):
