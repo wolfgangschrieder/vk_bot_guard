@@ -25,6 +25,17 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(store.load(2000000999)[1].stage, "waiting")
             store.close()
 
+    def test_join_requires_private_message_permission(self):
+        class Denied:
+            def can_message(self, user_id):
+                return False
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, private_delivery=Denied())
+            self.assertIn("Разрешите личные сообщения", bot.handle(101, "/join", "a"))
+            self.assertEqual(store.load(2000000999), (0, None))
+            store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
