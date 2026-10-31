@@ -881,6 +881,28 @@ def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     )
     return True
 
+
+CHAT_MESSAGE_RANKS = (
+    (100_000, "Легенда чата"),
+    (80_000, "Ветеран любви"),
+    (70_000, "Опытный"),
+    (60_000, "Душа чата"),
+    (50_000, "Флирт-мастер"),
+    (40_000, "Активный"),
+    (30_000, "Болтун"),
+    (20_000, "Читатель"),
+    (10_000, "Участник"),
+    (0, "Новичок"),
+)
+
+
+def chat_rank_for_messages(total_messages: int) -> str:
+    for threshold, title in CHAT_MESSAGE_RANKS:
+        if total_messages >= threshold:
+            return title
+    return "Новичок"
+
+
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
@@ -929,6 +951,8 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         mention(target_id, names.get(target_id)),
         "",
         f"⭐ Репутация: {reputation:+d}",
+        f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
+        f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ]
     if stats["hero_count"]:
         lines.append(

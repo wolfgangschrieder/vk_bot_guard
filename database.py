@@ -950,6 +950,10 @@ def get_user_profile_stats(
             """,
             (today_key, user_id, week_start, today_key),
         ).fetchone()
+        all_time_messages = conn.execute(
+            "SELECT COALESCE(SUM(messages), 0) FROM daily_user_stats WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()[0]
         best_day = conn.execute(
             """
             SELECT stat_date, messages FROM daily_user_stats
@@ -966,6 +970,7 @@ def get_user_profile_stats(
     return {
         "today": int(activity["today"] or 0),
         "last_7_days": int(activity["last_7_days"] or 0),
+        "all_time_messages": int(all_time_messages or 0),
         "best_day": (best_day["stat_date"], int(best_day["messages"])) if best_day else None,
         "hero_count": int(hero_count or 0),
     }

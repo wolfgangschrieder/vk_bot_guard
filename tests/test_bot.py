@@ -108,10 +108,32 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertIn('⭐ Репутация: +12', profile)
+        self.assertIn('🎖 Ранг: Новичок', profile)
+        self.assertIn('💬 Сообщений за всё время: 182', profile)
         self.assertIn('🏆 Герой чата: 3 раза', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
         self.assertIn('За 7 дней: 182 сообщения', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
+
+    def test_message_rank_thresholds_are_inclusive_and_non_overlapping(self):
+        cases = (
+            (0, 'Новичок'),
+            (9_999, 'Новичок'),
+            (10_000, 'Участник'),
+            (20_000, 'Читатель'),
+            (30_000, 'Болтун'),
+            (40_000, 'Активный'),
+            (50_000, 'Флирт-мастер'),
+            (60_000, 'Душа чата'),
+            (70_000, 'Опытный'),
+            (80_000, 'Ветеран любви'),
+            (99_999, 'Ветеран любви'),
+            (100_000, 'Легенда чата'),
+            (250_000, 'Легенда чата'),
+        )
+        for total, expected in cases:
+            with self.subTest(total=total):
+                self.assertEqual(bot.chat_rank_for_messages(total), expected)
 
     def test_admin_can_add_and_remove_social_chat_blacklist_entry(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))
