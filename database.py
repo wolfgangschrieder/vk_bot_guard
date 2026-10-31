@@ -627,6 +627,16 @@ def record_message(
         conn.commit()
 
 
+def get_total_message_count(conn: sqlite3.Connection, user_id: int) -> int:
+    """Return all recorded social-chat messages for one user."""
+    with _lock:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(messages), 0) FROM daily_user_stats WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return int(row[0] or 0)
+
+
 def record_mute(
     conn: sqlite3.Connection,
     user_id: int,

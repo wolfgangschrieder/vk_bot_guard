@@ -903,6 +903,48 @@ def chat_rank_for_messages(total_messages: int) -> str:
     return "Новичок"
 
 
+def announce_rank_achievement(vk, user_id: int, previous_total: int) -> None:
+    new_total = previous_total + 1
+    old_rank = chat_rank_for_messages(previous_total)
+    new_rank = chat_rank_for_messages(new_total)
+    if old_rank == new_rank:
+        return
+
+    names = get_user_names(vk, [user_id])
+    user = mention(user_id, names.get(user_id))
+    total_text = f"{new_total:,}".replace(",", " ")
+    next_rank = next(
+        ((threshold, title) for threshold, title in reversed(CHAT_MESSAGE_RANKS)
+         if threshold > new_total),
+        None,
+    )
+    if next_rank:
+        next_threshold, next_title = next_rank
+        next_text = f"Следующая цель — «{next_title}» на {next_threshold:,} сообщений 🚀".replace(",", " ")
+    else:
+        next_text = "Это высшее звание — вы покорили все ранги! 🌟"
+
+    send_bot_message(
+        vk,
+        f"🎉 Поздравляем, {user}!\n"
+        f"Вы достигли нового звания — «{new_rank}»! 🏆\n"
+        f"Ваш вклад в чат — {total_text} сообщений за всё время.\n"
+        f"{next_text}",
+        peer_id=config.CHAT_PEER_ID,
+    )
+
+
+def record_social_message(vk, conn, user_id: int, message, now: int) -> None:
+    previous_total = db.get_total_message_count(conn, user_id)
+    db.record_message(
+        conn,
+        user_id,
+        message_field(message, "date", now),
+        classify_media(message),
+    )
+    announce_rank_achievement(vk, user_id, previous_total)
+
+
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
@@ -1166,7 +1208,7 @@ def process_message(vk, conn, message) -> None:
         if is_bot_feature_chat(peer_id):
             if handle_command(vk, conn, from_id, text, now) or text.strip().startswith("/"):
                 return
-            db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
+            record_social_message(vk, conn, from_id, message, now)
         return
 
     if handle_content_violation(vk, conn, message, from_id, peer_id):
@@ -1202,7 +1244,7 @@ def process_message(vk, conn, message) -> None:
                 from_id, peer_id, deleted, muted,
             )
             return
-        db.record_message(conn, from_id, message_field(message, "date", now), classify_media(message))
+        record_social_message(vk, conn, from_id, message, now)
         return
 
     if db.mute_deadline(conn, peer_id, from_id) > now:

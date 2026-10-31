@@ -135,6 +135,42 @@ class BotTests(unittest.TestCase):
             with self.subTest(total=total):
                 self.assertEqual(bot.chat_rank_for_messages(total), expected)
 
+    def test_rank_up_is_announced_once_when_message_crosses_threshold(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 9999)"
+        )
+        self.conn.commit()
+        bot.handle_new_message(self.vk, self.conn, self.message('новое сообщение'))
+
+        sends = self.queued('send')
+        self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0]['peer_id'], config.CHAT_PEER_ID)
+        self.assertIn('Вы достигли нового звания — «Участник»!', sends[0]['message'])
+        self.assertIn('10 000 сообщений за всё время', sends[0]['message'])
+        self.assertIn('Следующая цель — «Читатель» на 20 000 сообщений', sends[0]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('ещё одно сообщение', mid=2))
+        self.assertEqual(len(self.queued('send')), 1)
+
+    def test_user_with_existing_rank_gets_no_retroactive_announcement(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 20000)"
+        )
+        self.conn.commit()
+        bot.handle_new_message(self.vk, self.conn, self.message('я давно в чате'))
+        self.assertEqual(self.queued('send'), [])
+
+    def test_legend_rank_announcement_has_no_next_rank(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 99999)"
+        )
+        self.conn.commit()
+        bot.handle_new_message(self.vk, self.conn, self.message('ещё одно сообщение'))
+        notice = self.queued('send')[0]['message']
+        self.assertIn('«Легенда чата»', notice)
+        self.assertIn('вы покорили все ранги', notice)
+        self.assertNotIn('Следующая цель', notice)
+
     def test_admin_can_add_and_remove_social_chat_blacklist_entry(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))
         self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
