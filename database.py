@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class Connection(sqlite3.Connection):
@@ -180,6 +180,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_11(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (11, int(time.time())))
+            current = 11
+
+        if current < 12:
+            _migration_12(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (12, int(time.time())))
 
         conn.commit()
 
@@ -408,6 +414,116 @@ def _migration_11(conn):
         event_type TEXT NOT NULL,
         processed_at INTEGER NOT NULL
     )""")
+
+
+def _migration_12(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS user_characteristics (
+        user_id INTEGER NOT NULL,
+        trait_key TEXT NOT NULL,
+        score INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(user_id, trait_key)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS characteristic_gives (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        giver_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        trait_key TEXT NOT NULL,
+        delta INTEGER NOT NULL CHECK(delta IN (-1, 1)),
+        week_key TEXT NOT NULL,
+        day_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS characteristic_giver_week "
+                 "ON characteristic_gives(giver_id, week_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS characteristic_giver_day "
+                 "ON characteristic_gives(giver_id, day_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS characteristic_pair_week "
+                 "ON characteristic_gives(giver_id, target_id, week_key)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS profile_view_usage (
+        user_id INTEGER NOT NULL,
+        day_key TEXT NOT NULL,
+        view_type TEXT NOT NULL CHECK(view_type IN ('self', 'other')),
+        used INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(user_id, day_key, view_type)
+    )""")
+
+
+def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
+                             view_type: str, limit: int) -> bool:
+    if view_type not in {"self", "other"} or int(limit) < 1:
+        return False
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT used FROM profile_view_usage WHERE user_id = ? AND day_key = ? AND view_type = ?",
+            (int(user_id), str(day_key), view_type),
+        ).fetchone()
+        if row and int(row["used"]) >= int(limit):
+            return False
+        conn.execute(
+            "INSERT INTO profile_view_usage(user_id, day_key, view_type, used) VALUES (?, ?, ?, 1) "
+            "ON CONFLICT(user_id, day_key, view_type) DO UPDATE SET used = used + 1",
+            (int(user_id), str(day_key), view_type),
+        )
+        return True
+
+
+def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
+                        trait_key: str, delta: int, *, is_admin: bool,
+                        is_premium: bool, week_key: str, day_key: str,
+                        regular_weekly_limit: int, premium_daily_limit: int,
+                        now=None) -> str:
+    """Apply one characteristic and enforce role-based quotas atomically."""
+    timestamp = int(time.time()) if now is None else int(now)
+    giver_id, target_id, delta = int(giver_id), int(target_id), int(delta)
+    if giver_id <= 0 or target_id <= 0 or delta not in {-1, 1} or not trait_key:
+        return "invalid"
+
+    with atomic(conn):
+        if not is_admin:
+            if giver_id == target_id:
+                return "self"
+            if is_premium:
+                existing_pair = conn.execute(
+                    "SELECT 1 FROM characteristic_gives "
+                    "WHERE giver_id = ? AND target_id = ? AND week_key = ? LIMIT 1",
+                    (giver_id, target_id, str(week_key)),
+                ).fetchone()
+                if existing_pair:
+                    return "target_week_limit"
+                daily_count = conn.execute(
+                    "SELECT COUNT(*) FROM characteristic_gives WHERE giver_id = ? AND day_key = ?",
+                    (giver_id, str(day_key)),
+                ).fetchone()[0]
+                if int(daily_count) >= int(premium_daily_limit):
+                    return "daily_limit"
+            else:
+                weekly_count = conn.execute(
+                    "SELECT COUNT(*) FROM characteristic_gives WHERE giver_id = ? AND week_key = ?",
+                    (giver_id, str(week_key)),
+                ).fetchone()[0]
+                if int(weekly_count) >= int(regular_weekly_limit):
+                    return "weekly_limit"
+
+        conn.execute(
+            "INSERT INTO characteristic_gives(giver_id, target_id, trait_key, delta, week_key, day_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (giver_id, target_id, str(trait_key), delta, str(week_key), str(day_key), timestamp),
+        )
+        conn.execute(
+            "INSERT INTO user_characteristics(user_id, trait_key, score) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id, trait_key) DO UPDATE SET score = score + excluded.score",
+            (target_id, str(trait_key), delta),
+        )
+        return "applied"
+
+
+def get_user_characteristics(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
+    with _lock:
+        rows = conn.execute(
+            "SELECT trait_key, score FROM user_characteristics WHERE user_id = ? AND score != 0",
+            (int(user_id),),
+        ).fetchall()
+    return {str(row["trait_key"]): int(row["score"]) for row in rows}
 
 
 def process_donut_event(conn: sqlite3.Connection, event: dict, minimum_amount: int, now=None) -> str:

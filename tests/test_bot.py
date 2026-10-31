@@ -126,6 +126,45 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertIn('💎 Дон-премиум: активен', profile)
 
+    def test_profile_daily_limits_separate_self_and_other_and_delete_excess_command(self):
+        for index in range(2):
+            bot.handle_new_message(self.vk, self.conn, self.message('/profile', uid=1, mid=index + 1))
+        for index in range(2):
+            bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=1, mid=index + 3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile', uid=1, mid=5))
+
+        self.assertEqual(len(self.queued('send')), 4)
+        deletes = self.queued('delete')
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(deletes[0]['params']['message_ids'], '5')
+
+    def test_premium_characteristic_commands_limit_daily_and_per_target(self):
+        event = {
+            'event_id': 'premium-traits', 'type': 'donut_subscription_create',
+            'object': {'user_id': 1, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
+        }
+        db.process_donut_event(self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB, now=self.now)
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id2', uid=1, mid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/интеллект - @id2', uid=1, mid=2))
+        self.assertEqual(len(self.queued('delete')), 1)  # one recipient per week
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id4', uid=1, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id5', uid=1, mid=5))
+        self.assertEqual(len(self.queued('delete')), 2)  # fourth successful assignment is over daily cap
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'токсик': 1})
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=99, mid=6))
+        profile = self.queued('send')[-1]['message']
+        self.assertIn('💀 Токсик: +1', profile)
+        self.assertNotIn('Интеллект:', profile)
+
+    def test_regular_user_can_assign_one_characteristic_per_week(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/гений + @id2', uid=1, mid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=2))
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'гений': 1})
+
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
             raw = {

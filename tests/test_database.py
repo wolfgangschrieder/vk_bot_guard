@@ -290,6 +290,51 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.process_donut_event(self.conn, event, 50, now=1000), "below_minimum")
         self.assertFalse(db.is_premium_user(self.conn, 42))
 
+    def test_profile_view_limits_are_separate_by_target_type_and_day(self):
+        self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "self", 2))
+        self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "other", 2))
+        self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "self", 2))
+        self.assertFalse(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "self", 2))
+        self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-11-01", "self", 2))
+
+    def test_characteristic_limits_and_signed_score(self):
+        common = dict(regular_weekly_limit=1, premium_daily_limit=3, now=100)
+        self.assertEqual(db.give_characteristic(
+            self.conn, 1, 2, "токсик", 1, is_admin=False, is_premium=False,
+            week_key="2026-W44", day_key="2026-10-31", **common,
+        ), "applied")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 1, 3, "интеллект", 1, is_admin=False, is_premium=False,
+            week_key="2026-W44", day_key="2026-10-31", **common,
+        ), "weekly_limit")
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {"токсик": 1})
+
+        premium_args = dict(regular_weekly_limit=1, premium_daily_limit=3, now=101)
+        for target in (20, 21, 22):
+            self.assertEqual(db.give_characteristic(
+                self.conn, 10, target, "токсик", -1, is_admin=False, is_premium=True,
+                week_key="2026-W44", day_key="2026-10-31", **premium_args,
+            ), "applied")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 10, 23, "токсик", 1, is_admin=False, is_premium=True,
+            week_key="2026-W44", day_key="2026-10-31", **premium_args,
+        ), "daily_limit")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 10, 20, "интеллект", 1, is_admin=False, is_premium=True,
+            week_key="2026-W44", day_key="2026-11-01", **premium_args,
+        ), "target_week_limit")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 99, 99, "токсик", 1, is_admin=True, is_premium=False,
+            week_key="2026-W44", day_key="2026-10-31", **common,
+        ), "applied")
+
+        # Opposite votes cancel out and zero-valued traits stay hidden.
+        self.assertEqual(db.give_characteristic(
+            self.conn, 99, 2, "токсик", -1, is_admin=True, is_premium=False,
+            week_key="2026-W44", day_key="2026-10-31", **common,
+        ), "applied")
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {})
+
     def test_legacy_database_survives_migration(self):
         self.conn.close()
         path = Path(self.tmp.name) / "legacy.db"

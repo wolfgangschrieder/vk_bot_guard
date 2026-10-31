@@ -903,7 +903,8 @@ def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     send_bot_message(
         vk,
         "🤖 МЕНЮ БОТА\n\n"
-        "👤 /profile — посмотреть свой профиль и репутацию\n"
+        "👤 /profile — профиль и характеристики\n"
+        "✨ /токсик + @username — добавить характеристику\n"
         "⭐ /rep @username — повысить репутацию\n"
         "⭐ /rep - @username — понизить репутацию\n"
         "🦸 /мут @username — команда Героя чата\n\n"
@@ -978,7 +979,8 @@ def record_social_message(vk, conn, user_id: int, message, now: int) -> None:
     announce_rank_achievement(vk, user_id, previous_total)
 
 
-def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
+                           command_message=None) -> bool:
     match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
         return False
@@ -988,31 +990,23 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     if target_id <= 0:
         send_bot_message(vk, "❗ Укажи существующего пользователя через @username или @id.", temporary=True)
         return True
-    command_key = "profile"
-    last_used = db.get_command_cooldown(conn, from_id, command_key)
+    if from_id not in config.ADMIN_IDS:
+        today_key = datetime.fromtimestamp(now, config.CHAT_TZ).date().isoformat()
+        view_type = "self" if target_id == from_id else "other"
+        limit = (config.PROFILE_DAILY_LIMIT_PREMIUM
+                 if db.is_premium_user(conn, from_id)
+                 else config.PROFILE_DAILY_LIMIT_REGULAR)
+        if not db.try_consume_profile_view(conn, from_id, today_key, view_type, limit):
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
 
-    cooldown = config.PROFILE_COOLDOWN_SECONDS
-    if last_used and now - last_used < cooldown:
-        remaining = cooldown - (now - last_used)
-        days = remaining // (24 * 60 * 60)
-        hours = (remaining % (24 * 60 * 60) + 3599) // 3600
-        if days > 0:
-            remaining_text = f"{days} дн."
-        else:
-            remaining_text = f"{max(1, hours)} ч."
-        send_bot_message(
-            vk,
-            f"⏳ Профиль можно посмотреть снова через {remaining_text}.",
-            temporary=True,
-        )
-        return True
-
-    db.set_command_cooldown(conn, from_id, command_key, 0, now)
     reputation = db.get_reputation(conn, target_id)
     names = get_user_names(vk, [target_id])
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     stats = db.get_user_profile_stats(conn, target_id, today)
     premium = db.is_premium_user(conn, target_id)
+    characteristics = db.get_user_characteristics(conn, target_id)
 
     def count_label(value: int, singular: str, few: str, many: str) -> str:
         last_two = value % 100
@@ -1052,8 +1046,64 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         lines.append(f"{best_date_text} — {best_messages}")
     else:
         lines.append("Пока нет сообщений")
+    if characteristics:
+        lines.extend(["", "✨ ХАРАКТЕРИСТИКИ"])
+        for trait_key, emoji, title in config.CHAT_CHARACTERISTICS:
+            score = characteristics.get(trait_key, 0)
+            if score:
+                lines.append(f"{emoji} {title}: {score:+d}")
     profile = "\n".join(lines)
     send_bot_message(vk, profile)
+    return True
+
+
+def handle_characteristic_command(vk, conn, from_id: int, text: str, now: int,
+                                 command_message=None) -> bool:
+    command_match = re.match(r"^/([а-яё]+)(?:\s|$)", text.strip(), re.IGNORECASE)
+    if not command_match:
+        return False
+    trait_key = command_match.group(1).casefold()
+    if trait_key not in config.CHAT_CHARACTERISTIC_BY_COMMAND:
+        return False
+    match = re.fullmatch(r"/([а-яё]+)\s+([+-])\s+(.+)", text.strip(), re.IGNORECASE)
+    if not match:
+        send_bot_message(
+            vk,
+            f"Формат команды: /{trait_key} + @username или /{trait_key} - @username.",
+            temporary=True,
+        )
+        return True
+    target_id = resolve_target_user_id(vk, match.group(3))
+    if target_id <= 0:
+        send_bot_message(vk, "❗ Укажи пользователя через @username или @id.", temporary=True)
+        return True
+
+    is_admin = from_id in config.ADMIN_IDS
+    if target_id == from_id and not is_admin:
+        send_bot_message(vk, "❗ Нельзя назначить характеристику самому себе.", temporary=True)
+        return True
+
+    local_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    result = db.give_characteristic(
+        conn,
+        giver_id=from_id,
+        target_id=target_id,
+        trait_key=trait_key,
+        delta=1 if match.group(2) == "+" else -1,
+        is_admin=is_admin,
+        is_premium=db.is_premium_user(conn, from_id),
+        week_key=current_week_key(local_date),
+        day_key=local_date.isoformat(),
+        regular_weekly_limit=config.CHARACTERISTIC_WEEKLY_LIMIT_REGULAR,
+        premium_daily_limit=config.CHARACTERISTIC_DAILY_LIMIT_PREMIUM,
+        now=now,
+    )
+    if result in {"daily_limit", "weekly_limit", "target_week_limit"}:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
+    if result == "self":
+        send_bot_message(vk, "❗ Нельзя назначить характеристику самому себе.", temporary=True)
     return True
 
 
@@ -1176,10 +1226,11 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
     return True
 
 
-def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+def handle_command(vk, conn, from_id: int, text: str, now: int,
+                   command_message=None) -> bool:
     stripped = text.strip()
     if stripped.casefold() in {"👤 мой профиль", "мой профиль"}:
-        return handle_profile_command(vk, conn, from_id, "/profile", now)
+        return handle_profile_command(vk, conn, from_id, "/profile", now, command_message)
     if not stripped.startswith("/"):
         return False
 
@@ -1189,7 +1240,9 @@ def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
-    if handle_profile_command(vk, conn, from_id, stripped, now):
+    if handle_characteristic_command(vk, conn, from_id, stripped, now, command_message):
+        return True
+    if handle_profile_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_reputation_command(vk, conn, from_id, stripped, now):
         return True
@@ -1250,7 +1303,7 @@ def process_message(vk, conn, message) -> None:
     # Administrators retain moderation exemptions, but can use every feature command.
     if from_id in config.ADMIN_IDS:
         if is_bot_feature_chat(peer_id):
-            if handle_command(vk, conn, from_id, text, now) or text.strip().startswith("/"):
+            if handle_command(vk, conn, from_id, text, now, message) or text.strip().startswith("/"):
                 return
             record_social_message(vk, conn, from_id, message, now)
         return
@@ -1273,7 +1326,7 @@ def process_message(vk, conn, message) -> None:
         return
 
     if is_bot_feature_chat(peer_id):
-        command_handled = handle_command(vk, conn, from_id, text, now)
+        command_handled = handle_command(vk, conn, from_id, text, now, message)
         if command_handled or text.strip().startswith("/"):
             db.track_spam_streak(conn, peer_id, from_id, None, now)
             return
