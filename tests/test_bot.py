@@ -623,6 +623,45 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id4', mid=3))
         self.assertEqual(len(self.queued('mute')), 1)
 
+    def test_premium_hero_cannot_mute_another_premium_user(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        db.save_king(self.conn, today - timedelta(days=1), 1, 20)
+        for user_id, event_id in ((1, 'don-hero'), (2, 'don-target')):
+            event = {
+                'event_id': event_id,
+                'type': 'donut_subscription_create',
+                'object': {'user_id': user_id, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
+            }
+            self.assertEqual(
+                db.process_donut_event(self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB,
+                                       now=self.now),
+                'activated',
+            )
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
+
+        self.assertEqual(len(self.queued('mute')), 0)
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), 0)
+        notices = self.queued('send')
+        self.assertEqual(len(notices), 1)
+        self.assertIn('не может выдать мут другому участнику с Don-премиумом', notices[0]['message'])
+        self.assertTrue(notices[0]['temporary'])
+
+    def test_nonpremium_hero_can_mute_premium_user(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        db.save_king(self.conn, today - timedelta(days=1), 1, 20)
+        event = {
+            'event_id': 'don-target-only',
+            'type': 'donut_subscription_create',
+            'object': {'user_id': 2, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
+        }
+        db.process_donut_event(self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB, now=self.now)
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
+
+        self.assertEqual(len(self.queued('mute')), 1)
+        self.assertEqual(len(self.queued('send')), 0)
+
     def test_expired_mute_job_does_not_apply_or_spend_king_right(self):
         bot.apply_mute(self.vk, config.CHAT_PEER_ID, 2, king_id=1, now=self.now)
         self.drain(self.now + 3601)

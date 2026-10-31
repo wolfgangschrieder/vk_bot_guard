@@ -1137,6 +1137,14 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         )
         return True
 
+    if db.is_premium_user(conn, from_id) and db.is_premium_user(conn, target_id):
+        send_bot_message(
+            vk,
+            "💎 Герой чата с Don-премиумом не может выдать мут другому участнику с Don-премиумом. Мут не потрачен.",
+            temporary=True,
+        )
+        return True
+
     if target_id in config.ADMIN_IDS:
         send_bot_message(
             vk,
