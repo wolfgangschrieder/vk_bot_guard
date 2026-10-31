@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 class Connection(sqlite3.Connection):
@@ -174,6 +174,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_10(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (10, int(time.time())))
+            current = 10
+
+        if current < 11:
+            _migration_11(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (11, int(time.time())))
 
         conn.commit()
 
@@ -386,6 +392,99 @@ def _migration_10(conn):
             "stat_date = excluded.stat_date",
             ("daily_messages", int(best_messages["messages"]), best_messages["stat_date"]),
         )
+
+
+def _migration_11(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS premium_subscriptions (
+        user_id INTEGER PRIMARY KEY,
+        active INTEGER NOT NULL DEFAULT 0,
+        cancelled INTEGER NOT NULL DEFAULT 0,
+        amount_rub INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL DEFAULT 0,
+        last_event_id TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS processed_donut_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        processed_at INTEGER NOT NULL
+    )""")
+
+
+def process_donut_event(conn: sqlite3.Connection, event: dict, minimum_amount: int, now=None) -> str:
+    """Apply a verified VK Donut callback once; return its handling result."""
+    timestamp = int(time.time()) if now is None else int(now)
+    event_id = str(event.get("event_id", "")).strip()
+    event_type = str(event.get("type", "")).strip()
+    obj = event.get("object") or {}
+    try:
+        user_id = int(obj.get("user_id", 0))
+    except (TypeError, ValueError):
+        user_id = 0
+    if not event_id or user_id <= 0:
+        return "invalid"
+    if event_type not in {
+        "donut_subscription_create",
+        "donut_subscription_prolonged",
+        "donut_subscription_cancelled",
+        "donut_subscription_expired",
+    }:
+        return "ignored"
+
+    amount = 0
+    if event_type in {"donut_subscription_create", "donut_subscription_prolonged"}:
+        try:
+            amount = int(obj.get("amount", 0))
+        except (TypeError, ValueError):
+            return "invalid"
+
+    with atomic(conn):
+        try:
+            conn.execute(
+                "INSERT INTO processed_donut_events(event_id, event_type, processed_at) VALUES (?, ?, ?)",
+                (event_id, event_type, timestamp),
+            )
+        except sqlite3.IntegrityError:
+            return "duplicate"
+
+        if event_type in {"donut_subscription_create", "donut_subscription_prolonged"}:
+            if amount < int(minimum_amount):
+                return "below_minimum"
+            conn.execute(
+                "INSERT INTO premium_subscriptions(user_id, active, cancelled, amount_rub, updated_at, last_event_id) "
+                "VALUES (?, 1, 0, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                "active = 1, cancelled = 0, amount_rub = excluded.amount_rub, "
+                "updated_at = excluded.updated_at, last_event_id = excluded.last_event_id",
+                (user_id, amount, timestamp, event_id),
+            )
+            return "activated"
+
+        if event_type == "donut_subscription_cancelled":
+            # Cancellation stops the next renewal; premium remains until VK's
+            # subscription_expired callback confirms the paid term has ended.
+            conn.execute(
+                "INSERT INTO premium_subscriptions(user_id, active, cancelled, updated_at, last_event_id) "
+                "VALUES (?, 0, 1, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                "cancelled = 1, updated_at = excluded.updated_at, last_event_id = excluded.last_event_id",
+                (user_id, timestamp, event_id),
+            )
+            return "cancelled"
+
+        conn.execute(
+            "INSERT INTO premium_subscriptions(user_id, active, cancelled, updated_at, last_event_id) "
+            "VALUES (?, 0, 1, ?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+            "active = 0, cancelled = 1, updated_at = excluded.updated_at, last_event_id = excluded.last_event_id",
+            (user_id, timestamp, event_id),
+        )
+        return "expired"
+
+
+def is_premium_user(conn: sqlite3.Connection, user_id: int) -> bool:
+    with _lock:
+        row = conn.execute(
+            "SELECT active FROM premium_subscriptions WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    return bool(row and row["active"])
 
 
 def track_spam_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,

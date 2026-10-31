@@ -16,6 +16,7 @@ from vk_api.exceptions import ApiError, VkApiError
 
 import config
 import database as db
+import donut_webhook
 
 logging.basicConfig(
     level=logging.INFO,
@@ -979,6 +980,7 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     names = get_user_names(vk, [target_id])
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     stats = db.get_user_profile_stats(conn, target_id, today)
+    premium = db.is_premium_user(conn, target_id)
 
     def count_label(value: int, singular: str, few: str, many: str) -> str:
         last_two = value % 100
@@ -996,6 +998,8 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ]
+    if premium:
+        lines.append("💎 Дон-премиум: активен")
     if stats["hero_count"]:
         lines.append(
             "🏆 Герой чата: "
@@ -1583,6 +1587,30 @@ def run_forever() -> None:
         config.MODERATION_CHAT_PEER_ID,
         config.CHAT_TIMEZONE,
     )
+
+    callback_values = (
+        config.DONUT_CALLBACK_SECRET,
+        config.DONUT_CALLBACK_CONFIRMATION_CODE,
+    )
+    if any(callback_values) and not all(callback_values):
+        raise SystemExit(
+            "Для VK Donut задайте обе переменные DONUT_CALLBACK_SECRET и "
+            "DONUT_CALLBACK_CONFIRMATION_CODE."
+        )
+    if all(callback_values):
+        donut_webhook.start_server(
+            host=config.DONUT_CALLBACK_HOST,
+            port=config.DONUT_CALLBACK_PORT,
+            group_id=config.GROUP_ID,
+            secret=config.DONUT_CALLBACK_SECRET,
+            confirmation_code=config.DONUT_CALLBACK_CONFIRMATION_CODE,
+            db_path=config.DB_PATH,
+            minimum_amount=config.PREMIUM_DONUT_MIN_AMOUNT_RUB,
+        )
+    else:
+        log.info(
+            "VK Donut webhook выключен: настройте Callback API и DONUT_CALLBACK_* в .env"
+        )
 
     session = vk_api.VkApi(
         token=config.VK_TOKEN,

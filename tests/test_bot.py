@@ -115,6 +115,17 @@ class BotTests(unittest.TestCase):
         self.assertIn('За 7 дней: 182 сообщения', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
 
+    def test_profile_shows_donut_premium_only_when_active(self):
+        event = {
+            'event_id': 'premium-profile',
+            'type': 'donut_subscription_create',
+            'object': {'user_id': 1, 'amount': 50},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, event, 50, now=self.now), 'activated')
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile', uid=1))
+        profile = self.queued('send')[0]['message']
+        self.assertIn('💎 Дон-премиум: активен', profile)
+
     def test_message_rank_thresholds_are_inclusive_and_non_overlapping(self):
         cases = (
             (0, 'Новичок'),
@@ -696,7 +707,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT done_at FROM outbox').fetchone()[0], self.now + 5)
 
     def test_migration_failure_is_atomic_and_retryable(self):
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version >= 10')
         self.conn.commit()
         original = db._migration_10
         def fail(conn):
@@ -724,7 +735,7 @@ class BotTests(unittest.TestCase):
     def test_backup_api_preserves_wal_rows(self):
         self.conn.execute('PRAGMA journal_mode=WAL')
         self.conn.execute('INSERT INTO users(user_id, peer_id, warnings) VALUES (77, 2000000001, 5)')
-        self.conn.execute('DELETE FROM schema_migrations WHERE version = 10')
+        self.conn.execute('DELETE FROM schema_migrations WHERE version >= 10')
         self.conn.commit()
         migrated = db.connect(self.path)
         migrated.close()

@@ -172,7 +172,7 @@ class DatabaseTests(unittest.TestCase):
             "INSERT INTO chat_stat_records(metric, record_value, stat_date) VALUES (?, ?, ?)",
             ("activity_percent", 9999, first_day.isoformat()),
         )
-        self.conn.execute("DELETE FROM schema_migrations WHERE version = 10")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version >= 10")
         self.conn.execute(
             "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (9, 0)"
         )
@@ -258,6 +258,37 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.remove_chat_blacklist(self.conn, 42))
         self.assertFalse(db.remove_chat_blacklist(self.conn, 42))
         self.assertFalse(db.is_chat_blacklisted(self.conn, 42))
+
+    def test_donut_lifecycle_is_idempotent_and_keeps_cancelled_term_active(self):
+        create = {
+            "event_id": "donut-1", "type": "donut_subscription_create",
+            "object": {"user_id": 42, "amount": 50},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, create, 50, now=1000), "activated")
+        self.assertTrue(db.is_premium_user(self.conn, 42))
+        self.assertEqual(db.process_donut_event(self.conn, create, 50, now=1001), "duplicate")
+
+        cancel = {
+            "event_id": "donut-2", "type": "donut_subscription_cancelled",
+            "object": {"user_id": 42},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, cancel, 50, now=2000), "cancelled")
+        self.assertTrue(db.is_premium_user(self.conn, 42))
+
+        expired = {
+            "event_id": "donut-3", "type": "donut_subscription_expired",
+            "object": {"user_id": 42},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, expired, 50, now=3000), "expired")
+        self.assertFalse(db.is_premium_user(self.conn, 42))
+
+    def test_donut_payment_below_configured_minimum_does_not_grant_premium(self):
+        event = {
+            "event_id": "donut-small", "type": "donut_subscription_create",
+            "object": {"user_id": 42, "amount": 49},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, event, 50, now=1000), "below_minimum")
+        self.assertFalse(db.is_premium_user(self.conn, 42))
 
     def test_legacy_database_survives_migration(self):
         self.conn.close()

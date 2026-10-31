@@ -88,6 +88,24 @@ RECONNECT_DELAY = 5
 DB_PATH = BASE_DIR / "moderator.db"
 LOG_PATH = BASE_DIR / "bot.log"
 
+# VK Donut Callback API. The public HTTPS URL is terminated by a reverse proxy;
+# this process listens on localhost by default.
+DONUT_CALLBACK_SECRET = os.getenv("DONUT_CALLBACK_SECRET", "").strip()
+DONUT_CALLBACK_CONFIRMATION_CODE = os.getenv("DONUT_CALLBACK_CONFIRMATION_CODE", "").strip()
+DONUT_CALLBACK_HOST = os.getenv("DONUT_CALLBACK_HOST", "127.0.0.1").strip() or "127.0.0.1"
+try:
+    DONUT_CALLBACK_PORT = int(os.getenv("DONUT_CALLBACK_PORT", "8081").strip() or "8081")
+except ValueError as exc:
+    raise SystemExit("DONUT_CALLBACK_PORT должен быть целым числом.") from exc
+if not 1 <= DONUT_CALLBACK_PORT <= 65535:
+    raise SystemExit("DONUT_CALLBACK_PORT должен быть в диапазоне 1–65535.")
+try:
+    PREMIUM_DONUT_MIN_AMOUNT_RUB = int(os.getenv("PREMIUM_DONUT_MIN_AMOUNT_RUB", "50").strip() or "50")
+except ValueError as exc:
+    raise SystemExit("PREMIUM_DONUT_MIN_AMOUNT_RUB должен быть целым числом.") from exc
+if PREMIUM_DONUT_MIN_AMOUNT_RUB < 1:
+    raise SystemExit("PREMIUM_DONUT_MIN_AMOUNT_RUB должен быть больше нуля.")
+
 CHAT_TIMEZONE = os.getenv("CHAT_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow"
 try:
     CHAT_TZ = ZoneInfo(CHAT_TIMEZONE)
