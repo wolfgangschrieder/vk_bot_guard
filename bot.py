@@ -16,7 +16,6 @@ from vk_api.exceptions import ApiError, VkApiError
 
 import config
 import database as db
-import donut_webhook
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +29,12 @@ log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
+DONUT_EVENT_TYPES = {
+    "donut_subscription_create",
+    "donut_subscription_prolonged",
+    "donut_subscription_cancelled",
+    "donut_subscription_expired",
+}
 
 
 def menu_keyboard() -> dict:
@@ -70,6 +75,33 @@ def is_bot_feature_chat(peer_id: int) -> bool:
 
 def is_moderation_chat(peer_id: int) -> bool:
     return peer_id == config.MODERATION_CHAT_PEER_ID
+
+
+def handle_donut_event(conn, event) -> bool:
+    """Process a Donut update received through the community Long Poll."""
+    raw = getattr(event, "raw", event)
+    if not isinstance(raw, dict) or raw.get("type") not in DONUT_EVENT_TYPES:
+        return False
+    try:
+        group_id = int(raw.get("group_id", 0))
+    except (TypeError, ValueError):
+        group_id = 0
+    if group_id != config.GROUP_ID:
+        log.error("Пропущено Donut-событие от неизвестного сообщества: group_id=%s", group_id)
+        return True
+
+    result = db.process_donut_event(conn, raw, config.PREMIUM_DONUT_MIN_AMOUNT_RUB)
+    user_id = (raw.get("object") or {}).get("user_id")
+    if result in {"invalid", "below_minimum"}:
+        log.warning("Donut-событие не выдало премиум: event=%s result=%s",
+                    raw.get("event_id", ""), result)
+    elif result == "activated":
+        log.info("Donut-премиум активирован: user=%s", user_id)
+    elif result == "expired":
+        log.info("Donut-премиум завершён: user=%s", user_id)
+    elif result == "cancelled":
+        log.info("Donut-подписка отменена; премиум сохранён до окончания срока: user=%s", user_id)
+    return True
 
 
 def delete_message(vk, message) -> int:
@@ -1588,30 +1620,6 @@ def run_forever() -> None:
         config.CHAT_TIMEZONE,
     )
 
-    callback_values = (
-        config.DONUT_CALLBACK_SECRET,
-        config.DONUT_CALLBACK_CONFIRMATION_CODE,
-    )
-    if any(callback_values) and not all(callback_values):
-        raise SystemExit(
-            "Для VK Donut задайте обе переменные DONUT_CALLBACK_SECRET и "
-            "DONUT_CALLBACK_CONFIRMATION_CODE."
-        )
-    if all(callback_values):
-        donut_webhook.start_server(
-            host=config.DONUT_CALLBACK_HOST,
-            port=config.DONUT_CALLBACK_PORT,
-            group_id=config.GROUP_ID,
-            secret=config.DONUT_CALLBACK_SECRET,
-            confirmation_code=config.DONUT_CALLBACK_CONFIRMATION_CODE,
-            db_path=config.DB_PATH,
-            minimum_amount=config.PREMIUM_DONUT_MIN_AMOUNT_RUB,
-        )
-    else:
-        log.info(
-            "VK Donut webhook выключен: настройте Callback API и DONUT_CALLBACK_* в .env"
-        )
-
     session = vk_api.VkApi(
         token=config.VK_TOKEN,
         api_version=config.API_VERSION,
@@ -1675,6 +1683,8 @@ def run_forever() -> None:
 
                 elif str(getattr(event, "type", "")) == "chat_update":
                     handle_chat_update(vk, event, conn)
+                elif str(getattr(event, "type", "")) in DONUT_EVENT_TYPES:
+                    handle_donut_event(conn, event)
 
         except (KeyboardInterrupt, SystemExit):
             raise

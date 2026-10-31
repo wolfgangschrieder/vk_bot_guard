@@ -81,9 +81,9 @@
 
 ### VK Donut
 
-Создайте уровень VK Donut за 50 ₽ в месяц и подключите Callback API сообщества к адресу вида `https://ВАШ-ДОМЕН/vk/donut`. На сервере нужен доступный HTTPS-домен и reverse proxy (например, nginx), который проксирует запросы этого адреса на `http://127.0.0.1:8081`. В `.env` задайте `DONUT_CALLBACK_SECRET` (тот же секрет, что в настройках Callback API) и `DONUT_CALLBACK_CONFIRMATION_CODE` (строку подтверждения из VK); при необходимости поменяйте host/port. В настройках Callback API включите события `donut_subscription_create`, `donut_subscription_prolonged`, `donut_subscription_cancelled` и `donut_subscription_expired`, затем перезапустите `vk-bot-guard`.
+Создайте уровень VK Donut за 50 ₽ в месяц. В настройках сообщества откройте **Long Poll API** и включите `donut_subscription_create`, `donut_subscription_prolonged`, `donut_subscription_cancelled` и `donut_subscription_expired`. Оставьте включённым `message_new`, который нужен для работы бота. После этого перезапустите `vk-bot-guard`; отдельный домен, HTTPS и новые секреты в `.env` не нужны. Минимальная сумма задаётся параметром `PREMIUM_DONUT_MIN_AMOUNT_RUB` (по умолчанию 50).
 
-Обработчик проверяет секрет и ID сообщества, учитывает событие один раз по `event_id`, выдаёт премиум после создания/продления подписки от заданной суммы и снимает его после `donut_subscription_expired`. `donut_subscription_cancelled` помечает отмену автопродления, но сохраняет премиум до конца оплаченного срока. Callback-прослушиватель работает в том же процессе, что бот; TLS завершается на reverse proxy.
+Бот обрабатывает Donut-события в существующем Long Poll-потоке, учитывает каждое один раз по `event_id`, выдаёт премиум после создания/продления подписки от заданной суммы и снимает его после `donut_subscription_expired`. `donut_subscription_cancelled` помечает отмену автопродления, но сохраняет премиум до конца оплаченного срока.
 
 Python 3.12:
 
@@ -97,7 +97,7 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-На Windows доступен `start.bat`. Для обновления остановите текущий процесс, обновите код в его папке и запустите снова. **Существующие `.env` и `moderator.db` сохраняйте.** Новые очереди и таблицы создаются миграцией автоматически; параметры Donut нужны только для включения Callback API.
+На Windows доступен `start.bat`. Для обновления остановите текущий процесс, обновите код в его папке и запустите снова. **Существующие `.env` и `moderator.db` сохраняйте.** Новые очереди и таблицы создаются миграцией автоматически; для Donut достаточно включить нужные события в настройках Long Poll API сообщества.
 
 ## Проверки
 

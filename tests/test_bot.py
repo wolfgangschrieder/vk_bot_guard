@@ -126,6 +126,39 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertIn('💎 Дон-премиум: активен', profile)
 
+    def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
+        def event(event_type, event_id, **obj):
+            raw = {
+                'type': event_type,
+                'event_id': event_id,
+                'group_id': config.GROUP_ID,
+                'object': obj,
+            }
+            return SimpleNamespace(type=event_type, raw=raw)
+
+        created = event('donut_subscription_create', 'lp-1', user_id=77, amount=50)
+        self.assertTrue(bot.handle_donut_event(self.conn, created))
+        self.assertTrue(db.is_premium_user(self.conn, 77))
+        self.assertTrue(bot.handle_donut_event(self.conn, created))
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM processed_donut_events').fetchone()[0], 1)
+
+        cancelled = event('donut_subscription_cancelled', 'lp-2', user_id=77)
+        bot.handle_donut_event(self.conn, cancelled)
+        self.assertTrue(db.is_premium_user(self.conn, 77))
+
+        expired = event('donut_subscription_expired', 'lp-3', user_id=77)
+        bot.handle_donut_event(self.conn, expired)
+        self.assertFalse(db.is_premium_user(self.conn, 77))
+
+    def test_donut_longpoll_event_from_wrong_group_is_ignored(self):
+        event = SimpleNamespace(type='donut_subscription_create', raw={
+            'type': 'donut_subscription_create', 'event_id': 'wrong-group',
+            'group_id': config.GROUP_ID + 1,
+            'object': {'user_id': 88, 'amount': 50},
+        })
+        self.assertTrue(bot.handle_donut_event(self.conn, event))
+        self.assertFalse(db.is_premium_user(self.conn, 88))
+
     def test_message_rank_thresholds_are_inclusive_and_non_overlapping(self):
         cases = (
             (0, 'Новичок'),
