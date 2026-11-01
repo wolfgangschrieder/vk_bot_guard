@@ -152,6 +152,11 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id4', uid=1, mid=4))
         self.assertEqual(len(self.queued('delete')), 2)  # third assignment exceeds daily cap
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {'токсик': 1})
+        comments = [item['message'] for item in self.queued('send')]
+        self.assertEqual(len(comments), 2)
+        self.assertIn('💀 «Токсик»', comments[0])
+        self.assertIn('(+1)', comments[0])
+        self.assertIn('(−1)', comments[1])
 
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=99, mid=6))
         profile = self.queued('send')[-1]['message']

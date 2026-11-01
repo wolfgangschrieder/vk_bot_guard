@@ -1104,6 +1104,16 @@ def handle_characteristic_command(vk, conn, from_id: int, text: str, now: int,
         return True
     if result == "self":
         send_bot_message(vk, "❗ Нельзя назначить характеристику самому себе.", temporary=True)
+    elif result == "applied":
+        emoji, title = config.CHAT_CHARACTERISTIC_BY_COMMAND[trait_key]
+        names = get_user_names(vk, [from_id, target_id])
+        change = "+1" if match.group(2) == "+" else "−1"
+        send_bot_message(
+            vk,
+            f"✨ Характеристика {emoji} «{title}»: "
+            f"{mention(from_id, names.get(from_id))} → "
+            f"{mention(target_id, names.get(target_id))} ({change}).",
+        )
     return True
 
 
