@@ -1062,7 +1062,8 @@ def handle_characteristic_command(vk, conn, from_id: int, text: str, now: int,
     command_match = re.match(r"^/([а-яё]+)(?:\s|$)", text.strip(), re.IGNORECASE)
     if not command_match:
         return False
-    trait_key = command_match.group(1).casefold()
+    typed_trait_key = command_match.group(1).casefold()
+    trait_key = config.CHAT_CHARACTERISTIC_ALIASES.get(typed_trait_key, typed_trait_key)
     if trait_key not in config.CHAT_CHARACTERISTIC_BY_COMMAND:
         return False
     match = re.fullmatch(r"/([а-яё]+)\s+([+-])\s+(.+)", text.strip(), re.IGNORECASE)

@@ -174,6 +174,16 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_user_characteristics(self.conn, 99), {})
         self.assertIn('самому себе', self.queued('send')[0]['message'])
 
+    def test_common_misspelling_of_gentleman_command_uses_same_trait(self):
+        bot.handle_new_message(
+            self.vk, self.conn,
+            self.message('/джентельмен + @id2', uid=1, mid=1),
+        )
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'джентльмен': 1})
+        comment = self.queued('send')[0]['message']
+        self.assertIn('🎩 «Джентльмен»', comment)
+        self.assertIn('(+1)', comment)
+
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
             raw = {

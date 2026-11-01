@@ -245,6 +245,9 @@ CHAT_CHARACTERISTIC_BY_COMMAND = {
     command: (emoji, title)
     for command, emoji, title in CHAT_CHARACTERISTICS
 }
+CHAT_CHARACTERISTIC_ALIASES = {
+    "джентельмен": "джентльмен",
+}
 
 # Optional stable IDs for the same three accounts; avoids a VK lookup for /stat.
 STAT_ALLOWED_IDS = {
