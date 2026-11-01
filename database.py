@@ -10,7 +10,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 class Connection(sqlite3.Connection):
@@ -186,6 +186,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_12(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (12, int(time.time())))
+            current = 12
+
+        if current < 13:
+            _migration_13(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (13, int(time.time())))
 
         conn.commit()
 
@@ -448,6 +454,25 @@ def _migration_12(conn):
     )""")
 
 
+def _migration_13(conn):
+    # Premium members may vote for two different people in a week. Rebuild the
+    # old one-row-per-giver/week table so both votes can be retained.
+    conn.execute("ALTER TABLE reputation_votes RENAME TO reputation_votes_v12")
+    conn.execute("""CREATE TABLE reputation_votes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        giver_id INTEGER NOT NULL,
+        receiver_id INTEGER NOT NULL,
+        week_key TEXT NOT NULL,
+        value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+        created_at INTEGER NOT NULL
+    )""")
+    conn.execute("""INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at)
+        SELECT giver_id, receiver_id, week_key, value, created_at FROM reputation_votes_v12""")
+    conn.execute("DROP TABLE reputation_votes_v12")
+    conn.execute("CREATE INDEX reputation_giver_week ON reputation_votes(giver_id, week_key)")
+    conn.execute("CREATE INDEX reputation_pair_week ON reputation_votes(giver_id, receiver_id, week_key)")
+
+
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
                              view_type: str, limit: int) -> bool:
     if view_type not in {"self", "other"} or int(limit) < 1:
@@ -479,9 +504,9 @@ def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
         return "invalid"
 
     with atomic(conn):
+        if giver_id == target_id:
+            return "self"
         if not is_admin:
-            if giver_id == target_id:
-                return "self"
             if is_premium:
                 existing_pair = conn.execute(
                     "SELECT 1 FROM characteristic_gives "
@@ -1208,29 +1233,43 @@ def add_reputation_vote(
     value: int,
     week_key: str,
     now: Optional[int] = None,
+    *,
+    is_admin: bool = False,
+    is_premium: bool = False,
+    premium_weekly_limit: int = 2,
 ) -> bool:
     if giver_id == receiver_id or value not in (-1, 1):
         return False
 
     timestamp = int(time.time()) if now is None else int(now)
-    with _lock:
-        existing = conn.execute(
-            "SELECT 1 FROM reputation_votes WHERE giver_id = ? AND week_key = ? LIMIT 1",
-            (giver_id, week_key),
-        ).fetchone()
-        if existing:
-            return False
+    with atomic(conn):
+        if not is_admin:
+            same_receiver = conn.execute(
+                "SELECT 1 FROM reputation_votes WHERE giver_id = ? AND receiver_id = ? AND week_key = ? LIMIT 1",
+                (giver_id, receiver_id, week_key),
+            ).fetchone()
+            if same_receiver:
+                return False
 
+            if is_premium:
+                distinct_receivers = conn.execute(
+                    "SELECT COUNT(DISTINCT receiver_id) FROM reputation_votes WHERE giver_id = ? AND week_key = ?",
+                    (giver_id, week_key),
+                ).fetchone()[0]
+                if int(distinct_receivers) >= int(premium_weekly_limit):
+                    return False
+            else:
+                existing = conn.execute(
+                    "SELECT 1 FROM reputation_votes WHERE giver_id = ? AND week_key = ? LIMIT 1",
+                    (giver_id, week_key),
+                ).fetchone()
+                if existing:
+                    return False
         try:
             conn.execute(
-                """
-                INSERT INTO reputation_votes
-                    (giver_id, receiver_id, week_key, value, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) VALUES (?, ?, ?, ?, ?)",
                 (giver_id, receiver_id, week_key, value, timestamp),
             )
-            conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False

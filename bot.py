@@ -1079,7 +1079,7 @@ def handle_characteristic_command(vk, conn, from_id: int, text: str, now: int,
         return True
 
     is_admin = from_id in config.ADMIN_IDS
-    if target_id == from_id and not is_admin:
+    if target_id == from_id:
         send_bot_message(vk, "❗ Нельзя назначить характеристику самому себе.", temporary=True)
         return True
 
@@ -1122,15 +1122,14 @@ def handle_reputation_command(
     if target_id <= 0:
         send_bot_message(vk, "❗ Укажи пользователя через @username или @id.", temporary=True)
         return True
+    if target_id == from_id:
+        send_bot_message(vk, "❗ Нельзя менять репутацию самому себе.", temporary=True)
+        return True
 
     value = -1 if match.group(1) == "-" else 1
     week_key = current_week_key(
         datetime.fromtimestamp(now, config.CHAT_TZ).date()
     )
-    # Повторная репутация в течение недели полностью игнорируется.
-    if db.has_reputation_vote(conn, from_id, week_key):
-        return True
-
     if not db.add_reputation_vote(
         conn,
         from_id,
@@ -1138,8 +1137,12 @@ def handle_reputation_command(
         value,
         week_key,
         now,
+        is_admin=from_id in config.ADMIN_IDS,
+        is_premium=db.is_premium_user(conn, from_id),
+        premium_weekly_limit=config.REPUTATION_WEEKLY_LIMIT_PREMIUM,
     ):
-        # Даже при гонке двух одинаковых событий команда остаётся тихой.
+        # Исчерпание недельной квоты и повторная оценка того же человека
+        # остаются тихими, как и прежние повторные голоса.
         return True
 
     sign = "+1" if value > 0 else "-1"

@@ -298,7 +298,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-11-01", "self", 2))
 
     def test_characteristic_limits_and_signed_score(self):
-        common = dict(regular_weekly_limit=1, premium_daily_limit=3, now=100)
+        common = dict(regular_weekly_limit=1, premium_daily_limit=2, now=100)
         self.assertEqual(db.give_characteristic(
             self.conn, 1, 2, "токсик", 1, is_admin=False, is_premium=False,
             week_key="2026-W44", day_key="2026-10-31", **common,
@@ -309,14 +309,14 @@ class DatabaseTests(unittest.TestCase):
         ), "weekly_limit")
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {"токсик": 1})
 
-        premium_args = dict(regular_weekly_limit=1, premium_daily_limit=3, now=101)
-        for target in (20, 21, 22):
+        premium_args = dict(regular_weekly_limit=1, premium_daily_limit=2, now=101)
+        for target in (20, 21):
             self.assertEqual(db.give_characteristic(
                 self.conn, 10, target, "токсик", -1, is_admin=False, is_premium=True,
                 week_key="2026-W44", day_key="2026-10-31", **premium_args,
             ), "applied")
         self.assertEqual(db.give_characteristic(
-            self.conn, 10, 23, "токсик", 1, is_admin=False, is_premium=True,
+            self.conn, 10, 22, "токсик", 1, is_admin=False, is_premium=True,
             week_key="2026-W44", day_key="2026-10-31", **premium_args,
         ), "daily_limit")
         self.assertEqual(db.give_characteristic(
@@ -326,7 +326,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.give_characteristic(
             self.conn, 99, 99, "токсик", 1, is_admin=True, is_premium=False,
             week_key="2026-W44", day_key="2026-10-31", **common,
-        ), "applied")
+        ), "self")
 
         # Opposite votes cancel out and zero-valued traits stay hidden.
         self.assertEqual(db.give_characteristic(
@@ -334,6 +334,64 @@ class DatabaseTests(unittest.TestCase):
             week_key="2026-W44", day_key="2026-10-31", **common,
         ), "applied")
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {})
+
+    def test_premium_reputation_allows_two_distinct_targets_weekly(self):
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 10, 20, 1, "2026-W44", now=100,
+            is_premium=True, premium_weekly_limit=2,
+        ))
+        self.assertFalse(db.add_reputation_vote(
+            self.conn, 10, 20, -1, "2026-W44", now=101,
+            is_premium=True, premium_weekly_limit=2,
+        ))
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 10, 21, -1, "2026-W44", now=102,
+            is_premium=True, premium_weekly_limit=2,
+        ))
+        self.assertFalse(db.add_reputation_vote(
+            self.conn, 10, 22, 1, "2026-W44", now=103,
+            is_premium=True, premium_weekly_limit=2,
+        ))
+        self.assertFalse(db.add_reputation_vote(
+            self.conn, 10, 10, 1, "2026-W44", now=104,
+            is_admin=True, is_premium=False,
+        ))
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 99, 20, 1, "2026-W44", now=105,
+            is_admin=True, is_premium=False,
+        ))
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 99, 20, -1, "2026-W44", now=106,
+            is_admin=True, is_premium=False,
+        ))
+
+    def test_reputation_schema_migration_preserves_old_votes_and_allows_second_vote(self):
+        self.assertTrue(db.add_reputation_vote(self.conn, 1, 2, 1, "2026-W44", now=100))
+        self.conn.execute("DROP INDEX reputation_giver_week")
+        self.conn.execute("DROP INDEX reputation_pair_week")
+        self.conn.execute("ALTER TABLE reputation_votes RENAME TO reputation_votes_v13")
+        self.conn.execute("""CREATE TABLE reputation_votes (
+            giver_id INTEGER NOT NULL,
+            receiver_id INTEGER NOT NULL,
+            week_key TEXT NOT NULL,
+            value INTEGER NOT NULL CHECK(value IN (-1, 1)),
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(giver_id, week_key)
+        )""")
+        self.conn.execute("""INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at)
+            SELECT giver_id, receiver_id, week_key, value, created_at FROM reputation_votes_v13""")
+        self.conn.execute("DROP TABLE reputation_votes_v13")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version = 13")
+        self.conn.commit()
+        self.conn.close()
+
+        self.conn = db.connect(str(Path(self.tmp.name) / "test.db"))
+        self.assertEqual(db.get_reputation(self.conn, 2), 1)
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 1, 3, -1, "2026-W44", now=101,
+            is_premium=True, premium_weekly_limit=2,
+        ))
+        self.assertEqual(db.get_reputation(self.conn, 3), -1)
 
     def test_legacy_database_survives_migration(self):
         self.conn.close()

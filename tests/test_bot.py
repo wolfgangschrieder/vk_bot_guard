@@ -150,8 +150,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('delete')), 1)  # one recipient per week
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=3))
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id4', uid=1, mid=4))
-        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id5', uid=1, mid=5))
-        self.assertEqual(len(self.queued('delete')), 2)  # fourth successful assignment is over daily cap
+        self.assertEqual(len(self.queued('delete')), 2)  # third assignment exceeds daily cap
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {'токсик': 1})
 
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=99, mid=6))
@@ -164,6 +163,11 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=2))
         self.assertEqual(len(self.queued('delete')), 1)
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {'гений': 1})
+
+    def test_characteristic_cannot_be_assigned_to_self_even_by_admin(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id99', uid=99, mid=1))
+        self.assertEqual(db.get_user_characteristics(self.conn, 99), {})
+        self.assertIn('самому себе', self.queued('send')[0]['message'])
 
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
@@ -469,6 +473,33 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/rep - @kenaya', mid=2))
         self.assertEqual(db.get_reputation(self.conn, 10), 1)
         self.assertEqual(len(self.queued('send')), 1)
+
+    def test_premium_reputation_is_two_different_people_per_week(self):
+        event = {
+            'event_id': 'premium-reputation', 'type': 'donut_subscription_create',
+            'object': {'user_id': 1, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
+        }
+        db.process_donut_event(self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB, now=self.now)
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep + @id2', uid=1, mid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id2', uid=1, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id3', uid=1, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id4', uid=1, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id1', uid=1, mid=5))
+
+        self.assertEqual(db.get_reputation(self.conn, 2), 1)
+        self.assertEqual(db.get_reputation(self.conn, 3), -1)
+        self.assertEqual(db.get_reputation(self.conn, 4), 0)
+        self.assertEqual(db.get_reputation(self.conn, 1), 0)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM reputation_votes WHERE giver_id = 1').fetchone()[0], 2)
+        self.assertEqual(len(self.queued('send')), 3)
+
+    def test_admin_reputation_is_unlimited_but_self_vote_is_forbidden(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep + @id2', uid=99, mid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id2', uid=99, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep + @id99', uid=99, mid=3))
+        self.assertEqual(db.get_reputation(self.conn, 2), 0)
+        self.assertEqual(db.get_reputation(self.conn, 99), 0)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM reputation_votes WHERE giver_id = 99').fetchone()[0], 2)
 
     def test_commands_cannot_bypass_moderation(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @all +79991234567'))
