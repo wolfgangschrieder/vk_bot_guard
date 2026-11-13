@@ -595,6 +595,21 @@ def publish_commands_link(vk) -> int:
     )
 
 
+def publish_donut_promo(vk) -> int:
+    message = (
+        "💎 Хочешь больше возможностей в чате?\n"
+        "Don-премиум открывает расширенные лимиты:\n"
+        "• Профиль — 5 просмотров своего и 5 чужих профилей в день вместо 2 и 2.\n"
+        "• Характеристики — до 5 разных участников в день вместо одной выдачи в неделю.\n"
+        "• Репутация — до 3 разных участников в день вместо одного голоса в неделю.\n"
+        "• 💍 /Свадьба — предложить и заключить брак могут два участника с активным Don, после согласия второго.\n"
+        "• 💔 /Развод — расторгнуть свой брак без подтверждения партнёра.\n"
+        "Подписка VK Donut @vlgchat - 100 ₽ в месяц. Её поддержка помогает нам развивать чат! "
+        "Подробности - в разделе Donut сообщества. Спасибо!"
+    )
+    return send_bot_message(vk, message)
+
+
 def handle_commands_link_command(vk, from_id: int, text: str,
                                  command_message=None) -> bool:
     if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
@@ -2433,20 +2448,16 @@ def scheduler_tick(vk, conn, now=None):
                         weather_line=morning_weather, fetch_weather=False,
                     ):
                         db.claim_scheduler_event(conn, key, int(now.timestamp()))
-            if cursor == now.date():
-                for hour in config.COMMANDS_REMINDER_HOURS:
-                    reminder_at = midnight.replace(hour=hour)
-                    if lower < reminder_at <= now:
-                        key = f"commands-link:{cursor.isoformat()}-{hour:02d}"
-                        if db.scheduler_event_claimed(conn, key):
-                            continue
-                        delay = now - reminder_at
-                        if delay > timedelta(minutes=config.COMMANDS_REMINDER_LATE_WINDOW_MINUTES):
-                            db.claim_scheduler_event(conn, key, int(now.timestamp()))
-                            log.info("Напоминание о командах пропущено: окно отправки прошло (%s %02d:00)",
-                                     cursor, hour)
-                        elif publish_commands_link(vk):
-                            db.claim_scheduler_event(conn, key, int(now.timestamp()))
+            promo_at = midnight.replace(hour=config.DONUT_PROMO_HOUR)
+            if cursor == now.date() and lower < promo_at <= now:
+                key = f"donut-promo:{cursor.isoformat()}"
+                if not db.scheduler_event_claimed(conn, key):
+                    delay = now - promo_at
+                    if delay > timedelta(minutes=config.DONUT_PROMO_LATE_WINDOW_MINUTES):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                        log.info("Реклама Don-премиума пропущена: окно отправки прошло (%s)", cursor)
+                    elif publish_donut_promo(vk):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
             monday_noon = midnight.replace(hour=12)
             if cursor.weekday() == 0 and lower < monday_noon <= now:
                 start_date = cursor - timedelta(days=7)

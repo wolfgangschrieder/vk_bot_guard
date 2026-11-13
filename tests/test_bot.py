@@ -1214,27 +1214,32 @@ class BotTests(unittest.TestCase):
         bot.scheduler_tick(self.vk, self.conn, before)
         count = len(self.queued('send'))
         bot.scheduler_tick(self.vk, self.conn, after)
-        self.assertEqual(len(self.queued('send')), count + 2)
+        self.assertEqual(len(self.queued('send')), count + 1)
         bot.scheduler_tick(self.vk, self.conn, after)
-        self.assertEqual(len(self.queued('send')), count + 2)
+        self.assertEqual(len(self.queued('send')), count + 1)
 
-    def test_commands_link_reminders_run_at_11_14_and_20_and_are_deduplicated(self):
-        day = date(2026, 10, 9)
-        for hour in (11, 14, 20):
-            at = datetime.combine(day, datetime.min.time(), config.CHAT_TZ).replace(
-                hour=hour, minute=5,
-            )
-            bot.scheduler_tick(self.vk, self.conn, at)
-            bot.scheduler_tick(self.vk, self.conn, at + timedelta(minutes=1))
-            reminders = [item for item in self.queued('send')
-                         if item['message'].startswith('🤖 Нужна команда?')]
-            self.assertEqual(len(reminders), len([h for h in (11, 14, 20) if h <= hour]))
-            self.assertEqual(reminders[-1]['keyboard'], bot.commands_keyboard())
+    def test_donut_promo_is_posted_once_at_noon(self):
+        noon = datetime(2026, 10, 9, 12, 5, tzinfo=config.CHAT_TZ)
+        bot.scheduler_tick(self.vk, self.conn, noon)
+        bot.scheduler_tick(self.vk, self.conn, noon + timedelta(minutes=1))
+        promos = [item['message'] for item in self.queued('send')
+                  if item['message'].startswith('💎 Хочешь больше возможностей в чате?')]
+        self.assertEqual(promos, [
+            "💎 Хочешь больше возможностей в чате?\n"
+            "Don-премиум открывает расширенные лимиты:\n"
+            "• Профиль — 5 просмотров своего и 5 чужих профилей в день вместо 2 и 2.\n"
+            "• Характеристики — до 5 разных участников в день вместо одной выдачи в неделю.\n"
+            "• Репутация — до 3 разных участников в день вместо одного голоса в неделю.\n"
+            "• 💍 /Свадьба — предложить и заключить брак могут два участника с активным Don, после согласия второго.\n"
+            "• 💔 /Развод — расторгнуть свой брак без подтверждения партнёра.\n"
+            "Подписка VK Donut @vlgchat - 100 ₽ в месяц. Её поддержка помогает нам развивать чат! "
+            "Подробности - в разделе Donut сообщества. Спасибо!"
+        ])
 
-    def test_commands_link_missed_by_more_than_30_minutes_is_skipped(self):
-        late = datetime(2026, 10, 9, 12, 0, tzinfo=config.CHAT_TZ)
+    def test_donut_promo_missed_by_more_than_30_minutes_is_skipped(self):
+        late = datetime(2026, 10, 9, 12, 40, tzinfo=config.CHAT_TZ)
         bot.scheduler_tick(self.vk, self.conn, late)
-        self.assertFalse(any(item['message'].startswith('🤖 Нужна команда?')
+        self.assertFalse(any(item['message'].startswith('💎 Хочешь больше возможностей в чате?')
                              for item in self.queued('send')))
 
     def test_scheduler_catches_midnight_king_and_weekly_report(self):
