@@ -1,5 +1,7 @@
 import logging
 import json
+import hashlib
+import random
 import uuid
 from logging.handlers import RotatingFileHandler
 import re
@@ -16,6 +18,7 @@ from vk_api.exceptions import ApiError, VkApiError
 
 import config
 import database as db
+import morning_content
 
 logging.basicConfig(
     level=logging.INFO,
@@ -710,6 +713,74 @@ def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False) -> 
                 record_lines.append(f"{label}: пока нет данных")
         report += "\n\n📈 РЕКОРДЫ ЧАТА\n" + "\n".join(record_lines)
     return send_bot_message(vk, report) > 0
+
+
+def _morning_content_key(item: dict) -> str:
+    stable_id = str(item.get("id") or item.get("text", "")).strip().casefold()
+    return hashlib.sha256(stable_id.encode("utf-8")).hexdigest()
+
+
+def choose_morning_content(conn, items: list[dict], content_type: str,
+                           stat_date: date, *, rng=None):
+    if not items:
+        return None
+    rng = rng or random.SystemRandom()
+    unique = {}
+    for item in items:
+        if not str(item.get("text", "")).strip():
+            continue
+        key = _morning_content_key(item)
+        unique.setdefault(key, (item, key))
+    if not unique:
+        return None
+
+    history = db.get_morning_content_history(conn, content_type)
+    cutoff = (stat_date - timedelta(days=config.MORNING_CONTENT_HISTORY_DAYS - 1)).isoformat()
+    candidates = [pair for key, pair in unique.items()
+                  if key not in history or history[key] < cutoff]
+    if candidates:
+        item, key = rng.choice(candidates)
+    else:
+        oldest = min(history.get(key, "0000-00-00") for key in unique)
+        candidates = [pair for key, pair in unique.items()
+                      if history.get(key, "0000-00-00") == oldest]
+        item, key = rng.choice(candidates)
+    return {**item, "content_type": content_type, "content_key": key}
+
+
+def build_morning_message(stat_date: date, weather_line: str | None = None,
+                          advice=None, question=None) -> str:
+    weekdays = (
+        "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье",
+    )
+    day_label = (
+        f"{weekdays[stat_date.weekday()]}, {stat_date.day} "
+        f"{config.MONTH_NAMES[stat_date.month - 1]}"
+    )
+    lines = ["☀️ Доброе утро, чат!", f"📅 Сегодня: {day_label}"]
+    if weather_line:
+        lines.append(weather_line)
+    if advice:
+        lines.append(f"🧥 Совет дня: {advice['text']}")
+    if question:
+        lines.append(f"💬 Вопрос дня: {question['text']}")
+    return "\n".join(lines)
+
+
+def publish_morning_post(vk, conn, stat_date: date, *, content=None,
+                         weather_line=None, fetch_weather=True, rng=None) -> bool:
+    content = morning_content.load_content() if content is None else content
+    if fetch_weather and weather_line is None:
+        weather_line = morning_content.fetch_weather()
+    advice = choose_morning_content(conn, content.get("advice", []), "advice", stat_date, rng=rng)
+    question = choose_morning_content(conn, content.get("question", []), "question", stat_date, rng=rng)
+    message = build_morning_message(stat_date, weather_line, advice, question)
+    if send_bot_message(vk, message) <= 0:
+        return False
+    for item in (advice, question):
+        if item:
+            db.record_morning_content(conn, item["content_type"], item["content_key"], stat_date)
+    return True
 
 
 def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
@@ -2028,6 +2099,27 @@ def scheduler_tick(vk, conn, now=None):
     global ACTIVE_CONN
     ACTIVE_CONN = conn
     now = datetime.now(config.CHAT_TZ) if now is None else now.astimezone(config.CHAT_TZ)
+    today_midnight = datetime.combine(now.date(), datetime.min.time(), config.CHAT_TZ)
+    morning_at = today_midnight.replace(hour=config.MORNING_POST_HOUR)
+    morning_event_key = f"morning:{now.date().isoformat()}"
+    morning_contents = None
+    morning_weather = None
+    with db._lock:
+        initial_checkpoint = conn.execute(
+            "SELECT created_at FROM scheduler_state WHERE event_key = 'checkpoint'"
+        ).fetchone()
+    initial_lower = (
+        datetime.fromtimestamp(initial_checkpoint["created_at"], config.CHAT_TZ)
+        if initial_checkpoint else today_midnight - timedelta(seconds=1)
+    )
+    initial_lower = max(initial_lower, now - timedelta(days=config.SCHEDULER_CATCHUP_DAYS))
+    morning_age = now - morning_at
+    if (initial_lower < morning_at <= now and
+            timedelta(0) <= morning_age <= timedelta(minutes=config.MORNING_POST_LATE_WINDOW_MINUTES) and
+            not db.scheduler_event_claimed(conn, morning_event_key)):
+        morning_contents = morning_content.load_content()
+        morning_weather = morning_content.fetch_weather()
+
     with db.atomic(conn):
         checkpoint = conn.execute("SELECT created_at FROM scheduler_state WHERE event_key = 'checkpoint'").fetchone()
         first_pass = checkpoint is None
@@ -2074,6 +2166,18 @@ def scheduler_tick(vk, conn, now=None):
                     if not db.scheduler_event_claimed(conn, key):
                         if publish_daily_stats(vk, conn, cursor):
                             db.claim_scheduler_event(conn, key, int(now.timestamp()))
+            morning_at = midnight.replace(hour=config.MORNING_POST_HOUR)
+            if cursor == now.date() and lower < morning_at <= now:
+                key = f"morning:{cursor.isoformat()}"
+                if not db.scheduler_event_claimed(conn, key):
+                    if now - morning_at > timedelta(minutes=config.MORNING_POST_LATE_WINDOW_MINUTES):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                        log.info("Утренний пост пропущен: окно отправки уже прошло (%s)", cursor)
+                    elif publish_morning_post(
+                        vk, conn, cursor, content=morning_contents or {"advice": [], "question": []},
+                        weather_line=morning_weather, fetch_weather=False,
+                    ):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
             monday_noon = midnight.replace(hour=12)
             if cursor.weekday() == 0 and lower < monday_noon <= now:
                 start_date = cursor - timedelta(days=7)

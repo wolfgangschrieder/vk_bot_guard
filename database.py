@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 class Connection(sqlite3.Connection):
@@ -211,6 +211,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_16(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (16, int(time.time())))
+            current = 16
+
+        if current < 17:
+            _migration_17(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (17, int(time.time())))
 
         conn.commit()
 
@@ -548,6 +554,17 @@ def _migration_16(conn, today: date | None = None):
                          [(row["period_type"], row["period_key"]) for row in rows])
         conn.executemany("DELETE FROM scheduler_state WHERE event_key = ?",
                          [(event,) for event in events])
+
+
+def _migration_17(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS morning_content_history (
+        content_type TEXT NOT NULL CHECK(content_type IN ('advice', 'question')),
+        content_key TEXT NOT NULL,
+        shown_on TEXT NOT NULL,
+        PRIMARY KEY(content_type, content_key)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS morning_content_history_date "
+                 "ON morning_content_history(content_type, shown_on)")
 
 
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
@@ -1020,6 +1037,31 @@ def get_chat_legends(conn: sqlite3.Connection, min_messages: int = 100_000) -> l
             (int(min_messages),),
         ).fetchall()
     return [(int(row["user_id"]), int(row["total"])) for row in rows]
+
+
+def get_morning_content_history(conn: sqlite3.Connection, content_type: str) -> dict[str, str]:
+    if content_type not in {"advice", "question"}:
+        raise ValueError("Invalid morning content type")
+    with _lock:
+        rows = conn.execute(
+            "SELECT content_key, shown_on FROM morning_content_history WHERE content_type = ?",
+            (content_type,),
+        ).fetchall()
+    return {str(row["content_key"]): str(row["shown_on"]) for row in rows}
+
+
+def record_morning_content(conn: sqlite3.Connection, content_type: str,
+                           content_key: str, shown_on: date) -> None:
+    if content_type not in {"advice", "question"}:
+        raise ValueError("Invalid morning content type")
+    with _lock:
+        conn.execute(
+            "INSERT INTO morning_content_history(content_type, content_key, shown_on) "
+            "VALUES (?, ?, ?) ON CONFLICT(content_type, content_key) "
+            "DO UPDATE SET shown_on = excluded.shown_on",
+            (content_type, str(content_key), shown_on.isoformat()),
+        )
+        conn.commit()
 
 
 def record_mute(

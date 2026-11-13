@@ -82,6 +82,9 @@ SOCIAL_MUTE_NOTICE_DELETE_SECONDS = 5 * 60
 ALL_COMMAND_DELETE_SECONDS = 60
 MODERATION_REASON_DELETE_SECONDS = 60 * 60
 SCHEDULER_INTERVAL_SECONDS = 20
+MORNING_POST_HOUR = 8
+MORNING_POST_LATE_WINDOW_MINUTES = 30
+MORNING_CONTENT_HISTORY_DAYS = 30
 HISTORY_RETENTION_SECONDS = 30 * 24 * 60 * 60
 SCHEDULER_CATCHUP_DAYS = 7
 DELIVERY_MAX_ATTEMPTS = 12
@@ -91,6 +94,20 @@ API_VERSION = "5.199"
 RECONNECT_DELAY = 5
 DB_PATH = BASE_DIR / "moderator.db"
 LOG_PATH = BASE_DIR / "bot.log"
+MORNING_GOOGLE_SHEET_ID = os.getenv(
+    "MORNING_GOOGLE_SHEET_ID",
+    "1us-ZoLGbyNYI-J6HQMHofHCPIdEcUes-Sj3KkKjqLyg",
+).strip()
+GOOGLE_SERVICE_ACCOUNT_FILE = Path(os.getenv(
+    "GOOGLE_SERVICE_ACCOUNT_FILE", str(BASE_DIR / "google-service-account.json")
+).strip())
+MORNING_CONTENT_CACHE_PATH = BASE_DIR / "morning_content_cache.json"
+try:
+    MORNING_LATITUDE = float(os.getenv("MORNING_LATITUDE", "48.708").strip())
+    MORNING_LONGITUDE = float(os.getenv("MORNING_LONGITUDE", "44.513").strip())
+except ValueError as exc:
+    raise SystemExit("MORNING_LATITUDE и MORNING_LONGITUDE должны быть числами.") from exc
+MORNING_CITY = os.getenv("MORNING_CITY", "Волгоград").strip() or "Волгоград"
 
 try:
     PREMIUM_DONUT_MIN_AMOUNT_RUB = int(os.getenv("PREMIUM_DONUT_MIN_AMOUNT_RUB", "50").strip() or "50")

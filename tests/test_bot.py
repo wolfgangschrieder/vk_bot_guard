@@ -1,4 +1,5 @@
 import json
+import random
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -143,6 +144,46 @@ class BotTests(unittest.TestCase):
             bot.handle_new_message(self.vk, self.conn, self.message(command, uid=1, mid=index))
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
+
+    def test_morning_post_formats_date_weather_advice_and_question(self):
+        report = bot.build_morning_message(
+            date(2026, 10, 9),
+            '🌦 Волгоград: +2…+8°C, слабый дождь, осадки: 45%, ветер до 18 км/ч. (Open-Meteo)',
+            {'text': 'Возьми с собой зонт.'},
+            {'text': 'Что сегодня может сделать день лучше?'},
+        )
+        self.assertIn('☀️ Доброе утро, чат!', report)
+        self.assertIn('📅 Сегодня: пятница, 9 октября', report)
+        self.assertIn('🌦 Волгоград:', report)
+        self.assertIn('🧥 Совет дня: Возьми с собой зонт.', report)
+        self.assertIn('💬 Вопрос дня: Что сегодня может сделать день лучше?', report)
+
+    def test_morning_content_rotation_avoids_recently_shown_item(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        items = [{'id': 'a', 'text': 'Совет A'}, {'id': 'b', 'text': 'Совет B'}]
+        first = bot.choose_morning_content(self.conn, items, 'advice', today, rng=random.Random(1))
+        db.record_morning_content(self.conn, 'advice', first['content_key'], today)
+        second = bot.choose_morning_content(self.conn, items, 'advice', today + timedelta(days=1),
+                                            rng=random.Random(1))
+        self.assertNotEqual(first['content_key'], second['content_key'])
+
+    def test_morning_post_is_scheduled_once_at_eight_moscow_time(self):
+        morning = datetime(2026, 10, 9, 8, 5, tzinfo=config.CHAT_TZ)
+        content = {
+            'advice': [{'id': 'a1', 'text': 'Проветри комнату.'}],
+            'question': [{'id': 'q1', 'text': 'Как настроение?'}],
+        }
+        with patch.object(bot.morning_content, 'load_content', return_value=content) as load, \
+                patch.object(bot.morning_content, 'fetch_weather', return_value='🌤 Волгоград: ясно') as weather:
+            bot.scheduler_tick(self.vk, self.conn, morning)
+            bot.scheduler_tick(self.vk, self.conn, morning + timedelta(minutes=1))
+        reports = [item['message'] for item in self.queued('send')]
+        morning_reports = [text for text in reports if text.startswith('☀️ Доброе утро, чат!')]
+        self.assertEqual(len(morning_reports), 1)
+        self.assertIn('🧥 Совет дня: Проветри комнату.', morning_reports[0])
+        self.assertIn('💬 Вопрос дня: Как настроение?', morning_reports[0])
+        load.assert_called_once()
+        weather.assert_called_once()
 
     def test_legends_command_lists_everyone_at_threshold_in_descending_order(self):
         self.conn.executemany(

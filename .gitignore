@@ -10,3 +10,5 @@ backups/
 *.db-shm
 *.log.*
 .bot.lock
+google-service-account.json
+morning_content_cache.json
