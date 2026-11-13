@@ -85,8 +85,8 @@ class BotTests(unittest.TestCase):
     def test_profile_alias_and_admin_commands(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @kenaya', uid=99))
         profile = self.queued('send')[0]['message']
-        self.assertIn('[id10|', profile)
-        self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertEqual(profile.splitlines()[0], '👤 [id10|Test User]')
+        self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
 
@@ -119,7 +119,8 @@ class BotTests(unittest.TestCase):
 
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @kenaya', uid=99))
         profile = self.queued('send')[0]['message']
-        self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertTrue(profile.startswith('👤 [id10|Test User]'))
+        self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertIn('⭐ Репутация: +12', profile)
         self.assertIn('🎖 Ранг: Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
@@ -838,7 +839,7 @@ class BotTests(unittest.TestCase):
         self.assertTrue(keyboard['inline'])
         self.assertEqual(keyboard, payload['keyboard'])
         bot.handle_new_message(self.vk, self.conn, self.message('👤 Мой профиль', mid=2))
-        self.assertIn('ПРОФИЛЬ', self.queued('send')[-1]['message'])
+        self.assertTrue(self.queued('send')[-1]['message'].startswith('👤 [id1|Test User]'))
 
     def test_menu_is_limited_to_one_call_per_local_day(self):
         for message_id in range(1, 3):

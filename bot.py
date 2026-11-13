@@ -1586,8 +1586,7 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         return f"{value} {form}"
 
     lines = [
-        "👤 ПРОФИЛЬ УЧАСТНИКА",
-        mention(target_id, names.get(target_id)),
+        f"👤 {mention(target_id, names.get(target_id))}",
         "",
         f"⭐ Репутация: {reputation:+d}",
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
