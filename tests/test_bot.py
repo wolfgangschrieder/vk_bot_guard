@@ -52,6 +52,16 @@ class BotTests(unittest.TestCase):
         return {'id': mid, 'peer_id': peer or config.CHAT_PEER_ID, 'from_id': uid,
                 'text': text, 'date': self.now, **extra}
 
+    def grant_donut(self, user_id, event_id=None):
+        event = {
+            'event_id': event_id or f'test-donut-{user_id}',
+            'type': 'donut_subscription_create',
+            'object': {'user_id': user_id, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
+        }
+        return db.process_donut_event(
+            self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB, now=self.now,
+        )
+
     def queued(self, kind=None):
         rows = self.conn.execute('SELECT * FROM outbox ORDER BY id').fetchall()
         return [json.loads(row['payload']) for row in rows if kind is None or row['kind'] == kind]
@@ -119,6 +129,8 @@ class BotTests(unittest.TestCase):
         self.assertIn('8 октября — 61 сообщение', profile)
 
     def test_marriage_proposal_requires_target_acceptance_and_appears_in_profile_and_pairs(self):
+        self.grant_donut(1)
+        self.grant_donut(2)
         bot.handle_new_message(self.vk, self.conn, self.message('/свадьба + @id2', uid=1))
         proposal = self.queued('send')[-1]['message']
         self.assertIn('предлагает', proposal)
@@ -142,7 +154,34 @@ class BotTests(unittest.TestCase):
         self.assertIn('[id1|Test User] 💞 [id2|Test User]', pair_list)
         self.assertIn('Всего пар: 1', pair_list)
 
+    def test_both_spouses_need_active_donut_when_proposing_and_accepting(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        self.grant_donut(1)
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1, mid=2))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        self.grant_donut(2)
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1, mid=3))
+        self.assertIsNotNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        expired = {
+            'event_id': 'expire-during-proposal', 'type': 'donut_subscription_expired',
+            'object': {'user_id': 2},
+        }
+        db.process_donut_event(self.conn, expired, config.PREMIUM_DONUT_MIN_AMOUNT_RUB,
+                               now=self.now + 10)
+        bot.handle_new_message(self.vk, self.conn, self.message('/да @id1', uid=2, mid=4))
+        self.assertIsNone(db.get_marriage(self.conn, 1))
+
+        self.grant_donut(2, 'renewed-donut-2')
+        bot.handle_new_message(self.vk, self.conn, self.message('/да @id1', uid=2, mid=5))
+        self.assertEqual(db.get_marriage(self.conn, 1), (2, self.now))
+
     def test_marriage_rejects_self_blacklisted_absent_and_already_engaged_users(self):
+        for user_id in (1, 2, 3):
+            self.grant_donut(user_id)
         bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id1', uid=1))
         self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 1, self.now + 1))
 
@@ -163,6 +202,9 @@ class BotTests(unittest.TestCase):
         self.assertIsNone(db.get_marriage_proposal(self.conn, 2, 3, self.now + 1))
 
     def test_proposals_expire_can_be_cancelled_and_one_user_cannot_stack_them(self):
+        self.grant_donut(1)
+        self.grant_donut(2)
+        self.grant_donut(3)
         bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1))
         bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id3', uid=1, mid=2))
         self.assertIsNotNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
@@ -428,7 +470,8 @@ class BotTests(unittest.TestCase):
             }
             return SimpleNamespace(type=event_type, raw=raw)
 
-        created = event('donut_subscription_create', 'lp-1', user_id=77, amount=50)
+        created = event('donut_subscription_create', 'lp-1', user_id=77,
+                        amount=config.PREMIUM_DONUT_MIN_AMOUNT_RUB)
         self.assertTrue(bot.handle_donut_event(self.conn, created))
         self.assertTrue(db.is_premium_user(self.conn, 77))
         self.assertTrue(bot.handle_donut_event(self.conn, created))

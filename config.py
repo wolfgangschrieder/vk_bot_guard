@@ -112,7 +112,7 @@ except ValueError as exc:
 MORNING_CITY = os.getenv("MORNING_CITY", "Волгоград").strip() or "Волгоград"
 
 try:
-    PREMIUM_DONUT_MIN_AMOUNT_RUB = int(os.getenv("PREMIUM_DONUT_MIN_AMOUNT_RUB", "50").strip() or "50")
+    PREMIUM_DONUT_MIN_AMOUNT_RUB = int(os.getenv("PREMIUM_DONUT_MIN_AMOUNT_RUB", "100").strip() or "100")
 except ValueError as exc:
     raise SystemExit("PREMIUM_DONUT_MIN_AMOUNT_RUB должен быть целым числом.") from exc
 if PREMIUM_DONUT_MIN_AMOUNT_RUB < 1:
