@@ -35,6 +35,16 @@ DONUT_EVENT_TYPES = {
     "donut_subscription_cancelled",
     "donut_subscription_expired",
 }
+HERO_NAMES = {
+    "day": "Герой дня",
+    "week": "Герой недели",
+    "month": "Герой месяца",
+    "year": "Герой года",
+}
+HERO_EMOJIS = {"day": "🏆", "week": "👑", "month": "💎", "year": "🌟"}
+HERO_MUTE_SECONDS = {"day": 3600, "week": 4 * 3600, "month": 8 * 3600, "year": 24 * 3600}
+HERO_MUTE_LABELS = {"day": "1 час", "week": "4 часа", "month": "8 часов", "year": "24 часа"}
+HERO_MUTE_PRIORITY = {"day": 1, "week": 2, "month": 3, "year": 4}
 
 
 def menu_keyboard() -> dict:
@@ -121,15 +131,51 @@ def delete_message(vk, message) -> int:
         return 0
     return db.enqueue(ACTIVE_CONN, "delete", {"params": params, "peer_id": peer_id})
 
-def apply_mute(vk, peer_id: int, user_id: int, *, reason=None, king_id=None, now=None, deletion_id=None) -> bool:
+def apply_mute(
+    vk,
+    peer_id: int,
+    user_id: int,
+    *,
+    reason=None,
+    king_id=None,
+    now=None,
+    deletion_id=None,
+    duration_seconds=None,
+    hero_period_type=None,
+    hero_period_key=None,
+    hero_cooldown_key=None,
+    hero_notice=None,
+    hourly_segments=1,
+) -> bool:
     now = int(time.time()) if now is None else int(now)
     if db.mute_deadline(ACTIVE_CONN, peer_id, user_id) > now:
         return False
-    db.enqueue(ACTIVE_CONN, "mute", {
-        "peer_id": peer_id, "user_id": user_id, "until": now + config.MUTE_SECONDS,
-        "reason": reason, "king_id": king_id, "requested_at": now,
-        "deletion_id": deletion_id,
-    })
+    segments = max(1, int(hourly_segments))
+    duration = max(1, int(duration_seconds or config.MUTE_SECONDS))
+    previous_id = None
+    for index in range(segments):
+        starts_at = now + index * 60 * 60 if segments > 1 else now
+        ends_at = starts_at + 60 * 60 if segments > 1 else now + duration
+        payload = {
+            "peer_id": peer_id,
+            "user_id": user_id,
+            "until": ends_at,
+            "reason": reason,
+            "king_id": king_id,
+            "requested_at": starts_at,
+            "deletion_id": deletion_id,
+        }
+        if hero_period_type:
+            payload.update({
+                "hero_period_type": hero_period_type,
+                "hero_period_key": hero_period_key,
+                "hero_cooldown_key": hero_cooldown_key,
+                "hero_notice": (index == 0) if hero_notice is None else bool(hero_notice and index == 0),
+                "segment_index": index,
+                "previous_segment_id": previous_id,
+            })
+        operation_id = db.enqueue(ACTIVE_CONN, "mute", payload, next_attempt=starts_at)
+        previous_id = operation_id
     return True
 
 def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
@@ -681,11 +727,17 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         return True
 
     user_id, messages = stats["top_users"][0]
+    status_date = stat_date + timedelta(days=1)
+    status_key = status_date.isoformat()
+    if db.get_hero_title(conn, "day", status_key):
+        return True
     if db.get_king(conn, stat_date):
+        db.save_hero_title(conn, "day", status_key, user_id, messages)
         return True
 
     if not announce:
         db.save_king(conn, stat_date, user_id, messages)
+        db.save_hero_title(conn, "day", status_key, user_id, messages)
         return True
 
     names = get_user_names(vk, [user_id])
@@ -693,10 +745,10 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         conn, (stat_date.isoformat(), user_id, messages)
     )
     text = (
-        f"🦸 ГЕРОЙ ЧАТА\n\n"
+        f"🏆 ГЕРОЙ ДНЯ\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
-        f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
+        f"Сегодня у Героя дня есть право выдать один мут через команду /мут @username."
     )
     if hero_record:
         record_date, record_user_id, record_messages = hero_record
@@ -707,22 +759,59 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         is_new = record_date == stat_date.isoformat()
         new_label = " — новый рекорд" if is_new else ""
         hero_record_line = (
-            f"🏆 Рекорд Героя чата: {mention(record_user_id, record_name)} — "
+            f"🏆 Рекорд Героя дня: {mention(record_user_id, record_name)} — "
             f"{record_messages} сообщ. за день ({record_day}){new_label}"
         )
     else:
-        hero_record_line = "🏆 Рекорд Героя чата: пока нет данных"
+        hero_record_line = "🏆 Рекорд Героя дня: пока нет данных"
     text += "\n\n" + hero_record_line
     sent = send_bot_message(vk, text)
     if sent <= 0:
         return False
     db.save_king(conn, stat_date, user_id, messages)
+    db.save_hero_title(conn, "day", status_key, user_id, messages)
     log.info(
-        "Герой чата: date=%s user=%s messages=%s",
-        stat_date,
+        "Герой дня: status_date=%s user=%s messages=%s",
+        status_date,
         user_id,
         messages,
     )
+    return True
+
+
+def publish_period_hero(
+    vk, conn, period_type: str, period_start: date, *, announce=True, window_end: date | None = None
+) -> bool:
+    if period_type not in {"week", "month", "year"}:
+        raise ValueError(f"Unsupported non-daily hero period: {period_type}")
+    period_key = (period_start.strftime("%Y-%m") if period_type == "month" else
+                  period_start.strftime("%Y") if period_type == "year" else
+                  period_start.isoformat())
+    if db.get_hero_title(conn, period_type, period_key):
+        return True
+    lookback_days = {"week": 7, "month": 30, "year": 365}[period_type]
+    stats_end = window_end or period_start
+    stats_start = stats_end - timedelta(days=lookback_days)
+    top = db.get_top_user_messages(conn, stats_start, stats_end, limit=1)
+    if not top:
+        log.info("Герой %s не назначен: %s — нет сообщений за период", period_type, period_key)
+        return True
+    user_id, messages = top[0]
+    if not announce:
+        db.save_hero_title(conn, period_type, period_key, user_id, messages)
+        return True
+    names = get_user_names(vk, [user_id])
+    title = HERO_NAMES[period_type].upper()
+    text = (
+        f"{HERO_EMOJIS[period_type]} {title}\n\n"
+        f"{mention(user_id, names.get(user_id))}\n"
+        f"Сообщений за период: {messages}\n\n"
+        f"Право Героя — один мут через /мут @username."
+    )
+    if send_bot_message(vk, text) <= 0:
+        return False
+    db.save_hero_title(conn, period_type, period_key, user_id, messages)
+    log.info("%s: period=%s user=%s messages=%s", title, period_key, user_id, messages)
     return True
 
 
@@ -795,6 +884,31 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
 
     stat_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     publish_daily_stats(vk, conn, stat_date)
+    return True
+
+
+def handle_period_top_command(vk, conn, text: str, now: int) -> bool:
+    command = text.strip().casefold()
+    periods = {
+        "/неделя": ("НЕДЕЛЯ", 7),
+        "/месяц": ("МЕСЯЦ", 30),
+        "/год": ("ГОД", 365),
+    }
+    if command not in periods:
+        return False
+    label, days = periods[command]
+    today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    start_date = today - timedelta(days=days - 1)
+    end_date = today + timedelta(days=1)
+    top = db.get_top_user_messages(conn, start_date, end_date, limit=5)
+    period_label = f"{start_date:%d.%m.%Y} — {today:%d.%m.%Y}"
+    report = (
+        f"📊 ТОП-5 ЗА {label}\n"
+        f"{period_label}\n\n"
+        f"💬 Сообщения участников\n"
+        f"{format_top(vk, top, ('🥇', '🥈', '🥉', '4️⃣', '5️⃣'))}"
+    )
+    send_bot_message(vk, report)
     return True
 
 
@@ -1083,10 +1197,25 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
             manual_premium_until, config.CHAT_TZ
         ).strftime("%d.%m.%Y")
         lines.append(f"🎁 Премиум от администрации: до {expires_label}")
-    if stats["hero_count"]:
+    hero_labels = {
+        "day": "🏆 Герой дня",
+        "week": "👑 Герой недели",
+        "month": "💎 Герой месяца",
+        "year": "🌟 Герой года",
+    }
+    for period_type in ("day", "week", "month", "year"):
+        count, last_key = stats["hero_titles"][period_type]
+        if not count or not last_key:
+            continue
+        if period_type == "month":
+            last_label = datetime.strptime(last_key, "%Y-%m").strftime("%m.%Y")
+        elif period_type == "year":
+            last_label = last_key
+        else:
+            last_label = date.fromisoformat(last_key).strftime("%d.%m.%Y")
         lines.append(
-            "🏆 Герой чата: "
-            + count_label(stats["hero_count"], "раз", "раза", "раз")
+            f"{hero_labels[period_type]}: {count_label(count, 'раз', 'раза', 'раз')} "
+            f"(последний: {last_label})"
         )
     lines.extend([
         "",
@@ -1230,16 +1359,29 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         return False
 
     local_date = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    yesterday = local_date - timedelta(days=1)
-    king = db.get_king(conn, yesterday)
+    hero = db.get_active_hero_title(conn, from_id, local_date)
+    if hero is None:
+        # Compatibility with a legacy daily result that predates hero_titles backfill.
+        legacy = db.get_king(conn, local_date - timedelta(days=1))
+        if legacy and legacy[0] == from_id:
+            hero = {
+                "period_type": "day",
+                "period_key": local_date.isoformat(),
+                "user_id": from_id,
+                "messages": legacy[1],
+            }
 
-    if not king or king[0] != from_id:
+    if not hero:
         send_bot_message(
             vk,
-            "🦸 Эта команда доступна только Герою чата.",
+            "🏅 Команда /мут доступна только действующему Герою дня, недели, месяца или года.",
             temporary=True,
         )
         return True
+
+    period_type = hero["period_type"]
+    period_key = hero["period_key"]
+    cooldown_key = f"hero_mute:{period_type}:{period_key}"
 
     target_id = resolve_target_user_id(vk, text)
     if target_id <= 0:
@@ -1258,40 +1400,31 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         )
         return True
 
-    if db.is_premium_user(conn, from_id) and db.is_premium_user(conn, target_id):
-        send_bot_message(
-            vk,
-            "💎 Герой чата с Don-премиумом не может выдать мут другому участнику с Don-премиумом. Мут не потрачен.",
-            temporary=True,
-        )
-        return True
-
-    if target_id in config.ADMIN_IDS:
-        send_bot_message(
-            vk,
-            "🛡 Администратора Король замутить не может.",
-            temporary=True,
-        )
-        return True
-
-    if pending_king_mute(conn, from_id, local_date):
+    if pending_king_mute(conn, from_id, period_key):
         send_bot_message(vk, "⏳ Твой мут уже ожидает подтверждения VK.", temporary=True)
         return True
 
-    # Один успешный королевский мут в сутки. Используем уже существующую
-    # таблицу command_cooldowns — схема БД не меняется.
-    last_mute = db.get_command_cooldown(conn, from_id, "king_mute")
+    last_mute = db.get_command_cooldown(conn, from_id, cooldown_key)
     if last_mute:
-        last_date = datetime.fromtimestamp(last_mute, config.CHAT_TZ).date()
-        if last_date == local_date:
-            send_bot_message(
-                vk,
-                "🦸 Ты уже использовал свой мут сегодня. Следующий будет доступен завтра.",
-                temporary=True,
-            )
-            return True
+        send_bot_message(
+            vk,
+            f"🏅 Ты уже использовал мут как {HERO_NAMES[period_type].lower()} в этом периоде.",
+            temporary=True,
+        )
+        return True
 
-    if not apply_mute(vk, config.CHAT_PEER_ID, target_id, king_id=from_id, now=now):
+    if not apply_mute(
+        vk,
+        config.CHAT_PEER_ID,
+        target_id,
+        king_id=from_id,
+        now=now,
+        duration_seconds=HERO_MUTE_SECONDS[period_type],
+        hero_period_type=period_type,
+        hero_period_key=period_key,
+        hero_cooldown_key=cooldown_key,
+        hourly_segments=4 if period_type == "week" else 1,
+    ):
         send_bot_message(vk, "🔇 Пользователь уже под ограничением. Твой мут не потрачен.", temporary=True)
 
     return True
@@ -1312,6 +1445,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_period_top_command(vk, conn, stripped, now):
         return True
     if handle_characteristic_command(vk, conn, from_id, stripped, now, command_message):
         return True
@@ -1443,13 +1578,18 @@ def process_message(vk, conn, message) -> None:
 
 
 
-def pending_king_mute(conn, user_id, local_date):
+def pending_king_mute(conn, user_id, period_key):
     with db._lock:
         for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row["payload"])
-            request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
-            if payload.get("king_id") == user_id and request_date == local_date:
+            if payload.get("king_id") != user_id:
+                continue
+            if payload.get("hero_period_key") == period_key:
                 return True
+            if not payload.get("hero_period_key"):
+                request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
+                if request_date.isoformat() == period_key:
+                    return True
     return False
 
 
@@ -1590,13 +1730,27 @@ def execute_operation(vk, conn, row, now):
         validate_deleted_messages(response, params)
         db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "mute":
+        previous_segment_id = payload.get("previous_segment_id")
+        if previous_segment_id:
+            with db._lock:
+                previous = conn.execute(
+                    "SELECT status FROM outbox WHERE id = ?", (previous_segment_id,)
+                ).fetchone()
+            if previous is None or previous["status"] in {"failed", "cancelled"}:
+                db.stop_operation(
+                    conn, row["id"], "Предыдущий часовой мут не был подтверждён.", status="cancelled"
+                )
+                return
+            if previous["status"] != "done":
+                return
         remaining = payload["until"] - now
         requested_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
         today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-        if remaining <= 0 or (payload.get("king_id") and requested_date != today):
+        legacy_expired = payload.get("king_id") and not payload.get("hero_period_type") and requested_date != today
+        if remaining <= 0 or legacy_expired:
             with db.atomic(conn):
                 log.error("Мут не доставлен до истечения срока: operation=%s", row["id"])
-                if payload.get("king_id"):
+                if payload.get("king_id") and payload.get("hero_notice", True):
                     send_bot_message(vk, "❗ VK не подтвердил мут. Право не было потрачено.", temporary=True)
                 db.finish_operation(conn, row["id"], now)
             return
@@ -1610,13 +1764,20 @@ def execute_operation(vk, conn, row, now):
             db.confirm_mute(conn, payload["peer_id"], payload["user_id"], payload["until"])
             record_successful_mute(conn, payload["user_id"], payload["peer_id"], now)
             if payload.get("king_id"):
-                db.set_command_cooldown(conn, payload["king_id"], "king_mute", 0, now)
-                names = get_user_names(vk, [payload["user_id"]])
-                send_bot_message(vk, config.KING_MUTE_MESSAGE.format(
-                    mention=mention(payload["user_id"], names.get(payload["user_id"]))),
-                    temporary=True,
-                    peer_id=payload["peer_id"],
-                    delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS)
+                cooldown_key = payload.get("hero_cooldown_key") or "king_mute"
+                db.set_command_cooldown(conn, payload["king_id"], cooldown_key, 0, now)
+                if payload.get("hero_period_type") == "day":
+                    db.set_command_cooldown(conn, payload["king_id"], "king_mute", 0, now)
+                if payload.get("hero_notice", True):
+                    period_type = payload.get("hero_period_type", "day")
+                    names = get_user_names(vk, [payload["user_id"]])
+                    send_bot_message(vk, config.HERO_MUTE_MESSAGE.format(
+                        hero_title=HERO_NAMES[period_type],
+                        duration=HERO_MUTE_LABELS[period_type],
+                        mention=mention(payload["user_id"], names.get(payload["user_id"]))),
+                        temporary=True,
+                        peer_id=payload["peer_id"],
+                        delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS)
             elif payload.get("reason"):
                 send_mute_reason(vk, payload["user_id"], payload["reason"], payload["peer_id"], payload.get("deletion_id"))
             db.finish_operation(conn, row["id"], now)
@@ -1698,6 +1859,22 @@ def scheduler_tick(vk, conn, now=None):
                                   else publisher(vk, conn, yesterday, include_records=True))
                         if queued:
                             db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                periodic_heroes = []
+                if cursor.weekday() == 0:
+                    periodic_heroes.append(("week", cursor))
+                if cursor.day == 1:
+                    periodic_heroes.append(("month", cursor))
+                if cursor.month == 1 and cursor.day == 1:
+                    periodic_heroes.append(("year", cursor))
+                for period_type, period_start in periodic_heroes:
+                    period_key = (period_start.strftime("%Y-%m") if period_type == "month" else
+                                  period_start.strftime("%Y") if period_type == "year" else
+                                  period_start.isoformat())
+                    event_key = f"hero:{period_type}:{period_key}"
+                    if not db.scheduler_event_claimed(conn, event_key):
+                        if publish_period_hero(vk, conn, period_type, period_start,
+                                               announce=(cursor == now.date())):
+                            db.claim_scheduler_event(conn, event_key, int(now.timestamp()))
             hours = [hour for hour in (6, 12, 18) if lower < midnight.replace(hour=hour) <= now]
             # A missed intraday snapshot cannot be reconstructed from daily totals.
             # Publish only the latest due snapshot for today's date.
@@ -1717,6 +1894,31 @@ def scheduler_tick(vk, conn, now=None):
                     if publish_weekly_stats(vk, conn, start_date, cursor):
                         db.claim_scheduler_event(conn, key, int(now.timestamp()))
             cursor += timedelta(days=1)
+        # When the new role system is deployed mid-period, seed the already
+        # active week/month/year from the most recent rolling activity window.
+        today = now.date()
+        current_periods = []
+        if today.weekday() != 0:
+            current_periods.append(("week", (today - timedelta(days=today.weekday())).isoformat()))
+        if today.day != 1:
+            current_periods.append(("month", today.strftime("%Y-%m")))
+        if (today.month, today.day) != (1, 1):
+            current_periods.append(("year", today.strftime("%Y")))
+        for period_type, period_key in current_periods:
+            if db.get_hero_title(conn, period_type, period_key):
+                continue
+            lookback_days = {"week": 7, "month": 30, "year": 365}[period_type]
+            if not db.get_top_user_messages(conn, today - timedelta(days=lookback_days - 1),
+                                            today + timedelta(days=1), limit=1):
+                continue
+            event_key = f"hero:{period_type}:{period_key}"
+            if not db.scheduler_event_claimed(conn, event_key):
+                period_start = (date.fromisoformat(period_key) if period_type == "week" else
+                                date(today.year, today.month, 1) if period_type == "month" else
+                                date(today.year, 1, 1))
+                if publish_period_hero(vk, conn, period_type, period_start,
+                                       announce=True, window_end=today + timedelta(days=1)):
+                    db.claim_scheduler_event(conn, event_key, int(now.timestamp()))
         conn.execute("INSERT INTO scheduler_state(event_key, created_at) VALUES ('checkpoint', ?) "
                      "ON CONFLICT(event_key) DO UPDATE SET created_at = excluded.created_at", (int(now.timestamp()),))
 

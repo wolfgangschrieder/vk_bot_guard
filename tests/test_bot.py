@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -74,7 +74,7 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertIn('[id10|', profile)
         self.assertIn('👤 ПРОФИЛЬ УЧАСТНИКА', profile)
-        self.assertNotIn('Герой чата:', profile)
+        self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
 
     def test_profile_shows_reputation_hero_activity_and_best_day(self):
@@ -110,10 +110,33 @@ class BotTests(unittest.TestCase):
         self.assertIn('⭐ Репутация: +12', profile)
         self.assertIn('🎖 Ранг: Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
-        self.assertIn('🏆 Герой чата: 3 раза', profile)
+        self.assertIn('🏆 Герой дня: 3 раза (последний: 09.10.2026)', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
         self.assertIn('За 7 дней: 182 сообщения', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
+
+    def test_period_commands_publish_top_five_for_rolling_windows(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+
+        def add_messages(user_id, day, count):
+            start = int(datetime.combine(day, datetime.min.time(), config.CHAT_TZ).timestamp())
+            for offset in range(count):
+                db.record_message(self.conn, user_id, start + 12 * 3600 + offset)
+
+        add_messages(1, today, 5)
+        add_messages(2, today - timedelta(days=2), 3)
+        add_messages(3, today - timedelta(days=20), 7)
+        add_messages(4, today - timedelta(days=200), 9)
+        for index, command in enumerate(('/неделя', '/месяц', '/год'), start=1):
+            bot.handle_new_message(self.vk, self.conn, self.message(command, mid=index))
+        reports = [item['message'] for item in self.queued('send')]
+        self.assertIn('📊 ТОП-5 ЗА НЕДЕЛЯ', reports[0])
+        self.assertIn('🥇 [id1|Test User] — 5', reports[0])
+        self.assertIn('🥈 [id2|Test User] — 3', reports[0])
+        self.assertIn('📊 ТОП-5 ЗА МЕСЯЦ', reports[1])
+        self.assertIn('🥇 [id3|Test User] — 7', reports[1])
+        self.assertIn('📊 ТОП-5 ЗА ГОД', reports[2])
+        self.assertIn('🥇 [id4|Test User] — 9', reports[2])
 
     def test_profile_shows_donut_premium_only_when_active(self):
         event = {
@@ -781,14 +804,49 @@ class BotTests(unittest.TestCase):
         self.drain()
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), self.now)
         king_notice = next(item for item in self.queued('send')
-                           if item['message'].startswith('🦸 Герой чата выдал мут'))
+                           if item['message'].startswith('🏅 Герой дня выдал мут'))
         self.assertTrue(king_notice['temporary'])
         self.assertEqual(king_notice['delay'], 300)
         self.assertEqual(king_notice['peer_id'], config.CHAT_PEER_ID)
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id4', mid=3))
         self.assertEqual(len(self.queued('mute')), 1)
 
-    def test_premium_hero_cannot_mute_another_premium_user(self):
+    def test_week_hero_applies_four_hourly_mutes_and_announces_once(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        monday = today - timedelta(days=today.weekday())
+        db.save_hero_title(self.conn, 'week', monday.isoformat(), 1, 40)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
+        mutes = self.queued('mute')
+        self.assertEqual(len(mutes), 4)
+        self.assertEqual([item['until'] - item['requested_at'] for item in mutes], [3600] * 4)
+        self.assertEqual([item['hero_notice'] for item in mutes], [True, False, False, False])
+
+        bot.deliver_outbox(self.vk, self.conn, self.now)
+        self.assertEqual(self.vk.messages.changeConversationMemberRestrictions.call_count, 1)
+        bot.deliver_outbox(self.vk, self.conn, self.now + 5)
+        self.assertEqual(self.vk.messages.send.call_count, 1)
+        for hour in (1, 2, 3):
+            bot.deliver_outbox(self.vk, self.conn, self.now + hour * 3600)
+        self.assertEqual(self.vk.messages.changeConversationMemberRestrictions.call_count, 4)
+        self.assertEqual(self.vk.messages.send.call_count, 1)
+        self.assertEqual(db.mute_deadline(self.conn, config.CHAT_PEER_ID, 2), self.now + 4 * 3600)
+
+    def test_senior_hero_status_overrides_junior_mute_right(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        monday = today - timedelta(days=today.weekday())
+        for period_type, period_key in (
+            ('day', today.isoformat()), ('week', monday.isoformat()),
+            ('month', today.strftime('%Y-%m')),
+        ):
+            db.save_hero_title(self.conn, period_type, period_key, 1, 20)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
+        mutes = self.queued('mute')
+        self.assertEqual(len(mutes), 1)
+        payload = mutes[0]
+        self.assertEqual(payload['hero_period_type'], 'month')
+        self.assertEqual(payload['until'] - self.now, 8 * 3600)
+
+    def test_premium_hero_can_mute_another_premium_user(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
         db.save_king(self.conn, today - timedelta(days=1), 1, 20)
         for user_id, event_id in ((1, 'don-hero'), (2, 'don-target')):
@@ -805,12 +863,18 @@ class BotTests(unittest.TestCase):
 
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
 
-        self.assertEqual(len(self.queued('mute')), 0)
-        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'king_mute'), 0)
-        notices = self.queued('send')
-        self.assertEqual(len(notices), 1)
-        self.assertIn('не может выдать мут другому участнику с Don-премиумом', notices[0]['message'])
-        self.assertTrue(notices[0]['temporary'])
+        self.assertEqual(len(self.queued('mute')), 1)
+        self.assertEqual(len(self.queued('send')), 0)
+        self.drain()
+        self.assertEqual(self.vk.messages.changeConversationMemberRestrictions.call_count, 1)
+        notice = self.queued('send')[0]
+        self.assertIn('Герой дня выдал мут пользователю [id2|Test User]', notice['message'])
+
+    def test_hero_can_mute_an_administrator(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        db.save_king(self.conn, today - timedelta(days=1), 1, 20)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id99'))
+        self.assertEqual(len(self.queued('mute')), 1)
 
     def test_nonpremium_hero_can_mute_premium_user(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
@@ -875,18 +939,45 @@ class BotTests(unittest.TestCase):
         monday = sunday + timedelta(hours=14)
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(db.get_king(self.conn, sunday.date()), (42, 1))
+        self.assertEqual(db.get_hero_title(self.conn, 'week', '2026-10-12'), (42, 1))
         reports = [p['message'] for p in self.queued('send')]
-        self.assertTrue(any('ГЕРОЙ ЧАТА' in text for text in reports))
+        self.assertTrue(any('ГЕРОЙ ДНЯ' in text for text in reports))
         self.assertTrue(any('ИТОГИ НЕДЕЛИ' in text for text in reports))
         count = len(reports)
         bot.scheduler_tick(self.vk, self.conn, monday)
         self.assertEqual(len(self.queued('send')), count)
-        hero_report = next(text for text in reports if 'ГЕРОЙ ЧАТА' in text)
+        hero_report = next(text for text in reports if 'ГЕРОЙ ДНЯ' in text)
         daily_report = next(text for text in reports if 'СТАТИСТИКА ЧАТА' in text)
         self.assertNotIn('Рекорд активных участников:', hero_report)
         self.assertNotIn('Рекорд активности чата:', hero_report)
         self.assertIn('Рекорд активных участников:', daily_report)
         self.assertIn('Рекорд активности чата:', daily_report)
+
+    def test_scheduler_assigns_month_and_year_heroes_on_period_boundaries(self):
+        previous_day = date(2025, 12, 31)
+        for user_id, count, stat_day in (
+            (42, 1, previous_day), (42, 8, date(2025, 6, 1)),
+            (43, 3, date(2025, 8, 1)),
+        ):
+            start = int(datetime.combine(stat_day, datetime.min.time(), config.CHAT_TZ).timestamp())
+            for offset in range(count):
+                db.record_message(self.conn, user_id, start + 12 * 3600 + offset)
+        before = datetime(2025, 12, 31, 23, 59, tzinfo=config.CHAT_TZ)
+        db.claim_scheduler_event(self.conn, 'checkpoint', int(before.timestamp()))
+        jan_first = datetime(2026, 1, 1, 0, 5, tzinfo=config.CHAT_TZ)
+        bot.scheduler_tick(self.vk, self.conn, jan_first)
+        self.assertEqual(db.get_hero_title(self.conn, 'month', '2026-01'), (42, 1))
+        self.assertEqual(db.get_hero_title(self.conn, 'year', '2026'), (42, 9))
+
+    def test_scheduler_seeds_current_week_month_and_year_on_first_install(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        for offset in range(5):
+            db.record_message(self.conn, 42, self.now - offset)
+        bot.scheduler_tick(self.vk, self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ))
+        monday = today - timedelta(days=today.weekday())
+        self.assertEqual(db.get_hero_title(self.conn, 'week', monday.isoformat()), (42, 5))
+        self.assertEqual(db.get_hero_title(self.conn, 'month', today.strftime('%Y-%m')), (42, 5))
+        self.assertEqual(db.get_hero_title(self.conn, 'year', today.strftime('%Y')), (42, 5))
 
     def test_midnight_hero_announcement_always_publishes_existing_records(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)
@@ -909,7 +1000,7 @@ class BotTests(unittest.TestCase):
         report = self.queued('send')[0]['message']
         self.assertNotIn('Рекорд активных участников:', report)
         self.assertNotIn('Рекорд активности чата:', report)
-        self.assertIn('Рекорд Героя чата: [id42|Test User] — 12 сообщ. за день', report)
+        self.assertIn('Рекорд Героя дня: [id42|Test User] — 12 сообщ. за день', report)
         self.assertNotIn('новый рекорд', report)
 
         self.assertTrue(bot.publish_daily_stats(self.vk, self.conn, stat_date, include_records=True))
@@ -927,7 +1018,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued()), 0)
         bot.scheduler_tick(self.vk, self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ))
         self.assertEqual(db.get_king(self.conn, yesterday), (42, 1))
-        self.assertEqual(sum('ГЕРОЙ ЧАТА' in p['message'] for p in self.queued('send')), 1)
+        self.assertEqual(sum('ГЕРОЙ ДНЯ' in p['message'] for p in self.queued('send')), 1)
 
     def test_cleanup_survives_vk_failure_and_restart(self):
         db.queue_bot_message(self.conn, 777, config.MODERATION_CHAT_PEER_ID, self.now)

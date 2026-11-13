@@ -246,6 +246,28 @@ class DatabaseTests(unittest.TestCase):
             (42, 100),
         )
 
+    def test_hero_titles_prioritize_senior_active_period_and_count_history(self):
+        today = date(2026, 10, 9)
+        for period_type, period_key, user_id in (
+            ("day", "2026-10-09", 42),
+            ("week", "2026-10-05", 42),
+            ("month", "2026-10", 42),
+            ("year", "2026", 42),
+        ):
+            self.assertTrue(db.save_hero_title(self.conn, period_type, period_key, user_id, 10))
+        self.assertEqual(db.get_active_hero_title(self.conn, 42, today)["period_type"], "year")
+        self.conn.execute("DELETE FROM hero_titles WHERE period_type = 'year'")
+        self.conn.commit()
+        self.assertEqual(db.get_active_hero_title(self.conn, 42, today)["period_type"], "month")
+        self.assertEqual(db.get_user_hero_title_stats(self.conn, 42)["day"], (1, "2026-10-09"))
+
+    def test_hero_title_migration_backfills_legacy_daily_history(self):
+        db.save_king(self.conn, date(2026, 10, 8), 42, 100)
+        self.conn.execute("DELETE FROM hero_titles WHERE period_type = 'day'")
+        self.conn.commit()
+        db._migration_15(self.conn)
+        self.assertEqual(db.get_hero_title(self.conn, "day", "2026-10-09"), (42, 100))
+
     def test_scheduler_event_is_idempotent(self):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))

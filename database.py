@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 class Connection(sqlite3.Connection):
@@ -199,6 +199,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_14(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (14, int(time.time())))
+            current = 14
+
+        if current < 15:
+            _migration_15(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (15, int(time.time())))
 
         conn.commit()
 
@@ -486,6 +492,21 @@ def _migration_14(conn):
         conn.execute(
             "ALTER TABLE premium_subscriptions ADD COLUMN manual_until INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migration_15(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS hero_titles (
+        period_type TEXT NOT NULL CHECK(period_type IN ('day', 'week', 'month', 'year')),
+        period_key TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        messages INTEGER NOT NULL,
+        PRIMARY KEY(period_type, period_key)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS hero_titles_user ON hero_titles(user_id, period_type)")
+    # Legacy king_history records the day whose messages selected the hero.
+    # The title begins the following local calendar day.
+    conn.execute("""INSERT OR IGNORE INTO hero_titles(period_type, period_key, user_id, messages)
+        SELECT 'day', date(stat_date, '+1 day'), user_id, messages FROM king_history""")
 
 
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
@@ -1229,6 +1250,106 @@ def save_king(
         return True
 
 
+def save_hero_title(
+    conn: sqlite3.Connection,
+    period_type: str,
+    period_key: str,
+    user_id: int,
+    messages: int,
+) -> bool:
+    if period_type not in {"day", "week", "month", "year"}:
+        raise ValueError(f"Unsupported hero period: {period_type}")
+    with _lock:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO hero_titles(period_type, period_key, user_id, messages) "
+            "VALUES (?, ?, ?, ?)",
+            (period_type, str(period_key), int(user_id), int(messages)),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def get_hero_title(conn: sqlite3.Connection, period_type: str, period_key: str):
+    with _lock:
+        row = conn.execute(
+            "SELECT user_id, messages FROM hero_titles WHERE period_type = ? AND period_key = ?",
+            (period_type, str(period_key)),
+        ).fetchone()
+    return (int(row["user_id"]), int(row["messages"])) if row else None
+
+
+def get_active_hero_title(conn: sqlite3.Connection, user_id: int, today: date):
+    week_start = (today - timedelta(days=today.weekday())).isoformat()
+    keys = {
+        "day": today.isoformat(),
+        "week": week_start,
+        "month": today.strftime("%Y-%m"),
+        "year": today.strftime("%Y"),
+    }
+    priority = {"day": 1, "week": 2, "month": 3, "year": 4}
+    conditions = " OR ".join("(period_type = ? AND period_key = ?)" for _ in keys)
+    params = [int(user_id)] + [item for pair in keys.items() for item in pair]
+    with _lock:
+        rows = conn.execute(
+            f"SELECT period_type, period_key, user_id, messages FROM hero_titles "
+            f"WHERE user_id = ? AND ({conditions})",
+            params,
+        ).fetchall()
+    if not rows:
+        return None
+    row = max(rows, key=lambda item: priority[item["period_type"]])
+    return {
+        "period_type": row["period_type"],
+        "period_key": row["period_key"],
+        "user_id": int(row["user_id"]),
+        "messages": int(row["messages"]),
+    }
+
+
+def get_user_hero_title_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, tuple[int, str | None]]:
+    with _lock:
+        rows = conn.execute(
+            "SELECT period_type, COUNT(*) AS total, MAX(period_key) AS last_key "
+            "FROM hero_titles WHERE user_id = ? GROUP BY period_type",
+            (int(user_id),),
+        ).fetchall()
+    result = {name: (0, None) for name in ("day", "week", "month", "year")}
+    for row in rows:
+        result[row["period_type"]] = (int(row["total"]), row["last_key"])
+    with _lock:
+        legacy = conn.execute(
+            "SELECT COUNT(*) AS total, MAX(date(k.stat_date, '+1 day')) AS last_key "
+            "FROM king_history k WHERE k.user_id = ? AND NOT EXISTS ("
+            "SELECT 1 FROM hero_titles h WHERE h.period_type = 'day' "
+            "AND h.period_key = date(k.stat_date, '+1 day'))",
+            (int(user_id),),
+        ).fetchone()
+    if legacy and int(legacy["total"] or 0):
+        current_count, current_last = result["day"]
+        legacy_last = legacy["last_key"]
+        result["day"] = (
+            current_count + int(legacy["total"]),
+            max(item for item in (current_last, legacy_last) if item),
+        )
+    return result
+
+
+def get_top_user_messages(
+    conn: sqlite3.Connection,
+    start_date: date,
+    end_date: date,
+    limit: int = 5,
+) -> list[tuple[int, int]]:
+    with _lock:
+        rows = conn.execute(
+            "SELECT user_id, SUM(messages) AS messages FROM daily_user_stats "
+            "WHERE stat_date >= ? AND stat_date < ? GROUP BY user_id "
+            "HAVING SUM(messages) > 0 ORDER BY messages DESC, user_id ASC LIMIT ?",
+            (start_date.isoformat(), end_date.isoformat(), max(1, int(limit))),
+        ).fetchall()
+    return [(int(row["user_id"]), int(row["messages"])) for row in rows]
+
+
 def has_reputation_vote(
     conn: sqlite3.Connection,
     giver_id: int,
@@ -1283,17 +1404,15 @@ def get_user_profile_stats(
             """,
             (user_id,),
         ).fetchone()
-        hero_count = conn.execute(
-            "SELECT COUNT(*) FROM king_history WHERE user_id = ?",
-            (user_id,),
-        ).fetchone()[0]
 
+    hero_titles = get_user_hero_title_stats(conn, user_id)
     return {
         "today": int(activity["today"] or 0),
         "last_7_days": int(activity["last_7_days"] or 0),
         "all_time_messages": int(all_time_messages or 0),
         "best_day": (best_day["stat_date"], int(best_day["messages"])) if best_day else None,
-        "hero_count": int(hero_count or 0),
+        "hero_count": hero_titles["day"][0],
+        "hero_titles": hero_titles,
     }
 
 
@@ -1535,11 +1654,12 @@ def claim_scheduler_event(
             return False
 
 
-def enqueue(conn, kind, payload):
+def enqueue(conn, kind, payload, next_attempt=None):
+    timestamp = int(time.time()) if next_attempt is None else int(next_attempt)
     with _lock:
         cursor = conn.execute(
-            'INSERT INTO outbox(kind, payload, created_at) VALUES (?, ?, ?)',
-            (kind, json.dumps(payload, ensure_ascii=False), int(time.time())),
+            'INSERT INTO outbox(kind, payload, created_at, next_attempt) VALUES (?, ?, ?, ?)',
+            (kind, json.dumps(payload, ensure_ascii=False), int(time.time()), timestamp),
         )
         conn.commit()
         return cursor.lastrowid

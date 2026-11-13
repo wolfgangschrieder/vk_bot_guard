@@ -180,7 +180,7 @@ POLITICAL_MUTE_REASON = (
     "Сообщение удалено, доступ ограничен на 1 час."
 )
 
-KING_MUTE_MESSAGE = "🦸 Герой чата выдал мут пользователю {mention} на 1 час."
+HERO_MUTE_MESSAGE = "🏅 {hero_title} выдал мут пользователю {mention} на {duration}."
 
 STAT_ALLOWED_LOGINS = {
     "piterparker34",
