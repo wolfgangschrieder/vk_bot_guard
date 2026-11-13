@@ -218,6 +218,36 @@ class BotTests(unittest.TestCase):
         self.assertIn('🎩 «Джентльмен»', comment)
         self.assertIn('(+1)', comment)
 
+    def test_flirt_and_heartbreaker_characteristic_commands(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/флиртёр + @id2', uid=99, mid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/сердцеед - @id3', uid=99, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/серцеед + @id4', uid=99, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/актёр + @id5', uid=99, mid=4))
+
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'флиртёр': 1})
+        self.assertEqual(db.get_user_characteristics(self.conn, 3), {'сердцеед': -1})
+        self.assertEqual(db.get_user_characteristics(self.conn, 4), {'сердцеед': 1})
+        self.assertEqual(db.get_user_characteristics(self.conn, 5), {'актер': 1})
+        comments = [item['message'] for item in self.queued('send')]
+        self.assertIn('😏 «Флиртёр»', comments[0])
+        self.assertIn('💘 «Сердцеед»', comments[1])
+        self.assertIn('💘 «Сердцеед»', comments[2])
+        self.assertIn('🎭 «Актёр»', comments[3])
+
+    def test_new_characteristic_commands_from_updated_list(self):
+        commands = (
+            ('приколист', 'приколист'), ('шоумен', 'шоумен'),
+            ('миротворец', 'миротворец'), ('хитрец', 'хитрец'),
+            ('альфа', 'альфа'), ('бизнесмен', 'бизнесмен'),
+            ('лизун', 'лизун'), ('дрочун', 'дрочун'), ('скуф', 'скуф'),
+        )
+        for index, (command, trait) in enumerate(commands, start=2):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message(f'/{command} + @id{index}', uid=99, mid=index),
+            )
+            self.assertEqual(db.get_user_characteristics(self.conn, index), {trait: 1})
+
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
             raw = {
