@@ -146,6 +146,9 @@ def apply_mute(
     hero_cooldown_key=None,
     hero_notice=None,
     hourly_segments=1,
+    rank_user_id=None,
+    rank_title=None,
+    rank_cooldown_key=None,
 ) -> bool:
     now = int(time.time()) if now is None else int(now)
     if db.mute_deadline(ACTIVE_CONN, peer_id, user_id) > now:
@@ -171,6 +174,15 @@ def apply_mute(
                 "hero_period_key": hero_period_key,
                 "hero_cooldown_key": hero_cooldown_key,
                 "hero_notice": (index == 0) if hero_notice is None else bool(hero_notice and index == 0),
+                "segment_index": index,
+                "previous_segment_id": previous_id,
+            })
+        if rank_user_id is not None:
+            payload.update({
+                "rank_user_id": int(rank_user_id),
+                "rank_title": rank_title,
+                "rank_cooldown_key": rank_cooldown_key,
+                "rank_notice": index == 0,
                 "segment_index": index,
                 "previous_segment_id": previous_id,
             })
@@ -748,7 +760,7 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         f"🏆 ГЕРОЙ ДНЯ\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
-        f"Сегодня у Героя дня есть право выдать один мут через команду /мут @username."
+        f"Сегодня у Героя дня есть право выдать один мут через команду /мут + @username."
     )
     if hero_record:
         record_date, record_user_id, record_messages = hero_record
@@ -806,7 +818,7 @@ def publish_period_hero(
         f"{HERO_EMOJIS[period_type]} {title}\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за период: {messages}\n\n"
-        f"Право Героя — один мут через /мут @username."
+        f"Право Героя — один мут через /мут + @username."
     )
     if send_bot_message(vk, text) <= 0:
         return False
@@ -1077,7 +1089,7 @@ def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         "✨ /токсик + @username — добавить характеристику\n"
         "⭐ /rep @username — повысить репутацию\n"
         "⭐ /rep - @username — понизить репутацию\n"
-        "🦸 /мут @username — команда Героя чата\n\n"
+        "🦸 /мут + @username — мут Героя или право ранга\n\n"
         "Нажми «Руководство», чтобы открыть статью с правилами и командами.",
         keyboard=menu_keyboard(),
         temporary=True,
@@ -1098,6 +1110,18 @@ CHAT_MESSAGE_RANKS = (
     (10_000, "Участник"),
     (0, "Новичок"),
 )
+CHAT_RANK_MUTE_HOURS = {
+    "Новичок": 0,
+    "Участник": 2,
+    "Читатель": 3,
+    "Болтун": 4,
+    "Активный": 5,
+    "Флирт-мастер": 6,
+    "Душа чата": 7,
+    "Опытный": 8,
+    "Ветеран любви": 9,
+    "Легенда чата": 10,
+}
 
 
 def chat_rank_for_messages(total_messages: int) -> str:
@@ -1113,27 +1137,22 @@ def announce_rank_achievement(vk, user_id: int, previous_total: int) -> None:
     new_rank = chat_rank_for_messages(new_total)
     if old_rank == new_rank:
         return
+    db.cancel_pending_rank_mute(ACTIVE_CONN, user_id, old_rank)
 
     names = get_user_names(vk, [user_id])
     user = mention(user_id, names.get(user_id))
-    total_text = f"{new_total:,}".replace(",", " ")
-    next_rank = next(
-        ((threshold, title) for threshold, title in reversed(CHAT_MESSAGE_RANKS)
-         if threshold > new_total),
-        None,
-    )
-    if next_rank:
-        next_threshold, next_title = next_rank
-        next_text = f"Следующая цель — «{next_title}» на {next_threshold:,} сообщений 🚀".replace(",", " ")
+    mute_hours = CHAT_RANK_MUTE_HOURS[new_rank]
+    if mute_hours == 0:
+        rights_text = "На этом ранге право на мут не предусмотрено."
     else:
-        next_text = "Это высшее звание — вы покорили все ранги! 🌟"
-
+        hours_word = "часа" if 2 <= mute_hours <= 4 else "часов"
+        rights_text = (
+            f"Теперь он может дать мут нарушителя на {mute_hours} {hours_word} "
+            "(1 раз за всё время на этом ранге)."
+        )
     send_bot_message(
         vk,
-        f"🎉 Поздравляем, {user}!\n"
-        f"Вы достигли нового звания — «{new_rank}»! 🏆\n"
-        f"Ваш вклад в чат — {total_text} сообщений за всё время.\n"
-        f"{next_text}",
+        f"🎖️ {user} достиг ранга «{new_rank}»! {rights_text}",
         peer_id=config.CHAT_PEER_ID,
     )
 
@@ -1359,7 +1378,8 @@ def handle_reputation_command(
     return True
 
 
-def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int,
+                            command_message=None) -> bool:
     if not re.match(r"^/мут(?:\s+.+)?$", text.strip(), re.IGNORECASE):
         return False
 
@@ -1376,17 +1396,16 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
                 "messages": legacy[1],
             }
 
-    if not hero:
-        send_bot_message(
-            vk,
-            "🏅 Команда /мут доступна только действующему Герою дня, недели, месяца или года.",
-            temporary=True,
-        )
-        return True
+    rank_title = chat_rank_for_messages(db.get_total_message_count(conn, from_id))
+    rank_hours = CHAT_RANK_MUTE_HOURS[rank_title]
+    rank_cooldown_key = f"rank_mute:{rank_title}"
 
-    period_type = hero["period_type"]
-    period_key = hero["period_key"]
-    cooldown_key = f"hero_mute:{period_type}:{period_key}"
+    # A non-hero without a rank mute right gets no explanatory bot message.
+    # Remove their command quietly, as requested.
+    if not hero and rank_hours == 0:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
 
     target_id = resolve_target_user_id(vk, text)
     if target_id <= 0:
@@ -1405,32 +1424,64 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
         )
         return True
 
-    if pending_king_mute(conn, from_id, period_key):
-        send_bot_message(vk, "⏳ Твой мут уже ожидает подтверждения VK.", temporary=True)
+    if hero:
+        period_type = hero["period_type"]
+        period_key = hero["period_key"]
+        cooldown_key = f"hero_mute:{period_type}:{period_key}"
+        if pending_king_mute(conn, from_id, period_key):
+            send_bot_message(vk, "⏳ Твой мут уже ожидает подтверждения VK.", temporary=True)
+            return True
+        if db.get_command_cooldown(conn, from_id, cooldown_key):
+            send_bot_message(
+                vk,
+                f"🏅 Ты уже использовал мут как {HERO_NAMES[period_type].lower()} в этом периоде.",
+                temporary=True,
+            )
+            return True
+        if not apply_mute(
+            vk, config.CHAT_PEER_ID, target_id, king_id=from_id, now=now,
+            duration_seconds=HERO_MUTE_SECONDS[period_type],
+            hero_period_type=period_type, hero_period_key=period_key,
+            hero_cooldown_key=cooldown_key,
+            hourly_segments=4 if period_type == "week" else 1,
+        ):
+            send_bot_message(vk, "🔇 Пользователь уже под ограничением. Твой мут не потрачен.", temporary=True)
         return True
 
-    last_mute = db.get_command_cooldown(conn, from_id, cooldown_key)
-    if last_mute:
+    if pending_rank_mute(conn, from_id, rank_title):
+        send_bot_message(vk, "⏳ Твой мут уже ожидает подтверждения VK.", temporary=True)
+        return True
+    if db.get_command_cooldown(conn, from_id, rank_cooldown_key):
         send_bot_message(
             vk,
-            f"🏅 Ты уже использовал мут как {HERO_NAMES[period_type].lower()} в этом периоде.",
+            "Вы уже использовали мут на этом ранге. Дождитесь повышения.",
             temporary=True,
         )
         return True
 
+    target_total = db.get_total_message_count(conn, target_id)
+    target_rank = chat_rank_for_messages(target_total)
+    if CHAT_RANK_MUTE_HOURS[target_rank] > rank_hours:
+        send_bot_message(vk, "❗ Нельзя мутить участника с более высоким рангом.", temporary=True)
+        return True
+    target_hero = db.get_active_hero_title(conn, target_id, local_date)
+    if target_hero is None:
+        legacy_target = db.get_king(conn, local_date - timedelta(days=1))
+        if legacy_target and legacy_target[0] == target_id:
+            target_hero = True
+    if target_hero:
+        send_bot_message(vk, "🏆 Нельзя мутить действующего Героя дня, недели, месяца или года.", temporary=True)
+        return True
+
     if not apply_mute(
-        vk,
-        config.CHAT_PEER_ID,
-        target_id,
-        king_id=from_id,
-        now=now,
-        duration_seconds=HERO_MUTE_SECONDS[period_type],
-        hero_period_type=period_type,
-        hero_period_key=period_key,
-        hero_cooldown_key=cooldown_key,
-        hourly_segments=4 if period_type == "week" else 1,
+        vk, config.CHAT_PEER_ID, target_id, now=now,
+        duration_seconds=rank_hours * 3600,
+        rank_user_id=from_id,
+        rank_title=rank_title,
+        rank_cooldown_key=rank_cooldown_key,
+        hourly_segments=rank_hours,
     ):
-        send_bot_message(vk, "🔇 Пользователь уже под ограничением. Твой мут не потрачен.", temporary=True)
+        send_bot_message(vk, "🔇 Пользователь уже под ограничением. Твоё право не потрачено.", temporary=True)
 
     return True
 
@@ -1459,7 +1510,7 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return True
     if handle_reputation_command(vk, conn, from_id, stripped, now):
         return True
-    if handle_king_mute_command(vk, conn, from_id, stripped, now):
+    if handle_king_mute_command(vk, conn, from_id, stripped, now, command_message):
         return True
     return False
 
@@ -1595,6 +1646,17 @@ def pending_king_mute(conn, user_id, period_key):
                 request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
                 if request_date.isoformat() == period_key:
                     return True
+    return False
+
+
+def pending_rank_mute(conn, user_id, rank_title):
+    with db._lock:
+        for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
+            payload = json.loads(row["payload"])
+            if (payload.get("rank_user_id") == user_id and
+                    payload.get("rank_title") == rank_title and
+                    payload.get("segment_index", 0) == 0):
+                return True
     return False
 
 
@@ -1783,6 +1845,26 @@ def execute_operation(vk, conn, row, now):
                         temporary=True,
                         peer_id=payload["peer_id"],
                         delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS)
+            elif payload.get("rank_user_id") is not None:
+                if payload.get("segment_index", 0) == 0:
+                    db.set_command_cooldown(
+                        conn, payload["rank_user_id"], payload["rank_cooldown_key"], 0, now
+                    )
+                if payload.get("rank_notice", True):
+                    names = get_user_names(vk, [payload["user_id"]])
+                    duration_hours = CHAT_RANK_MUTE_HOURS[payload["rank_title"]]
+                    hour_word = "часа" if 2 <= duration_hours <= 4 else "часов"
+                    send_bot_message(
+                        vk,
+                        config.RANK_MUTE_MESSAGE.format(
+                            rank_title=payload["rank_title"],
+                            mention=mention(payload["user_id"], names.get(payload["user_id"])),
+                            duration=f"{duration_hours} {hour_word}",
+                        ),
+                        temporary=True,
+                        peer_id=payload["peer_id"],
+                        delete_after_seconds=config.SOCIAL_MUTE_NOTICE_DELETE_SECONDS,
+                    )
             elif payload.get("reason"):
                 send_mute_reason(vk, payload["user_id"], payload["reason"], payload["peer_id"], payload.get("deletion_id"))
             db.finish_operation(conn, row["id"], now)

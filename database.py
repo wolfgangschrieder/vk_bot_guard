@@ -1741,6 +1741,33 @@ def stop_operation(conn, operation_id, error, status='failed', *, attempted=Fals
         conn.commit()
 
 
+def cancel_pending_rank_mute(conn, user_id: int, rank_title: str) -> int:
+    """Burn an unconfirmed rank mute when its owner advances to another rank."""
+    with _lock:
+        rows = conn.execute(
+            "SELECT id, payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"
+        ).fetchall()
+    matching = []
+    first_segment_pending = False
+    for row in rows:
+        payload = json.loads(row['payload'])
+        if (payload.get('rank_user_id') != int(user_id) or
+                payload.get('rank_title') != rank_title):
+            continue
+        matching.append(int(row['id']))
+        if payload.get('segment_index', 0) == 0:
+            first_segment_pending = True
+    if not first_segment_pending:
+        return 0
+    for operation_id in matching:
+        stop_operation(
+            conn, operation_id,
+            'Право ранга сгорело при повышении до подтверждения мута.',
+            status='cancelled',
+        )
+    return len(matching)
+
+
 def queue_cleanup(conn, peer_id, message_id, cmid, delete_at):
     if message_id <= 0 and cmid <= 0:
         raise ValueError('A message identifier is required for cleanup')

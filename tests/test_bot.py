@@ -340,9 +340,9 @@ class BotTests(unittest.TestCase):
         sends = self.queued('send')
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0]['peer_id'], config.CHAT_PEER_ID)
-        self.assertIn('Вы достигли нового звания — «Участник»!', sends[0]['message'])
-        self.assertIn('10 000 сообщений за всё время', sends[0]['message'])
-        self.assertIn('Следующая цель — «Читатель» на 20 000 сообщений', sends[0]['message'])
+        self.assertIn('🎖️ [id1|Test User] достиг ранга «Участник»!', sends[0]['message'])
+        self.assertIn('мут нарушителя на 2 часа', sends[0]['message'])
+        self.assertIn('1 раз за всё время на этом ранге', sends[0]['message'])
 
         bot.handle_new_message(self.vk, self.conn, self.message('ещё одно сообщение', mid=2))
         self.assertEqual(len(self.queued('send')), 1)
@@ -355,7 +355,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('я давно в чате'))
         self.assertEqual(self.queued('send'), [])
 
-    def test_legend_rank_announcement_has_no_next_rank(self):
+    def test_legend_rank_announcement_includes_ten_hour_mute_right(self):
         self.conn.execute(
             "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 99999)"
         )
@@ -363,8 +363,72 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('ещё одно сообщение'))
         notice = self.queued('send')[0]['message']
         self.assertIn('«Легенда чата»', notice)
-        self.assertIn('вы покорили все ранги', notice)
-        self.assertNotIn('Следующая цель', notice)
+        self.assertIn('мут нарушителя на 10 часов', notice)
+
+    def test_nonhero_without_rank_right_has_mute_command_deleted_silently(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        self.assertEqual(self.queued('send'), [])
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_rank_mute_is_one_time_per_rank_and_uses_hourly_segments(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 10000)"
+        )
+        self.conn.commit()
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        mutes = self.queued('mute')
+        self.assertEqual(len(mutes), 2)
+        self.assertEqual([item['until'] - item['requested_at'] for item in mutes], [3600, 3600])
+        self.assertEqual([item['rank_notice'] for item in mutes], [True, False])
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'rank_mute:Участник'), 0)
+
+        bot.deliver_outbox(self.vk, self.conn, self.now)
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'rank_mute:Участник'), self.now)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id3', mid=2))
+        self.assertEqual(len(self.queued('mute')), 2)
+        self.assertTrue(any(
+            'Вы уже использовали мут на этом ранге. Дождитесь повышения.' in item['message']
+            for item in self.queued('send')
+        ))
+
+    def test_unconfirmed_old_rank_mute_burns_when_user_advances(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 19999)"
+        )
+        self.conn.commit()
+        bot.apply_mute(
+            self.vk, config.CHAT_PEER_ID, 2, now=self.now,
+            rank_user_id=1, rank_title='Участник',
+            rank_cooldown_key='rank_mute:Участник', hourly_segments=2,
+        )
+
+        bot.handle_new_message(self.vk, self.conn, self.message('порог нового ранга'))
+
+        statuses = [row['status'] for row in self.conn.execute(
+            "SELECT status FROM outbox WHERE kind = 'mute' ORDER BY id"
+        )]
+        self.assertEqual(statuses, ['cancelled', 'cancelled'])
+        self.assertEqual(db.get_command_cooldown(self.conn, 1, 'rank_mute:Участник'), 0)
+        self.assertIn('мут нарушителя на 3 часа', self.queued('send')[0]['message'])
+
+    def test_rank_cannot_mute_higher_rank_or_current_hero(self):
+        self.conn.execute(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES "
+            "('2025-01-01', 1, 10000), ('2025-01-01', 2, 20000)"
+        )
+        self.conn.commit()
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        self.assertEqual(self.queued('mute'), [])
+
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        db.save_hero_title(self.conn, 'day', today.isoformat(), 3, 100)
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id3', mid=2))
+        self.assertEqual(self.queued('mute'), [])
+        self.assertTrue(any('участника с более высоким рангом' in item['message']
+                            for item in self.queued('send')))
+        self.assertTrue(any('Нельзя мутить действующего Героя' in item['message']
+                            for item in self.queued('send')))
 
     def test_admin_can_add_and_remove_social_chat_blacklist_entry(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))

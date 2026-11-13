@@ -181,6 +181,7 @@ POLITICAL_MUTE_REASON = (
 )
 
 HERO_MUTE_MESSAGE = "🏅 {hero_title} выдал мут пользователю {mention} на {duration}."
+RANK_MUTE_MESSAGE = "🎖️ Мут от ранга «{rank_title}»: {mention} ограничен на {duration}."
 
 STAT_ALLOWED_LOGINS = {
     "piterparker34",
