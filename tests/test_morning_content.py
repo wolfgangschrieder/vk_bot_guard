@@ -41,7 +41,7 @@ class MorningContentTests(unittest.TestCase):
 
     def test_project_news_parser_reads_date_time_and_text(self):
         rows = morning_content.parse_news_rows([
-            ["Дата и время", "Текст новости"],
+            ["Дата и время (дд/мм/гггг чч:мм)", "Текст новости"],
             ["14/11/2026 12:30", "Запускаем новую функцию!"],
             ["15.11.2026 09:05", "Вторая новость"],
             ["bad date", "Пропустить"],

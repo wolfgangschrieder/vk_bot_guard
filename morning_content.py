@@ -116,7 +116,7 @@ def parse_news_rows(values) -> list[dict[str, str]]:
     if not values:
         return []
     header = [str(cell).strip().casefold() for cell in values[0]]
-    if len(header) < 2 or header[0] != "дата и время" or header[1] != "текст новости":
+    if len(header) < 2 or not header[0].startswith("дата и время") or header[1] != "текст новости":
         log.warning("В листе новостей ожидаются заголовки: Дата и время, Текст новости.")
         return []
     result = []
