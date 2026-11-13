@@ -1899,31 +1899,6 @@ def scheduler_tick(vk, conn, now=None):
                     if publish_weekly_stats(vk, conn, start_date, cursor):
                         db.claim_scheduler_event(conn, key, int(now.timestamp()))
             cursor += timedelta(days=1)
-        # When the new role system is deployed mid-period, seed the already
-        # active week/month/year from the most recent rolling activity window.
-        today = now.date()
-        current_periods = []
-        if today.weekday() != 0:
-            current_periods.append(("week", (today - timedelta(days=today.weekday())).isoformat()))
-        if today.day != 1:
-            current_periods.append(("month", today.strftime("%Y-%m")))
-        if (today.month, today.day) != (1, 1):
-            current_periods.append(("year", today.strftime("%Y")))
-        for period_type, period_key in current_periods:
-            if db.get_hero_title(conn, period_type, period_key):
-                continue
-            lookback_days = {"week": 7, "month": 30, "year": 365}[period_type]
-            if not db.get_top_user_messages(conn, today - timedelta(days=lookback_days - 1),
-                                            today + timedelta(days=1), limit=1):
-                continue
-            event_key = f"hero:{period_type}:{period_key}"
-            if not db.scheduler_event_claimed(conn, event_key):
-                period_start = (date.fromisoformat(period_key) if period_type == "week" else
-                                date(today.year, today.month, 1) if period_type == "month" else
-                                date(today.year, 1, 1))
-                if publish_period_hero(vk, conn, period_type, period_start,
-                                       announce=True, window_end=today + timedelta(days=1)):
-                    db.claim_scheduler_event(conn, event_key, int(now.timestamp()))
         conn.execute("INSERT INTO scheduler_state(event_key, created_at) VALUES ('checkpoint', ?) "
                      "ON CONFLICT(event_key) DO UPDATE SET created_at = excluded.created_at", (int(now.timestamp()),))
 

@@ -975,15 +975,15 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_hero_title(self.conn, 'month', '2026-01'), (42, 1))
         self.assertEqual(db.get_hero_title(self.conn, 'year', '2026'), (42, 9))
 
-    def test_scheduler_seeds_current_week_month_and_year_on_first_install(self):
+    def test_scheduler_does_not_assign_period_heroes_mid_period_on_first_install(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
         for offset in range(5):
             db.record_message(self.conn, 42, self.now - offset)
         bot.scheduler_tick(self.vk, self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ))
         monday = today - timedelta(days=today.weekday())
-        self.assertEqual(db.get_hero_title(self.conn, 'week', monday.isoformat()), (42, 5))
-        self.assertEqual(db.get_hero_title(self.conn, 'month', today.strftime('%Y-%m')), (42, 5))
-        self.assertEqual(db.get_hero_title(self.conn, 'year', today.strftime('%Y')), (42, 5))
+        self.assertIsNone(db.get_hero_title(self.conn, 'week', monday.isoformat()))
+        self.assertIsNone(db.get_hero_title(self.conn, 'month', today.strftime('%Y-%m')))
+        self.assertIsNone(db.get_hero_title(self.conn, 'year', today.strftime('%Y')))
 
     def test_midnight_hero_announcement_always_publishes_existing_records(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date() - timedelta(days=1)

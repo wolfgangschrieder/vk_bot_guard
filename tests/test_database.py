@@ -268,6 +268,23 @@ class DatabaseTests(unittest.TestCase):
         db._migration_15(self.conn)
         self.assertEqual(db.get_hero_title(self.conn, "day", "2026-10-09"), (42, 100))
 
+    def test_migration_removes_midperiod_batch_seeded_hero_titles(self):
+        today = date(2026, 10, 9)
+        keys = {"week": "2026-10-05", "month": "2026-10", "year": "2026"}
+        for period_type, period_key in keys.items():
+            db.save_hero_title(self.conn, period_type, period_key, 42, 10)
+            self.conn.execute(
+                "INSERT INTO scheduler_state(event_key, created_at) VALUES (?, ?)",
+                (f"hero:{period_type}:{period_key}", 1_800_000_000),
+            )
+        self.conn.commit()
+
+        db._migration_16(self.conn, today=today)
+
+        for period_type, period_key in keys.items():
+            self.assertIsNone(db.get_hero_title(self.conn, period_type, period_key))
+            self.assertFalse(db.scheduler_event_claimed(self.conn, f"hero:{period_type}:{period_key}"))
+
     def test_scheduler_event_is_idempotent(self):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))

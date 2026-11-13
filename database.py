@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 
 class Connection(sqlite3.Connection):
@@ -205,6 +205,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_15(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (15, int(time.time())))
+            current = 15
+
+        if current < 16:
+            _migration_16(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (16, int(time.time())))
 
         conn.commit()
 
@@ -507,6 +513,41 @@ def _migration_15(conn):
     # The title begins the following local calendar day.
     conn.execute("""INSERT OR IGNORE INTO hero_titles(period_type, period_key, user_id, messages)
         SELECT 'day', date(stat_date, '+1 day'), user_id, messages FROM king_history""")
+
+
+def _migration_16(conn, today: date | None = None):
+    """Remove the erroneous simultaneous mid-period hero seeding from v15."""
+    today = today or datetime.now(config.CHAT_TZ).date()
+    if today.weekday() == 0 or today.day == 1 or (today.month, today.day) == (1, 1):
+        return
+    keys = {
+        "week": (today - timedelta(days=today.weekday())).isoformat(),
+        "month": today.strftime("%Y-%m"),
+        "year": today.strftime("%Y"),
+    }
+    events = [f"hero:{period_type}:{period_key}" for period_type, period_key in keys.items()]
+    with _lock:
+        rows = conn.execute(
+            "SELECT period_type, period_key FROM hero_titles WHERE "
+            "(period_type = 'week' AND period_key = ?) OR "
+            "(period_type = 'month' AND period_key = ?) OR "
+            "(period_type = 'year' AND period_key = ?)",
+            (keys["week"], keys["month"], keys["year"]),
+        ).fetchall()
+        claims = conn.execute(
+            "SELECT event_key, created_at FROM scheduler_state WHERE event_key IN (?, ?, ?)",
+            events,
+        ).fetchall()
+    if len(rows) < 2 or len(claims) != len(rows):
+        return
+    claim_times = [int(row["created_at"]) for row in claims]
+    if max(claim_times) - min(claim_times) > 5:
+        return
+    with _lock:
+        conn.executemany("DELETE FROM hero_titles WHERE period_type = ? AND period_key = ?",
+                         [(row["period_type"], row["period_key"]) for row in rows])
+        conn.executemany("DELETE FROM scheduler_state WHERE event_key = ?",
+                         [(event,) for event in events])
 
 
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
