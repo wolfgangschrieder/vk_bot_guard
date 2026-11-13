@@ -417,6 +417,10 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('mute')[0]['reason'], config.LINK_MUTE_REASON)
 
     def test_requested_prohibited_phrases_mute_in_strict_chat(self):
+        self.assertEqual(
+            config.PROHIBITED_WORDS_MUTE_REASON,
+            "Пожалуйста, избегайте обсуждения финансовых вопросов в этом чате.",
+        )
         for mid, text in enumerate(
             ('Без предоплат', 'расход', 'на коммерческой основе', 'деньги'), 1
         ):
