@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from datetime import date, datetime
 
 import requests
 
@@ -47,55 +48,62 @@ WEATHER_CODES = {
 }
 
 
-def _active(value) -> bool:
-    if value is None or str(value).strip() == "":
-        return True
-    return str(value).strip().casefold() not in {"false", "0", "нет", "no", "off", "неактивно"}
+def _parse_date(value: str) -> str | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    for parser in (date.fromisoformat, lambda raw: datetime.strptime(raw, "%d.%m.%Y").date()):
+        try:
+            return parser(value).isoformat()
+        except ValueError:
+            pass
+    return None
 
 
-def parse_sheet_rows(values, content_type: str) -> list[dict[str, str]]:
+def parse_sheet_rows(values) -> list[dict[str, str]]:
     if not values:
         return []
     header = [str(cell).strip().casefold() for cell in values[0]]
     indexes = {name: index for index, name in enumerate(header)}
-    text_index = indexes.get("текст", 1)
-    id_index = indexes.get("id", 0)
-    active_index = indexes.get("активно", 2)
-    category_index = indexes.get("категория", 3)
+    date_index = indexes.get("дата")
+    advice_index = indexes.get("совет")
+    question_index = indexes.get("вопрос")
+    if None in (date_index, advice_index, question_index):
+        log.warning("В листе утреннего контента ожидаются заголовки: Дата, Совет, Вопрос.")
+        return []
     result = []
     for row in values[1:]:
         def cell(index):
             return str(row[index]).strip() if index < len(row) and row[index] is not None else ""
 
-        text = cell(text_index)
-        if not text or not _active(cell(active_index)):
+        parsed_date = _parse_date(cell(date_index))
+        advice = cell(advice_index)
+        question = cell(question_index)
+        if not parsed_date or not (advice or question):
             continue
         result.append({
-            "id": cell(id_index),
-            "text": text,
-            "category": cell(category_index),
-            "type": content_type,
+            "date": parsed_date,
+            "advice": advice,
+            "question": question,
         })
     return result
 
 
-def _read_cache() -> dict[str, list[dict[str, str]]]:
+def _read_cache() -> list[dict[str, str]]:
     try:
         value = json.loads(Path(config.MORNING_CONTENT_CACHE_PATH).read_text(encoding="utf-8"))
-        return {
-            "advice": value.get("advice", []) if isinstance(value, dict) else [],
-            "question": value.get("question", []) if isinstance(value, dict) else [],
-        }
+        rows = value.get("rows", []) if isinstance(value, dict) else []
+        return rows if isinstance(rows, list) else []
     except (OSError, ValueError, TypeError):
-        return {"advice": [], "question": []}
+        return []
 
 
-def _write_cache(contents: dict[str, list[dict[str, str]]]) -> None:
+def _write_cache(rows: list[dict[str, str]]) -> None:
     path = Path(config.MORNING_CONTENT_CACHE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
-        json.dumps(contents, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps({"rows": rows}, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     os.replace(temporary, path)
 
@@ -113,8 +121,9 @@ def _google_access_token() -> str:
     return credentials.token
 
 
-def _fetch_sheet_tab(session: requests.Session, token: str, title: str, content_type: str):
-    url = f"{SHEETS_API}/{config.MORNING_GOOGLE_SHEET_ID}/values/{requests.utils.quote(title, safe='')}!A:D"
+def _fetch_sheet_rows(session: requests.Session, token: str):
+    title = "Утренний контент"
+    url = f"{SHEETS_API}/{config.MORNING_GOOGLE_SHEET_ID}/values/{requests.utils.quote(title, safe='')}!A:C"
     response = session.get(
         url,
         headers={"Authorization": f"Bearer {token}"},
@@ -122,25 +131,33 @@ def _fetch_sheet_tab(session: requests.Session, token: str, title: str, content_
         timeout=10,
     )
     response.raise_for_status()
-    return parse_sheet_rows(response.json().get("values", []), content_type)
+    return parse_sheet_rows(response.json().get("values", []))
 
 
-def load_content(session=None) -> dict[str, list[dict[str, str]]]:
+def _for_date(rows: list[dict[str, str]], stat_date: date) -> dict[str, list[dict[str, str]]]:
+    day_key = stat_date.isoformat()
+    row = next((item for item in rows if item.get("date") == day_key), None)
+    if not row:
+        return {"advice": [], "question": []}
+    return {
+        "advice": ([{"id": day_key, "text": row["advice"]}] if row.get("advice") else []),
+        "question": ([{"id": day_key, "text": row["question"]}] if row.get("question") else []),
+    }
+
+
+def load_content(stat_date: date, session=None) -> dict[str, list[dict[str, str]]]:
     cached = _read_cache()
     if not config.MORNING_GOOGLE_SHEET_ID or not config.GOOGLE_SERVICE_ACCOUNT_FILE.is_file():
-        return cached
+        return _for_date(cached, stat_date)
     session = session or requests.Session()
     try:
         token = _google_access_token()
-        fresh = {
-            "advice": _fetch_sheet_tab(session, token, "Советы", "advice"),
-            "question": _fetch_sheet_tab(session, token, "Вопросы", "question"),
-        }
+        fresh = _fetch_sheet_rows(session, token)
         _write_cache(fresh)
-        return fresh
+        return _for_date(fresh, stat_date)
     except Exception:
         log.exception("Не удалось прочитать Google Таблицу; использую локальный кеш.")
-        return cached
+        return _for_date(cached, stat_date)
 
 
 def fetch_weather(session=None) -> str | None:

@@ -769,7 +769,7 @@ def build_morning_message(stat_date: date, weather_line: str | None = None,
 
 def publish_morning_post(vk, conn, stat_date: date, *, content=None,
                          weather_line=None, fetch_weather=True, rng=None) -> bool:
-    content = morning_content.load_content() if content is None else content
+    content = morning_content.load_content(stat_date) if content is None else content
     if fetch_weather and weather_line is None:
         weather_line = morning_content.fetch_weather()
     advice = choose_morning_content(conn, content.get("advice", []), "advice", stat_date, rng=rng)
@@ -2117,7 +2117,7 @@ def scheduler_tick(vk, conn, now=None):
     if (initial_lower < morning_at <= now and
             timedelta(0) <= morning_age <= timedelta(minutes=config.MORNING_POST_LATE_WINDOW_MINUTES) and
             not db.scheduler_event_claimed(conn, morning_event_key)):
-        morning_contents = morning_content.load_content()
+        morning_contents = morning_content.load_content(now.date())
         morning_weather = morning_content.fetch_weather()
 
     with db.atomic(conn):

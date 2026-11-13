@@ -1,5 +1,4 @@
 import json
-import random
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -158,15 +157,6 @@ class BotTests(unittest.TestCase):
         self.assertIn('🧥 Совет дня: Возьми с собой зонт.', report)
         self.assertIn('💬 Вопрос дня: Что сегодня может сделать день лучше?', report)
 
-    def test_morning_content_rotation_avoids_recently_shown_item(self):
-        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
-        items = [{'id': 'a', 'text': 'Совет A'}, {'id': 'b', 'text': 'Совет B'}]
-        first = bot.choose_morning_content(self.conn, items, 'advice', today, rng=random.Random(1))
-        db.record_morning_content(self.conn, 'advice', first['content_key'], today)
-        second = bot.choose_morning_content(self.conn, items, 'advice', today + timedelta(days=1),
-                                            rng=random.Random(1))
-        self.assertNotEqual(first['content_key'], second['content_key'])
-
     def test_morning_post_is_scheduled_once_at_eight_moscow_time(self):
         morning = datetime(2026, 10, 9, 8, 5, tzinfo=config.CHAT_TZ)
         content = {
@@ -182,7 +172,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(morning_reports), 1)
         self.assertIn('🧥 Совет дня: Проветри комнату.', morning_reports[0])
         self.assertIn('💬 Вопрос дня: Как настроение?', morning_reports[0])
-        load.assert_called_once()
+        load.assert_called_once_with(morning.date())
         weather.assert_called_once()
 
     def test_legends_command_lists_everyone_at_threshold_in_descending_order(self):

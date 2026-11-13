@@ -1,8 +1,8 @@
 import json
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import config
@@ -10,18 +10,34 @@ import morning_content
 
 
 class MorningContentTests(unittest.TestCase):
-    def test_parse_sheet_rows_uses_headers_and_ignores_disabled_or_empty_rows(self):
+    def test_parse_sheet_rows_reads_date_advice_question_columns(self):
         values = [
-            ["ID", "Текст", "Активно", "Категория"],
-            ["tip-1", "Пейте воду", "TRUE", "здоровье"],
-            ["tip-2", "Не показывать", "FALSE", "прочее"],
-            ["tip-3", "", "TRUE", ""],
-            ["tip-4", "Проветри комнату", "", "дом"],
+            ["Дата", "Совет", "Вопрос"],
+            ["2026-11-14", "Начни с небольшого дела.", "Что тебя сегодня порадует?"],
+            ["15.11.2026", "Не забывай отдыхать.", ""],
+            ["не дата", "Пропустить", "Не загружать"],
+            ["2026-11-16", "", ""],
         ]
-        result = morning_content.parse_sheet_rows(values, "advice")
-        self.assertEqual([item["id"] for item in result], ["tip-1", "tip-4"])
-        self.assertEqual(result[0]["category"], "здоровье")
-        self.assertEqual(result[1]["type"], "advice")
+        result = morning_content.parse_sheet_rows(values)
+        self.assertEqual(result, [
+            {"date": "2026-11-14", "advice": "Начни с небольшого дела.",
+             "question": "Что тебя сегодня порадует?"},
+            {"date": "2026-11-15", "advice": "Не забывай отдыхать.", "question": ""},
+        ])
+
+    def test_content_is_selected_by_exact_date(self):
+        rows = morning_content.parse_sheet_rows([
+            ["Дата", "Совет", "Вопрос"],
+            ["2026-11-14", "Совет на 14-е", "Вопрос на 14-е"],
+            ["2026-11-15", "Совет на 15-е", ""],
+        ])
+        self.assertEqual(morning_content._for_date(rows, date(2026, 11, 15)), {
+            "advice": [{"id": "2026-11-15", "text": "Совет на 15-е"}],
+            "question": [],
+        })
+        self.assertEqual(morning_content._for_date(rows, date(2026, 11, 16)), {
+            "advice": [], "question": [],
+        })
 
     def test_weather_forecast_is_formatted_in_russian(self):
         session = MagicMock()
@@ -49,10 +65,15 @@ class MorningContentTests(unittest.TestCase):
     def test_content_uses_local_cache_when_service_account_key_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "content.json"
-            cache.write_text(json.dumps({"advice": [{"id": "a", "text": "Совет"}],
-                                         "question": []}), encoding="utf-8")
+            cache.write_text(json.dumps({"rows": [
+                {"date": "2026-11-14", "advice": "Совет", "question": "Вопрос"},
+            ]}), encoding="utf-8")
             with patch.object(config, "MORNING_CONTENT_CACHE_PATH", cache), \
                     patch.object(config, "GOOGLE_SERVICE_ACCOUNT_FILE", Path(tmp) / "missing.json"):
-                result = morning_content.load_content()
+                result = morning_content.load_content(date(2026, 11, 14))
         self.assertEqual(result["advice"][0]["text"], "Совет")
-        self.assertEqual(result["question"], [])
+        self.assertEqual(result["question"][0]["text"], "Вопрос")
+
+
+if __name__ == "__main__":
+    unittest.main()
