@@ -32,6 +32,7 @@ log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
+COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
 DONUT_EVENT_TYPES = {
     "donut_subscription_create",
     "donut_subscription_prolonged",
@@ -66,6 +67,19 @@ def menu_keyboard() -> dict:
                 },
             },
         ]],
+    }
+
+
+def commands_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": COMMANDS_URL,
+                "label": "🤖 Команды бота",
+            },
+        }]],
     }
 
 
@@ -571,6 +585,26 @@ def send_bot_message(
         "depends_on": depends_on,
         "keyboard": keyboard,
     })
+
+
+def publish_commands_link(vk) -> int:
+    return send_bot_message(
+        vk,
+        "🤖 Нужна команда? Полный список команд бота — по кнопке ниже.",
+        keyboard=commands_keyboard(),
+    )
+
+
+def handle_commands_link_command(vk, from_id: int, text: str,
+                                 command_message=None) -> bool:
+    if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
+        return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
+    publish_commands_link(vk)
+    return True
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int, deletion_id=None) -> None:
     delete_after = (
@@ -1887,6 +1921,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return True
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
+    if handle_commands_link_command(vk, from_id, stripped, command_message):
+        return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
     if handle_period_top_command(vk, conn, from_id, stripped, now, command_message):
@@ -2397,6 +2433,20 @@ def scheduler_tick(vk, conn, now=None):
                         weather_line=morning_weather, fetch_weather=False,
                     ):
                         db.claim_scheduler_event(conn, key, int(now.timestamp()))
+            if cursor == now.date():
+                for hour in config.COMMANDS_REMINDER_HOURS:
+                    reminder_at = midnight.replace(hour=hour)
+                    if lower < reminder_at <= now:
+                        key = f"commands-link:{cursor.isoformat()}-{hour:02d}"
+                        if db.scheduler_event_claimed(conn, key):
+                            continue
+                        delay = now - reminder_at
+                        if delay > timedelta(minutes=config.COMMANDS_REMINDER_LATE_WINDOW_MINUTES):
+                            db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                            log.info("Напоминание о командах пропущено: окно отправки прошло (%s %02d:00)",
+                                     cursor, hour)
+                        elif publish_commands_link(vk):
+                            db.claim_scheduler_event(conn, key, int(now.timestamp()))
             monday_noon = midnight.replace(hour=12)
             if cursor.weekday() == 0 and lower < monday_noon <= now:
                 start_date = cursor - timedelta(days=7)

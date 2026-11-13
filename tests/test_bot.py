@@ -270,6 +270,18 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
 
+    def test_commands_link_command_is_admin_only_and_has_short_button(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=99))
+        payload = self.queued('send')[0]
+        self.assertIn('Полный список команд', payload['message'])
+        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
+            'type': 'open_link', 'link': bot.COMMANDS_URL, 'label': '🤖 Команды бота',
+        })
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=1, mid=2))
+        self.assertEqual(len(self.queued('send')), 1)
+        self.assertEqual(len(self.queued('delete')), 1)
+
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
             date(2026, 10, 9),
@@ -1202,9 +1214,28 @@ class BotTests(unittest.TestCase):
         bot.scheduler_tick(self.vk, self.conn, before)
         count = len(self.queued('send'))
         bot.scheduler_tick(self.vk, self.conn, after)
-        self.assertEqual(len(self.queued('send')), count + 1)
+        self.assertEqual(len(self.queued('send')), count + 2)
         bot.scheduler_tick(self.vk, self.conn, after)
-        self.assertEqual(len(self.queued('send')), count + 1)
+        self.assertEqual(len(self.queued('send')), count + 2)
+
+    def test_commands_link_reminders_run_at_11_14_and_20_and_are_deduplicated(self):
+        day = date(2026, 10, 9)
+        for hour in (11, 14, 20):
+            at = datetime.combine(day, datetime.min.time(), config.CHAT_TZ).replace(
+                hour=hour, minute=5,
+            )
+            bot.scheduler_tick(self.vk, self.conn, at)
+            bot.scheduler_tick(self.vk, self.conn, at + timedelta(minutes=1))
+            reminders = [item for item in self.queued('send')
+                         if item['message'].startswith('🤖 Нужна команда?')]
+            self.assertEqual(len(reminders), len([h for h in (11, 14, 20) if h <= hour]))
+            self.assertEqual(reminders[-1]['keyboard'], bot.commands_keyboard())
+
+    def test_commands_link_missed_by_more_than_30_minutes_is_skipped(self):
+        late = datetime(2026, 10, 9, 12, 0, tzinfo=config.CHAT_TZ)
+        bot.scheduler_tick(self.vk, self.conn, late)
+        self.assertFalse(any(item['message'].startswith('🤖 Нужна команда?')
+                             for item in self.queued('send')))
 
     def test_scheduler_catches_midnight_king_and_weekly_report(self):
         sunday = datetime(2026, 10, 11, 23, 30, tzinfo=config.CHAT_TZ)
