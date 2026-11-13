@@ -106,6 +106,9 @@ GOOGLE_SERVICE_ACCOUNT_FILE = Path(os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE", str(BASE_DIR / "google-service-account.json")
 ).strip())
 MORNING_CONTENT_CACHE_PATH = BASE_DIR / "morning_content_cache.json"
+PROJECT_NEWS_CACHE_PATH = BASE_DIR / "project_news_cache.json"
+PROJECT_NEWS_REFRESH_SECONDS = 60
+PROJECT_NEWS_LATE_WINDOW_MINUTES = 30
 try:
     MORNING_LATITUDE = float(os.getenv("MORNING_LATITUDE", "48.708").strip())
     MORNING_LONGITUDE = float(os.getenv("MORNING_LONGITUDE", "44.513").strip())

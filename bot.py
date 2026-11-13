@@ -610,6 +610,10 @@ def publish_donut_promo(vk) -> int:
     return send_bot_message(vk, message)
 
 
+def publish_project_news(vk, news_text: str) -> int:
+    return send_bot_message(vk, f"📰 Новости проекта\n\n{news_text}")
+
+
 def handle_commands_link_command(vk, from_id: int, text: str,
                                  command_message=None) -> bool:
     if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
@@ -2374,6 +2378,7 @@ def scheduler_tick(vk, conn, now=None):
     morning_event_key = f"morning:{now.date().isoformat()}"
     morning_contents = None
     morning_weather = None
+    project_news = morning_content.load_news()
     with db._lock:
         initial_checkpoint = conn.execute(
             "SELECT created_at FROM scheduler_state WHERE event_key = 'checkpoint'"
@@ -2396,6 +2401,24 @@ def scheduler_tick(vk, conn, now=None):
         lower = (datetime.fromtimestamp(checkpoint["created_at"], config.CHAT_TZ) if checkpoint
                  else now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(seconds=1))
         lower = max(lower, now - timedelta(days=config.SCHEDULER_CATCHUP_DAYS))
+        for item in project_news:
+            try:
+                scheduled_at = datetime.fromisoformat(item["datetime"]).replace(tzinfo=config.CHAT_TZ)
+                news_text = str(item.get("text", "")).strip()
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not news_text or scheduled_at > now:
+                continue
+            identity = hashlib.sha256(news_text.encode("utf-8")).hexdigest()[:16]
+            key = f"project-news:{scheduled_at.isoformat()}:{identity}"
+            if db.scheduler_event_claimed(conn, key):
+                continue
+            age = now - scheduled_at
+            if age > timedelta(minutes=config.PROJECT_NEWS_LATE_WINDOW_MINUTES):
+                db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                log.info("Новость пропущена: окно публикации прошло (%s)", scheduled_at.isoformat())
+            elif publish_project_news(vk, news_text):
+                db.claim_scheduler_event(conn, key, int(now.timestamp()))
         cursor = lower.date()
         while cursor <= now.date():
             midnight = datetime.combine(cursor, datetime.min.time(), config.CHAT_TZ)

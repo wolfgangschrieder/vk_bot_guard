@@ -39,6 +39,19 @@ class MorningContentTests(unittest.TestCase):
             "advice": [], "question": [],
         })
 
+    def test_project_news_parser_reads_date_time_and_text(self):
+        rows = morning_content.parse_news_rows([
+            ["Дата и время", "Текст новости"],
+            ["14/11/2026 12:30", "Запускаем новую функцию!"],
+            ["15.11.2026 09:05", "Вторая новость"],
+            ["bad date", "Пропустить"],
+            ["16/11/2026 10:00", ""],
+        ])
+        self.assertEqual(rows, [
+            {"datetime": "2026-11-14T12:30", "text": "Запускаем новую функцию!"},
+            {"datetime": "2026-11-15T09:05", "text": "Вторая новость"},
+        ])
+
     def test_weather_forecast_is_formatted_in_russian(self):
         session = MagicMock()
         response = MagicMock()

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from datetime import date, datetime
 
@@ -11,6 +12,9 @@ import requests
 import config
 
 log = logging.getLogger("vk_bot_guard.morning")
+
+_news_cache_loaded_at = 0.0
+_news_cache_rows: list[dict[str, str]] | None = None
 
 SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 WEATHER_API = "https://api.open-meteo.com/v1/forecast"
@@ -87,6 +91,100 @@ def parse_sheet_rows(values) -> list[dict[str, str]]:
             "question": question,
         })
     return result
+
+
+def _parse_news_datetime(value: str) -> str | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    formats = (
+        "%d/%m/%Y %H:%M", "%d.%m.%Y %H:%M", "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S", "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y, %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    )
+    for pattern in formats:
+        try:
+            return datetime.strptime(value, pattern).isoformat(timespec="minutes")
+        except ValueError:
+            pass
+    return None
+
+
+def parse_news_rows(values) -> list[dict[str, str]]:
+    """Read dated project announcements from the two-column Google Sheet tab."""
+    if not values:
+        return []
+    header = [str(cell).strip().casefold() for cell in values[0]]
+    if len(header) < 2 or header[0] != "дата и время" or header[1] != "текст новости":
+        log.warning("В листе новостей ожидаются заголовки: Дата и время, Текст новости.")
+        return []
+    result = []
+    for row_number, row in enumerate(values[1:], start=2):
+        published_at = _parse_news_datetime(row[0] if row else "")
+        text = str(row[1]).strip() if len(row) > 1 and row[1] is not None else ""
+        if not published_at or not text:
+            if any(str(cell or "").strip() for cell in row):
+                log.warning("Пропускаю строку %s листа новостей: нужна дата/время и текст.", row_number)
+            continue
+        result.append({"datetime": published_at, "text": text})
+    return result
+
+
+def _read_news_cache() -> list[dict[str, str]]:
+    try:
+        value = json.loads(Path(config.PROJECT_NEWS_CACHE_PATH).read_text(encoding="utf-8"))
+        rows = value.get("rows", []) if isinstance(value, dict) else []
+        return rows if isinstance(rows, list) else []
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _write_news_cache(rows: list[dict[str, str]]) -> None:
+    path = Path(config.PROJECT_NEWS_CACHE_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps({"rows": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _fetch_news_rows(session: requests.Session, token: str):
+    title = "Новости проекта"
+    url = f"{SHEETS_API}/{config.MORNING_GOOGLE_SHEET_ID}/values/{requests.utils.quote(title, safe='')}!A:B"
+    response = session.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        params={"majorDimension": "ROWS", "valueRenderOption": "FORMATTED_VALUE"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return parse_news_rows(response.json().get("values", []))
+
+
+def load_news(session=None, force_refresh: bool = False) -> list[dict[str, str]]:
+    """Load project news with a short in-memory refresh interval and disk fallback."""
+    global _news_cache_loaded_at, _news_cache_rows
+    monotonic_now = time.monotonic()
+    if (_news_cache_rows is not None and not force_refresh and
+            monotonic_now - _news_cache_loaded_at < config.PROJECT_NEWS_REFRESH_SECONDS):
+        return _news_cache_rows
+    cached = _news_cache_rows if _news_cache_rows is not None else _read_news_cache()
+    if not config.MORNING_GOOGLE_SHEET_ID or not config.GOOGLE_SERVICE_ACCOUNT_FILE.is_file():
+        _news_cache_rows = cached
+        _news_cache_loaded_at = monotonic_now
+        return cached
+    try:
+        session = session or requests.Session()
+        rows = _fetch_news_rows(session, _google_access_token())
+        _write_news_cache(rows)
+        _news_cache_rows = rows
+        _news_cache_loaded_at = monotonic_now
+        return rows
+    except Exception:
+        log.exception("Не удалось прочитать лист новостей Google Таблицы; использую локальный кеш.")
+        _news_cache_rows = cached
+        _news_cache_loaded_at = monotonic_now
+        return cached
 
 
 def _read_cache() -> list[dict[str, str]]:

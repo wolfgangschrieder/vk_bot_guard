@@ -313,6 +313,26 @@ class BotTests(unittest.TestCase):
         load.assert_called_once_with(morning.date())
         weather.assert_called_once()
 
+    def test_project_news_is_published_once_at_scheduled_time(self):
+        publish_at = datetime(2026, 11, 14, 12, 30, tzinfo=config.CHAT_TZ)
+        news = [{"datetime": publish_at.replace(tzinfo=None).isoformat(timespec="minutes"),
+                 "text": "В чате появился новый раздел!"}]
+        with patch.object(bot.morning_content, 'load_news', return_value=news):
+            bot.scheduler_tick(self.vk, self.conn, publish_at + timedelta(minutes=2))
+            bot.scheduler_tick(self.vk, self.conn, publish_at + timedelta(minutes=3))
+        reports = [item['message'] for item in self.queued('send')]
+        news_reports = [text for text in reports if text.startswith('📰 Новости проекта')]
+        self.assertEqual(news_reports, ['📰 Новости проекта\n\nВ чате появился новый раздел!'])
+
+    def test_project_news_outside_late_window_is_skipped(self):
+        publish_at = datetime(2026, 11, 14, 12, 30, tzinfo=config.CHAT_TZ)
+        news = [{"datetime": publish_at.replace(tzinfo=None).isoformat(timespec="minutes"),
+                 "text": "Устаревшая новость"}]
+        with patch.object(bot.morning_content, 'load_news', return_value=news):
+            bot.scheduler_tick(self.vk, self.conn, publish_at + timedelta(minutes=31))
+        self.assertFalse(any(item['message'].startswith('📰 Новости проекта')
+                             for item in self.queued('send')))
+
     def test_legends_command_lists_everyone_at_threshold_in_descending_order(self):
         self.conn.executemany(
             "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES (?, ?, ?)",
