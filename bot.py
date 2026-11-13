@@ -1641,10 +1641,14 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
     lines = [
         f"👤 {mention(target_id, names.get(target_id))}",
         "",
+    ]
+    if target_id in config.ADMIN_IDS:
+        lines.extend(["🛡️ АДМИНИСТРАТОР ЧАТА", ""])
+    lines.extend([
         f"⭐ Репутация: {reputation:+d}",
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
-    ]
+    ])
     if marriage:
         partner_id, married_at = marriage
         married_on = datetime.fromtimestamp(married_at, config.CHAT_TZ).strftime("%d.%m.%Y")

@@ -86,9 +86,18 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @kenaya', uid=99))
         profile = self.queued('send')[0]['message']
         self.assertEqual(profile.splitlines()[0], '👤 [id10|Test User]')
+        self.assertNotIn('🛡️ АДМИНИСТРАТОР ЧАТА', profile)
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
+
+    def test_admin_profile_has_distinct_shield_status_and_keeps_message_rank(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @id99', uid=1))
+        profile = self.queued('send')[0]['message']
+        self.assertEqual(profile.splitlines()[0], '👤 [id99|Test User]')
+        self.assertEqual(profile.splitlines()[2], '🛡️ АДМИНИСТРАТОР ЧАТА')
+        self.assertIn('🎖 Ранг: Новичок', profile)
+        self.assertIn('💬 Сообщений за всё время: 0', profile)
 
     def test_profile_shows_reputation_hero_activity_and_best_day(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
