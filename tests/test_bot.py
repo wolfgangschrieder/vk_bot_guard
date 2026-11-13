@@ -442,6 +442,25 @@ class BotTests(unittest.TestCase):
         self.assertIn('удалён из чёрного списка', self.queued('send')[-1]['message'])
         self.assertEqual(self.queued('send')[-1]['delay'], 120)
 
+    def test_admin_ban_unban_and_list_commands(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/бан + @kenaya', uid=99))
+        self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
+        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
+        self.assertIn('забанен и удалён из чата', self.queued('send')[-1]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/баны', uid=99, mid=2))
+        self.assertIn('@id10', self.queued('send')[-1]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/разбан + @kenaya', uid=99, mid=3))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
+        self.assertIn('@id10 разбанен', self.queued('send')[-1]['message'])
+
+    def test_ban_commands_are_admin_only(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/бан + @kenaya', uid=1))
+        self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
+        self.vk.messages.removeChatUser.assert_not_called()
+        self.assertIn('только администраторам', self.queued('send')[0]['message'])
+
     def test_non_admin_cannot_change_blacklist(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=1))
         self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
@@ -603,6 +622,7 @@ class BotTests(unittest.TestCase):
         })
         bot.handle_chat_update(self.vk, event, self.conn)
         self.assertEqual(self.vk.messages.removeChatUser.call_count, 2)
+        self.assertEqual(self.queued('send'), [])
 
     def test_startup_scan_removes_blacklisted_members(self):
         db.add_chat_blacklist(self.conn, 10, 99, self.now)

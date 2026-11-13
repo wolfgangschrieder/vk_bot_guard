@@ -1013,6 +1013,65 @@ def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> boo
     return True
 
 
+def handle_admin_ban_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    command = text.strip()
+    if not re.match(r"^/(?:бан|разбан|баны)(?:\s+.*)?$", command, re.IGNORECASE):
+        return False
+    if from_id not in config.ADMIN_IDS:
+        send_bot_message(vk, "🛡 Команды бана доступны только администраторам.", temporary=True)
+        return True
+
+    if re.fullmatch(r"/баны", command, re.IGNORECASE):
+        banned = db.get_chat_blacklist(conn)
+        response = (
+            "📋 Список банов пуст."
+            if not banned
+            else "📋 Заблокированные участники чата:\n" + "\n".join(f"• @id{uid}" for uid in banned)
+        )
+        send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+        return True
+
+    match = re.fullmatch(r"/(бан|разбан)\s+\+\s*(.+)", command, re.IGNORECASE)
+    if not match:
+        send_bot_message(
+            vk,
+            "Команды бана:\n/бан + @username — добавить в список и удалить из чата\n"
+            "/разбан + @username — снять бан\n/баны — список банов",
+            temporary=True,
+            delete_after_seconds=120,
+        )
+        return True
+
+    action, target_text = match.groups()
+    target_id = resolve_target_user_id(vk, target_text.strip())
+    if target_id <= 0:
+        send_bot_message(vk, "❗ Укажи пользователя через @username или @id.", temporary=True)
+        return True
+    if target_id in config.ADMIN_IDS:
+        send_bot_message(vk, "🛡 Администраторов нельзя забанить этой командой.", temporary=True)
+        return True
+
+    if action.casefold() == "разбан":
+        removed = db.remove_chat_blacklist(conn, target_id)
+        response = (f"✅ @id{target_id} разбанен и удалён из списка."
+                    if removed else f"ℹ️ @id{target_id} не найден в списке банов.")
+        send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+        return True
+
+    added = db.add_chat_blacklist(conn, target_id, from_id, now)
+    removed = remove_user_from_chat(vk, config.CHAT_PEER_ID, target_id)
+    if added and removed:
+        response = f"🚫 @id{target_id} забанен и удалён из чата."
+    elif added:
+        response = f"🚫 @id{target_id} добавлен в список банов. При входе бот удалит его автоматически."
+    elif removed:
+        response = f"ℹ️ @id{target_id} уже в списке банов; повторное удаление выполнено."
+    else:
+        response = f"ℹ️ @id{target_id} уже в списке банов."
+    send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
+    return True
+
+
 def handle_manual_premium_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.fullmatch(r"/подписка(?:\s+(.*))?", text.strip(), re.IGNORECASE)
     if not match:
@@ -1495,6 +1554,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return False
 
     if handle_manual_premium_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_admin_ban_command(vk, conn, from_id, stripped, now):
         return True
     if handle_blacklist_command(vk, conn, from_id, stripped, now):
         return True
