@@ -290,6 +290,38 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.process_donut_event(self.conn, event, 50, now=1000), "below_minimum")
         self.assertFalse(db.is_premium_user(self.conn, 42))
 
+    def test_admin_premium_grant_uses_calendar_month_extends_and_expires(self):
+        start = int(datetime(2026, 1, 31, 12, 0, tzinfo=config.CHAT_TZ).timestamp())
+        first_until = db.grant_manual_premium_month(self.conn, 42, now=start)
+        first_date = datetime.fromtimestamp(first_until, config.CHAT_TZ)
+        self.assertEqual((first_date.year, first_date.month, first_date.day), (2026, 2, 28))
+        self.assertTrue(db.is_premium_user(self.conn, 42, now=first_until - 1))
+        self.assertFalse(db.is_premium_user(self.conn, 42, now=first_until))
+
+        second_until = db.grant_manual_premium_month(self.conn, 42, now=start)
+        second_date = datetime.fromtimestamp(second_until, config.CHAT_TZ)
+        self.assertEqual((second_date.year, second_date.month, second_date.day), (2026, 3, 28))
+        self.assertTrue(db.is_premium_user(self.conn, 42, now=first_until))
+        self.assertFalse(db.is_premium_user(self.conn, 42, now=second_until))
+
+    def test_manual_premium_survives_donut_expiration_until_manual_deadline(self):
+        now = int(datetime(2026, 10, 9, 14, 0, tzinfo=config.CHAT_TZ).timestamp())
+        create = {
+            "event_id": "donut-with-manual-1", "type": "donut_subscription_create",
+            "object": {"user_id": 42, "amount": 50},
+        }
+        expired = {
+            "event_id": "donut-with-manual-2", "type": "donut_subscription_expired",
+            "object": {"user_id": 42},
+        }
+        db.grant_manual_premium_month(self.conn, 42, now=now)
+        db.process_donut_event(self.conn, create, 50, now=now)
+        db.process_donut_event(self.conn, expired, 50, now=now + 10)
+        self.assertTrue(db.is_premium_user(self.conn, 42, now=now + 11))
+        self.assertFalse(db.is_premium_user(
+            self.conn, 42, now=db.get_manual_premium_until(self.conn, 42)
+        ))
+
     def test_profile_view_limits_are_separate_by_target_type_and_day(self):
         self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "self", 2))
         self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "other", 2))
@@ -381,7 +413,7 @@ class DatabaseTests(unittest.TestCase):
         self.conn.execute("""INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at)
             SELECT giver_id, receiver_id, week_key, value, created_at FROM reputation_votes_v13""")
         self.conn.execute("DROP TABLE reputation_votes_v13")
-        self.conn.execute("DELETE FROM schema_migrations WHERE version = 13")
+        self.conn.execute("DELETE FROM schema_migrations WHERE version >= 13")
         self.conn.commit()
         self.conn.close()
 

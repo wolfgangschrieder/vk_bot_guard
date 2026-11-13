@@ -126,6 +126,39 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertIn('💎 Дон-премиум: активен', profile)
 
+    def test_admin_can_grant_and_extend_one_month_premium_subscription(self):
+        bot.handle_new_message(
+            self.vk, self.conn, self.message('/подписка + @id2', uid=99, mid=1)
+        )
+        self.assertTrue(db.is_premium_user(self.conn, 2, now=self.now))
+        notice = self.queued('send')[0]['message']
+        self.assertIn('🎉 В чате новый премиум-участник!', notice)
+        self.assertIn('[id2|Test User]', notice)
+        self.assertIn('премиум-доступ на месяц', notice)
+
+        expires_at = db.get_manual_premium_until(self.conn, 2)
+        bot.handle_new_message(
+            self.vk, self.conn, self.message('/подписка + @id2', uid=99, mid=2)
+        )
+        self.assertGreater(db.get_manual_premium_until(self.conn, 2), expires_at)
+        self.assertIn('Премиум-подписка продлена', self.queued('send')[1]['message'])
+
+        bot.handle_new_message(
+            self.vk, self.conn, self.message('/profile @id2', uid=99, mid=3)
+        )
+        profile = self.queued('send')[2]['message']
+        self.assertIn('🎁 Премиум от администрации: до ', profile)
+
+    def test_non_admin_cannot_grant_premium(self):
+        bot.handle_new_message(
+            self.vk, self.conn, self.message('/подписка + @id2', uid=1)
+        )
+        self.assertFalse(db.is_premium_user(self.conn, 2, now=self.now))
+        self.assertIn(
+            'только администраторы',
+            self.queued('send')[0]['message'],
+        )
+
     def test_profile_daily_limits_separate_self_and_other_and_delete_excess_command(self):
         for index in range(2):
             bot.handle_new_message(self.vk, self.conn, self.message('/profile', uid=1, mid=index + 1))

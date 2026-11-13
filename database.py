@@ -1,3 +1,4 @@
+import calendar
 import json
 from contextlib import closing, contextmanager
 import sqlite3
@@ -10,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 class Connection(sqlite3.Connection):
@@ -192,6 +193,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_13(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (13, int(time.time())))
+            current = 13
+
+        if current < 14:
+            _migration_14(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (14, int(time.time())))
 
         conn.commit()
 
@@ -473,6 +480,14 @@ def _migration_13(conn):
     conn.execute("CREATE INDEX reputation_pair_week ON reputation_votes(giver_id, receiver_id, week_key)")
 
 
+def _migration_14(conn):
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(premium_subscriptions)")}
+    if "manual_until" not in columns:
+        conn.execute(
+            "ALTER TABLE premium_subscriptions ADD COLUMN manual_until INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
                              view_type: str, limit: int) -> bool:
     if view_type not in {"self", "other"} or int(limit) < 1:
@@ -619,13 +634,63 @@ def process_donut_event(conn: sqlite3.Connection, event: dict, minimum_amount: i
         return "expired"
 
 
-def is_premium_user(conn: sqlite3.Connection, user_id: int) -> bool:
+def is_donut_premium_user(conn: sqlite3.Connection, user_id: int) -> bool:
     with _lock:
         row = conn.execute(
             "SELECT active FROM premium_subscriptions WHERE user_id = ?",
             (int(user_id),),
         ).fetchone()
     return bool(row and row["active"])
+
+
+def get_manual_premium_until(conn: sqlite3.Connection, user_id: int) -> int:
+    with _lock:
+        row = conn.execute(
+            "SELECT manual_until FROM premium_subscriptions WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    return int(row["manual_until"] or 0) if row else 0
+
+
+def grant_manual_premium_month(conn: sqlite3.Connection, user_id: int, now=None) -> int:
+    """Grant or extend one calendar month of admin-managed premium access."""
+    timestamp = int(time.time()) if now is None else int(now)
+    user_id = int(user_id)
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT manual_until FROM premium_subscriptions WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        current_until = int(row["manual_until"] or 0) if row else 0
+        base = max(timestamp, current_until)
+        local_base = datetime.fromtimestamp(base, config.CHAT_TZ)
+        month_index = local_base.year * 12 + local_base.month
+        target_year, zero_based_month = divmod(month_index, 12)
+        target_month = zero_based_month + 1
+        target_day = min(local_base.day, calendar.monthrange(target_year, target_month)[1])
+        expiry = local_base.replace(
+            year=target_year,
+            month=target_month,
+            day=target_day,
+        )
+        until = int(expiry.timestamp())
+        conn.execute(
+            "INSERT INTO premium_subscriptions(user_id, manual_until, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET manual_until = excluded.manual_until, "
+            "updated_at = excluded.updated_at",
+            (user_id, until, timestamp),
+        )
+        return until
+
+
+def is_premium_user(conn: sqlite3.Connection, user_id: int, now=None) -> bool:
+    timestamp = int(time.time()) if now is None else int(now)
+    with _lock:
+        row = conn.execute(
+            "SELECT active, manual_until FROM premium_subscriptions WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    return bool(row and (row["active"] or int(row["manual_until"] or 0) > timestamp))
 
 
 def track_spam_streak(conn: sqlite3.Connection, peer_id: int, user_id: int,

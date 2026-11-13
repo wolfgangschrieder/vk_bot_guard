@@ -882,6 +882,57 @@ def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> boo
     return True
 
 
+def handle_manual_premium_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    match = re.fullmatch(r"/подписка(?:\s+(.*))?", text.strip(), re.IGNORECASE)
+    if not match:
+        return False
+
+    if from_id not in config.ADMIN_IDS:
+        send_bot_message(
+            vk,
+            "🛡 Выдавать премиум-подписку могут только администраторы.",
+            temporary=True,
+        )
+        return True
+
+    argument = (match.group(1) or "").strip()
+    target_match = re.fullmatch(r"\+\s+(.+)", argument)
+    if not target_match:
+        send_bot_message(vk, "Формат команды: /подписка + @username", temporary=True)
+        return True
+
+    target_id = resolve_target_user_id(vk, target_match.group(1))
+    if target_id <= 0:
+        send_bot_message(
+            vk,
+            "❗ Не удалось найти пользователя. Укажи его как @username или @id.",
+            temporary=True,
+        )
+        return True
+
+    previous_until = db.get_manual_premium_until(conn, target_id)
+    expires_at = db.grant_manual_premium_month(conn, target_id, now)
+    expires_label = datetime.fromtimestamp(expires_at, config.CHAT_TZ).strftime("%d.%m.%Y")
+    names = get_user_names(vk, [target_id])
+    target = mention(target_id, names.get(target_id))
+    if previous_until > now:
+        announcement = (
+            "🎁 Премиум-подписка продлена!\n\n"
+            f"Для {target} добавлен ещё один месяц премиум-доступа 💎\n"
+            f"Новый срок действия — {expires_label}.\n"
+            "Спасибо, что ты с нами! ✨"
+        )
+    else:
+        announcement = (
+            "🎉 В чате новый премиум-участник!\n\n"
+            f"Администрация подарила {target} премиум-доступ на месяц 💎\n"
+            f"Статус действует до {expires_label}.\n"
+            "Добро пожаловать в премиум-клуб! ✨"
+        )
+    send_bot_message(vk, announcement, peer_id=config.CHAT_PEER_ID)
+    return True
+
+
 def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     if not re.fullmatch(r"/menu", text.strip(), re.IGNORECASE):
         return False
@@ -1005,7 +1056,8 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
     names = get_user_names(vk, [target_id])
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     stats = db.get_user_profile_stats(conn, target_id, today)
-    premium = db.is_premium_user(conn, target_id)
+    donut_premium = db.is_donut_premium_user(conn, target_id)
+    manual_premium_until = db.get_manual_premium_until(conn, target_id)
     characteristics = db.get_user_characteristics(conn, target_id)
 
     def count_label(value: int, singular: str, few: str, many: str) -> str:
@@ -1024,8 +1076,13 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ]
-    if premium:
+    if donut_premium:
         lines.append("💎 Дон-премиум: активен")
+    if manual_premium_until > now:
+        expires_label = datetime.fromtimestamp(
+            manual_premium_until, config.CHAT_TZ
+        ).strftime("%d.%m.%Y")
+        lines.append(f"🎁 Премиум от администрации: до {expires_label}")
     if stats["hero_count"]:
         lines.append(
             "🏆 Герой чата: "
@@ -1248,6 +1305,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if not stripped.startswith("/"):
         return False
 
+    if handle_manual_premium_command(vk, conn, from_id, stripped, now):
+        return True
     if handle_blacklist_command(vk, conn, from_id, stripped, now):
         return True
     if handle_menu_command(vk, conn, from_id, stripped, now):
