@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 class Connection(sqlite3.Connection):
@@ -217,6 +217,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_17(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (17, int(time.time())))
+            current = 17
+
+        if current < 18:
+            _migration_18(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (18, int(time.time())))
 
         conn.commit()
 
@@ -565,6 +571,148 @@ def _migration_17(conn):
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS morning_content_history_date "
                  "ON morning_content_history(content_type, shown_on)")
+
+
+def _migration_18(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS marriages (
+        user_id INTEGER PRIMARY KEY,
+        partner_id INTEGER NOT NULL UNIQUE,
+        married_at INTEGER NOT NULL,
+        CHECK(user_id > 0 AND partner_id > 0 AND user_id != partner_id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS marriages_partner ON marriages(partner_id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS marriage_proposals (
+        proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proposer_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        CHECK(proposer_id > 0 AND target_id > 0 AND proposer_id != target_id),
+        UNIQUE(proposer_id, target_id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS marriage_proposals_expiry "
+                 "ON marriage_proposals(expires_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS marriage_proposals_target "
+                 "ON marriage_proposals(target_id, expires_at)")
+
+
+def get_marriage(conn: sqlite3.Connection, user_id: int):
+    with _lock:
+        row = conn.execute(
+            "SELECT partner_id, married_at FROM marriages WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    return (int(row["partner_id"]), int(row["married_at"])) if row else None
+
+
+def create_marriage_proposal(conn: sqlite3.Connection, proposer_id: int, target_id: int,
+                             now: int, lifetime_seconds: int) -> str:
+    proposer_id, target_id, now = int(proposer_id), int(target_id), int(now)
+    if proposer_id <= 0 or target_id <= 0 or proposer_id == target_id:
+        return "self"
+    with atomic(conn):
+        conn.execute("DELETE FROM marriage_proposals WHERE expires_at <= ?", (now,))
+        married = conn.execute(
+            "SELECT 1 FROM marriages WHERE user_id IN (?, ?) LIMIT 1",
+            (proposer_id, target_id),
+        ).fetchone()
+        if married:
+            return "married"
+        pending = conn.execute(
+            "SELECT 1 FROM marriage_proposals WHERE proposer_id IN (?, ?) "
+            "OR target_id IN (?, ?) LIMIT 1",
+            (proposer_id, target_id, proposer_id, target_id),
+        ).fetchone()
+        if pending:
+            return "pending"
+        conn.execute(
+            "INSERT INTO marriage_proposals(proposer_id, target_id, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (proposer_id, target_id, now, now + int(lifetime_seconds)),
+        )
+        return "created"
+
+
+def get_marriage_proposal(conn: sqlite3.Connection, proposer_id: int, target_id: int,
+                          now: int):
+    with _lock:
+        return conn.execute(
+            "SELECT proposal_id, proposer_id, target_id, created_at, expires_at "
+            "FROM marriage_proposals WHERE proposer_id = ? AND target_id = ? AND expires_at > ?",
+            (int(proposer_id), int(target_id), int(now)),
+        ).fetchone()
+
+
+def accept_marriage_proposal(conn: sqlite3.Connection, proposer_id: int, target_id: int,
+                             now: int) -> str:
+    proposer_id, target_id, now = int(proposer_id), int(target_id), int(now)
+    with atomic(conn):
+        conn.execute("DELETE FROM marriage_proposals WHERE expires_at <= ?", (now,))
+        proposal = conn.execute(
+            "SELECT proposal_id FROM marriage_proposals "
+            "WHERE proposer_id = ? AND target_id = ? AND expires_at > ?",
+            (proposer_id, target_id, now),
+        ).fetchone()
+        if not proposal:
+            return "not_found"
+        married = conn.execute(
+            "SELECT 1 FROM marriages WHERE user_id IN (?, ?) LIMIT 1",
+            (proposer_id, target_id),
+        ).fetchone()
+        if married:
+            conn.execute("DELETE FROM marriage_proposals WHERE proposal_id = ?",
+                         (proposal["proposal_id"],))
+            return "married"
+        conn.executemany(
+            "INSERT INTO marriages(user_id, partner_id, married_at) VALUES (?, ?, ?)",
+            [(proposer_id, target_id, now), (target_id, proposer_id, now)],
+        )
+        conn.execute("DELETE FROM marriage_proposals WHERE proposal_id = ?",
+                     (proposal["proposal_id"],))
+        return "married_now"
+
+
+def cancel_marriage_proposal(conn: sqlite3.Connection, proposer_id: int):
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT target_id FROM marriage_proposals WHERE proposer_id = ?",
+            (int(proposer_id),),
+        ).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM marriage_proposals WHERE proposer_id = ?",
+                     (int(proposer_id),))
+        return int(row["target_id"])
+
+
+def get_marriage_pairs(conn: sqlite3.Connection, limit: int = 20, offset: int = 0):
+    with _lock:
+        return [(int(row["user_id"]), int(row["partner_id"]), int(row["married_at"]))
+                for row in conn.execute(
+                    "SELECT user_id, partner_id, married_at FROM marriages "
+                    "WHERE user_id < partner_id ORDER BY married_at, user_id "
+                    "LIMIT ? OFFSET ?", (int(limit), int(offset)))]
+
+
+def count_marriage_pairs(conn: sqlite3.Connection) -> int:
+    with _lock:
+        return int(conn.execute(
+            "SELECT COUNT(*) FROM marriages WHERE user_id < partner_id"
+        ).fetchone()[0])
+
+
+def divorce_marriage(conn: sqlite3.Connection, initiator_id: int, target_id: int):
+    initiator_id, target_id = int(initiator_id), int(target_id)
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT partner_id, married_at FROM marriages WHERE user_id = ?",
+            (initiator_id,),
+        ).fetchone()
+        if not row or int(row["partner_id"]) != target_id:
+            return None
+        conn.execute("DELETE FROM marriages WHERE user_id IN (?, ?)",
+                     (initiator_id, target_id))
+        return int(row["partner_id"]), int(row["married_at"])
 
 
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,

@@ -1000,6 +1000,203 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
     return True
 
 
+def _get_social_chat_member_ids(vk) -> set[int] | None:
+    """Return verified member IDs, or None when VK cannot verify membership."""
+    member_ids = set()
+    offset = 0
+    try:
+        while True:
+            response = vk.messages.getConversationMembers(
+                peer_id=config.CHAT_PEER_ID, count=1000, offset=offset,
+            )
+            if not isinstance(response, dict) or not isinstance(response.get("items"), list):
+                return None
+            members = response["items"]
+            for member in members:
+                try:
+                    member_id = int(member.get("member_id", 0))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if member_id > 0:
+                    member_ids.add(member_id)
+            if len(members) < 1000:
+                return member_ids
+            offset += len(members)
+    except Exception:
+        log.exception("Не удалось проверить участников перед командой свадьбы.")
+        return None
+
+
+def _wedding_pair_is_eligible(vk, conn, user_ids: tuple[int, int]) -> bool | None:
+    if any(db.is_chat_blacklisted(conn, user_id) for user_id in user_ids):
+        return False
+    members = _get_social_chat_member_ids(vk)
+    if members is None:
+        return None
+    return all(user_id in members for user_id in user_ids)
+
+
+def _wedding_member_notice(vk, eligible: bool | None) -> None:
+    if eligible is None:
+        send_bot_message(
+            vk, "⚠️ Сейчас не удалось проверить участников беседы. Попробуйте ещё раз позже.",
+            temporary=True,
+        )
+    elif not eligible:
+        send_bot_message(
+            vk, "❗ Оба участника должны быть в чате и не находиться в его чёрном списке.",
+            temporary=True,
+        )
+
+
+def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    stripped = text.strip()
+    command = stripped.casefold()
+
+    marriage_match = re.fullmatch(r"/свадьба(?:\s+(.+))?", stripped, re.IGNORECASE)
+    if marriage_match:
+        target_text = marriage_match.group(1)
+        if not target_text:
+            send_bot_message(vk, "💍 Использование: /свадьба + @username", temporary=True)
+            return True
+        target_id = resolve_target_user_id(vk, target_text)
+        if target_id <= 0:
+            send_bot_message(vk, "❗ Не нашёл пользователя. Укажи @username или @id.", temporary=True)
+            return True
+        if target_id == from_id:
+            send_bot_message(vk, "💍 Предложить свадьбу можно другому участнику, не себе.", temporary=True)
+            return True
+        eligible = _wedding_pair_is_eligible(vk, conn, (from_id, target_id))
+        if eligible is not True:
+            _wedding_member_notice(vk, eligible)
+            return True
+        result = db.create_marriage_proposal(
+            conn, from_id, target_id, now, config.MARRIAGE_PROPOSAL_SECONDS,
+        )
+        if result == "married":
+            send_bot_message(vk, "💍 Один из вас уже состоит в паре.", temporary=True)
+        elif result == "pending":
+            send_bot_message(
+                vk, "💌 У одного из вас уже есть активное предложение. Дождитесь ответа или отмените своё командой /отменить свадьбу.",
+                temporary=True,
+            )
+        else:
+            names = get_user_names(vk, [from_id, target_id])
+            send_bot_message(
+                vk,
+                f"💍 {mention(from_id, names.get(from_id))} предлагает {mention(target_id, names.get(target_id))} стать парой!\n"
+                f"{mention(target_id, names.get(target_id))}, чтобы согласиться, отправь: /да @id{from_id}\n"
+                "Предложение действует 24 часа.",
+            )
+        return True
+
+    yes_match = re.fullmatch(r"/да(?:\s+\+?\s*(.+))?", stripped, re.IGNORECASE)
+    if yes_match:
+        proposer_text = yes_match.group(1)
+        if not proposer_text:
+            send_bot_message(vk, "💌 Использование: /да @username того, кто сделал предложение", temporary=True)
+            return True
+        proposer_id = resolve_target_user_id(vk, proposer_text)
+        if proposer_id <= 0 or proposer_id == from_id:
+            send_bot_message(vk, "❗ Укажи автора действующего предложения: /да @username", temporary=True)
+            return True
+        eligible = _wedding_pair_is_eligible(vk, conn, (proposer_id, from_id))
+        if eligible is not True:
+            _wedding_member_notice(vk, eligible)
+            return True
+        result = db.accept_marriage_proposal(conn, proposer_id, from_id, now)
+        if result == "not_found":
+            send_bot_message(vk, "💌 Для вас нет действующего предложения. Возможно, оно уже истекло.", temporary=True)
+        elif result == "married":
+            send_bot_message(vk, "💍 Один из вас уже состоит в паре. Предложение закрыто.", temporary=True)
+        else:
+            names = get_user_names(vk, [proposer_id, from_id])
+            send_bot_message(
+                vk,
+                f"🎉 Согласие получено! {mention(proposer_id, names.get(proposer_id))} и "
+                f"{mention(from_id, names.get(from_id))} теперь пара! 💍",
+            )
+        return True
+
+    if command == "/отменить свадьбу":
+        target_id = db.cancel_marriage_proposal(conn, from_id)
+        if target_id is None:
+            send_bot_message(vk, "💌 У тебя нет исходящего предложения, которое можно отменить.", temporary=True)
+        else:
+            names = get_user_names(vk, [from_id, target_id])
+            send_bot_message(
+                vk, f"💌 {mention(from_id, names.get(from_id))} отменил(а) предложение "
+                f"{mention(target_id, names.get(target_id))}.",
+            )
+        return True
+
+    if command == "/супруг":
+        marriage = db.get_marriage(conn, from_id)
+        if not marriage:
+            send_bot_message(vk, "💔 Ты пока не состоишь в паре.")
+            return True
+        partner_id, married_at = marriage
+        names = get_user_names(vk, [partner_id])
+        married_on = datetime.fromtimestamp(married_at, config.CHAT_TZ).strftime("%d.%m.%Y")
+        send_bot_message(vk, f"💍 Твоя пара: {mention(partner_id, names.get(partner_id))}\nСвадьба: {married_on}")
+        return True
+
+    pairs_match = re.fullmatch(r"/пары(?:\s+(\d+))?", stripped, re.IGNORECASE)
+    if pairs_match:
+        page = int(pairs_match.group(1) or "1")
+        if page < 1:
+            send_bot_message(vk, "❗ Номер страницы должен быть больше нуля.", temporary=True)
+            return True
+        page_size = config.MARRIAGE_PAIRS_PAGE_SIZE
+        total = db.count_marriage_pairs(conn)
+        if total == 0:
+            send_bot_message(vk, "💔 В чате пока нет зарегистрированных пар.")
+            return True
+        pages = (total + page_size - 1) // page_size
+        if page > pages:
+            send_bot_message(vk, f"❗ Такой страницы нет. Всего страниц: {pages}.", temporary=True)
+            return True
+        pairs = db.get_marriage_pairs(conn, page_size, (page - 1) * page_size)
+        names = get_user_names(vk, [user_id for left, right, _ in pairs for user_id in (left, right)])
+        lines = [f"💍 ПАРЫ ЧАТА — страница {page}/{pages}"]
+        for index, (left_id, right_id, married_at) in enumerate(pairs, start=(page - 1) * page_size + 1):
+            married_on = datetime.fromtimestamp(married_at, config.CHAT_TZ).strftime("%d.%m.%Y")
+            lines.append(
+                f"{index}. {mention(left_id, names.get(left_id))} 💞 "
+                f"{mention(right_id, names.get(right_id))} — с {married_on}"
+            )
+        lines.append(f"Всего пар: {total}. Следующая страница: /пары {page + 1}" if page < pages else f"Всего пар: {total}.")
+        send_bot_message(vk, "\n".join(lines))
+        return True
+
+    divorce_match = re.fullmatch(r"/развод(?:\s+\+?\s*(.+))?", stripped, re.IGNORECASE)
+    if divorce_match:
+        if not db.is_donut_premium_user(conn, from_id):
+            send_bot_message(vk, "💎 Команда /развод доступна участникам с активной Don-подпиской.", temporary=True)
+            return True
+        target_text = divorce_match.group(1)
+        if not target_text:
+            send_bot_message(vk, "💔 Использование: /развод + @username своего супруга", temporary=True)
+            return True
+        target_id = resolve_target_user_id(vk, target_text)
+        if target_id <= 0:
+            send_bot_message(vk, "❗ Не нашёл пользователя. Укажи @username или @id.", temporary=True)
+            return True
+        result = db.divorce_marriage(conn, from_id, target_id)
+        if result is None:
+            send_bot_message(vk, "💔 Развестись этой командой можно только со своим супругом.", temporary=True)
+            return True
+        names = get_user_names(vk, [from_id, target_id])
+        send_bot_message(
+            vk,
+            f"💔 {mention(from_id, names.get(from_id))} и {mention(target_id, names.get(target_id))} "
+            "больше не пара. Брак расторгнут по команде Don-участника.",
+        )
+        return True
+
+    return False
+
+
 def handle_legends_command(vk, conn, text: str) -> bool:
     if text.strip().casefold() != "/легенды":
         return False
@@ -1359,7 +1556,8 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
             return True
 
     reputation = db.get_reputation(conn, target_id)
-    names = get_user_names(vk, [target_id])
+    marriage = db.get_marriage(conn, target_id)
+    names = get_user_names(vk, [target_id] + ([marriage[0]] if marriage else []))
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     stats = db.get_user_profile_stats(conn, target_id, today)
     donut_premium = db.is_donut_premium_user(conn, target_id)
@@ -1382,6 +1580,13 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ]
+    if marriage:
+        partner_id, married_at = marriage
+        married_on = datetime.fromtimestamp(married_at, config.CHAT_TZ).strftime("%d.%m.%Y")
+        lines.extend([
+            f"💍 В паре с: {mention(partner_id, names.get(partner_id))}",
+            f"💒 Вместе с: {married_on}",
+        ])
     if donut_premium:
         lines.append("💎 Дон-премиум: активен")
     if manual_premium_until > now:
@@ -1675,6 +1880,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_period_top_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_legends_command(vk, conn, stripped):
+        return True
+    if handle_marriage_command(vk, conn, from_id, stripped, now):
         return True
     if handle_characteristic_command(vk, conn, from_id, stripped, now, command_message):
         return True

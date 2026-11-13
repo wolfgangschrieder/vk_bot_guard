@@ -23,6 +23,9 @@ class BotTests(unittest.TestCase):
         self.vk.messages.delete.return_value = 1
         self.vk.messages.changeConversationMemberRestrictions.return_value = 1
         self.vk.messages.removeChatUser.return_value = 1
+        self.vk.messages.getConversationMembers.return_value = {
+            'items': [{'member_id': user_id} for user_id in range(1, 101)],
+        }
         self.vk.users.get.side_effect = self.profiles
         self.now = int(datetime(2026, 10, 9, 14, tzinfo=config.CHAT_TZ).timestamp())
         self.clock = patch('time.time', return_value=self.now)
@@ -114,6 +117,86 @@ class BotTests(unittest.TestCase):
         self.assertIn('Сегодня: 34 сообщения', profile)
         self.assertIn('За 7 дней: 182 сообщения', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
+
+    def test_marriage_proposal_requires_target_acceptance_and_appears_in_profile_and_pairs(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба + @id2', uid=1))
+        proposal = self.queued('send')[-1]['message']
+        self.assertIn('предлагает', proposal)
+        self.assertIn('/да @id1', proposal)
+        self.assertIsNone(db.get_marriage(self.conn, 1))
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/да @id1', uid=3, mid=2))
+        self.assertIsNone(db.get_marriage(self.conn, 1))
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/да @id1', uid=2, mid=3))
+        self.assertEqual(db.get_marriage(self.conn, 1), (2, self.now))
+        self.assertEqual(db.get_marriage(self.conn, 2), (1, self.now))
+        self.assertIn('теперь пара', self.queued('send')[-1]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @id1', uid=99, mid=4))
+        self.assertIn('💍 В паре с: [id2|Test User]', self.queued('send')[-1]['message'])
+        self.assertIn('💒 Вместе с: 09.10.2026', self.queued('send')[-1]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/пары', uid=3, mid=5))
+        pair_list = self.queued('send')[-1]['message']
+        self.assertIn('[id1|Test User] 💞 [id2|Test User]', pair_list)
+        self.assertIn('Всего пар: 1', pair_list)
+
+    def test_marriage_rejects_self_blacklisted_absent_and_already_engaged_users(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id1', uid=1))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 1, self.now + 1))
+
+        self.vk.messages.getConversationMembers.return_value = {'items': [{'member_id': 1}]}
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1, mid=2))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        self.vk.messages.getConversationMembers.return_value = {
+            'items': [{'member_id': user_id} for user_id in range(1, 101)],
+        }
+        db.add_chat_blacklist(self.conn, 2, 99, self.now)
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1, mid=3))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        db.remove_chat_blacklist(self.conn, 2)
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id3', uid=2, mid=5))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 2, 3, self.now + 1))
+
+    def test_proposals_expire_can_be_cancelled_and_one_user_cannot_stack_them(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id3', uid=1, mid=2))
+        self.assertIsNotNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 3, self.now + 1))
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/отменить свадьбу', uid=1, mid=3))
+        self.assertIsNone(db.get_marriage_proposal(self.conn, 1, 2, self.now + 1))
+
+        status = db.create_marriage_proposal(self.conn, 1, 2, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
+        self.assertEqual(status, 'created')
+        expired = db.accept_marriage_proposal(
+            self.conn, 1, 2, self.now + config.MARRIAGE_PROPOSAL_SECONDS,
+        )
+        self.assertEqual(expired, 'not_found')
+        self.assertIsNone(db.get_marriage(self.conn, 1))
+
+    def test_only_active_don_can_divorce_their_own_pair(self):
+        db.create_marriage_proposal(self.conn, 1, 2, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
+        db.accept_marriage_proposal(self.conn, 1, 2, self.now + 1)
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=1))
+        self.assertIsNotNone(db.get_marriage(self.conn, 1))
+
+        event = {
+            'event_id': 'wedding-don', 'type': 'donut_subscription_create',
+            'object': {'user_id': 1, 'amount': 50},
+        }
+        self.assertEqual(db.process_donut_event(self.conn, event, 50, now=self.now), 'activated')
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id3', uid=1, mid=2))
+        self.assertIsNotNone(db.get_marriage(self.conn, 1))
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=1, mid=3))
+        self.assertIsNone(db.get_marriage(self.conn, 1))
+        self.assertIsNone(db.get_marriage(self.conn, 2))
+        self.assertIn('Брак расторгнут', self.queued('send')[-1]['message'])
 
     def test_period_commands_publish_top_five_for_rolling_windows(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
