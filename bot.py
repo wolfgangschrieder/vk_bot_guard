@@ -887,7 +887,8 @@ def handle_stat_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     return True
 
 
-def handle_period_top_command(vk, conn, text: str, now: int) -> bool:
+def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
+                              command_message=None) -> bool:
     command = text.strip().casefold()
     periods = {
         "/неделя": ("НЕДЕЛЯ", 7),
@@ -896,6 +897,10 @@ def handle_period_top_command(vk, conn, text: str, now: int) -> bool:
     }
     if command not in periods:
         return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
     label, days = periods[command]
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     start_date = today - timedelta(days=days - 1)
@@ -1446,7 +1451,7 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
-    if handle_period_top_command(vk, conn, stripped, now):
+    if handle_period_top_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_characteristic_command(vk, conn, from_id, stripped, now, command_message):
         return True

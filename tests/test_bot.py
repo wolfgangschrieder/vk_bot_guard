@@ -128,7 +128,7 @@ class BotTests(unittest.TestCase):
         add_messages(3, today - timedelta(days=20), 7)
         add_messages(4, today - timedelta(days=200), 9)
         for index, command in enumerate(('/неделя', '/месяц', '/год'), start=1):
-            bot.handle_new_message(self.vk, self.conn, self.message(command, mid=index))
+            bot.handle_new_message(self.vk, self.conn, self.message(command, uid=99, mid=index))
         reports = [item['message'] for item in self.queued('send')]
         self.assertIn('📊 ТОП-5 ЗА НЕДЕЛЯ', reports[0])
         self.assertIn('🥇 [id1|Test User] — 5', reports[0])
@@ -137,6 +137,12 @@ class BotTests(unittest.TestCase):
         self.assertIn('🥇 [id3|Test User] — 7', reports[1])
         self.assertIn('📊 ТОП-5 ЗА ГОД', reports[2])
         self.assertIn('🥇 [id4|Test User] — 9', reports[2])
+
+    def test_period_top_commands_are_admin_only(self):
+        for index, command in enumerate(('/неделя', '/месяц', '/год'), start=1):
+            bot.handle_new_message(self.vk, self.conn, self.message(command, uid=1, mid=index))
+        self.assertEqual(self.queued('send'), [])
+        self.assertEqual(len(self.queued('delete')), 3)
 
     def test_profile_shows_donut_premium_only_when_active(self):
         event = {
