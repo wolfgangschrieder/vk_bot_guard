@@ -525,16 +525,22 @@ def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
             if is_premium:
                 existing_pair = conn.execute(
                     "SELECT 1 FROM characteristic_gives "
-                    "WHERE giver_id = ? AND target_id = ? AND week_key = ? LIMIT 1",
-                    (giver_id, target_id, str(week_key)),
+                    "WHERE giver_id = ? AND target_id = ? AND trait_key = ? AND week_key = ? LIMIT 1",
+                    (giver_id, target_id, str(trait_key), str(week_key)),
                 ).fetchone()
                 if existing_pair:
                     return "target_week_limit"
                 daily_count = conn.execute(
-                    "SELECT COUNT(*) FROM characteristic_gives WHERE giver_id = ? AND day_key = ?",
+                    "SELECT COUNT(DISTINCT target_id) FROM characteristic_gives "
+                    "WHERE giver_id = ? AND day_key = ?",
                     (giver_id, str(day_key)),
                 ).fetchone()[0]
-                if int(daily_count) >= int(premium_daily_limit):
+                already_gave_to_target_today = conn.execute(
+                    "SELECT 1 FROM characteristic_gives "
+                    "WHERE giver_id = ? AND target_id = ? AND day_key = ? LIMIT 1",
+                    (giver_id, target_id, str(day_key)),
+                ).fetchone()
+                if not already_gave_to_target_today and int(daily_count) >= int(premium_daily_limit):
                     return "daily_limit"
             else:
                 weekly_count = conn.execute(
@@ -1301,7 +1307,7 @@ def add_reputation_vote(
     *,
     is_admin: bool = False,
     is_premium: bool = False,
-    premium_weekly_limit: int = 2,
+    premium_daily_limit: int = 3,
 ) -> bool:
     if giver_id == receiver_id or value not in (-1, 1):
         return False
@@ -1317,11 +1323,19 @@ def add_reputation_vote(
                 return False
 
             if is_premium:
-                distinct_receivers = conn.execute(
-                    "SELECT COUNT(DISTINCT receiver_id) FROM reputation_votes WHERE giver_id = ? AND week_key = ?",
-                    (giver_id, week_key),
+                local_date = datetime.fromtimestamp(timestamp, config.CHAT_TZ).date()
+                day_start = int(datetime.combine(
+                    local_date, datetime.min.time(), tzinfo=config.CHAT_TZ
+                ).timestamp())
+                day_end = int(datetime.combine(
+                    local_date + timedelta(days=1), datetime.min.time(), tzinfo=config.CHAT_TZ
+                ).timestamp())
+                distinct_receivers_today = conn.execute(
+                    "SELECT COUNT(DISTINCT receiver_id) FROM reputation_votes "
+                    "WHERE giver_id = ? AND created_at >= ? AND created_at < ?",
+                    (giver_id, day_start, day_end),
                 ).fetchone()[0]
-                if int(distinct_receivers) >= int(premium_weekly_limit):
+                if int(distinct_receivers_today) >= int(premium_daily_limit):
                     return False
             else:
                 existing = conn.execute(

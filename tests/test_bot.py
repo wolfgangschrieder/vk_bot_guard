@@ -180,13 +180,14 @@ class BotTests(unittest.TestCase):
 
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id2', uid=1, mid=1))
         bot.handle_new_message(self.vk, self.conn, self.message('/интеллект - @id2', uid=1, mid=2))
-        self.assertEqual(len(self.queued('delete')), 1)  # one recipient per week
-        bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=3))
-        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id4', uid=1, mid=4))
-        self.assertEqual(len(self.queued('delete')), 2)  # third assignment exceeds daily cap
-        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'токсик': 1})
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id2', uid=1, mid=3))
+        self.assertEqual(len(self.queued('delete')), 1)  # same trait to same recipient is limited weekly
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/токсик + @id4', uid=1, mid=5))
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'токсик': 1, 'интеллект': -1})
         comments = [item['message'] for item in self.queued('send')]
-        self.assertEqual(len(comments), 2)
+        self.assertEqual(len(comments), 4)
         self.assertIn('💀 «Токсик»', comments[0])
         self.assertIn('(+1)', comments[0])
         self.assertIn('(−1)', comments[1])
@@ -194,7 +195,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=99, mid=6))
         profile = self.queued('send')[-1]['message']
         self.assertIn('💀 Токсик: +1', profile)
-        self.assertNotIn('Интеллект:', profile)
+        self.assertIn('🧠 Интеллект: -1', profile)
 
     def test_regular_user_can_assign_one_characteristic_per_week(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/гений + @id2', uid=1, mid=1))
@@ -522,7 +523,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_reputation(self.conn, 10), 1)
         self.assertEqual(len(self.queued('send')), 1)
 
-    def test_premium_reputation_is_two_different_people_per_week(self):
+    def test_premium_reputation_allows_three_people_per_day_and_each_once_per_week(self):
         event = {
             'event_id': 'premium-reputation', 'type': 'donut_subscription_create',
             'object': {'user_id': 1, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
@@ -532,14 +533,16 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id2', uid=1, mid=2))
         bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id3', uid=1, mid=3))
         bot.handle_new_message(self.vk, self.conn, self.message('/rep @id4', uid=1, mid=4))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id1', uid=1, mid=5))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id5', uid=1, mid=5))
+        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id1', uid=1, mid=6))
 
         self.assertEqual(db.get_reputation(self.conn, 2), 1)
         self.assertEqual(db.get_reputation(self.conn, 3), -1)
-        self.assertEqual(db.get_reputation(self.conn, 4), 0)
+        self.assertEqual(db.get_reputation(self.conn, 4), 1)
+        self.assertEqual(db.get_reputation(self.conn, 5), 0)
         self.assertEqual(db.get_reputation(self.conn, 1), 0)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM reputation_votes WHERE giver_id = 1').fetchone()[0], 2)
-        self.assertEqual(len(self.queued('send')), 3)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM reputation_votes WHERE giver_id = 1').fetchone()[0], 3)
+        self.assertEqual(len(self.queued('send')), 4)
 
     def test_admin_reputation_is_unlimited_but_self_vote_is_forbidden(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/rep + @id2', uid=99, mid=1))

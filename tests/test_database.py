@@ -341,20 +341,32 @@ class DatabaseTests(unittest.TestCase):
         ), "weekly_limit")
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {"токсик": 1})
 
-        premium_args = dict(regular_weekly_limit=1, premium_daily_limit=2, now=101)
-        for target in (20, 21):
+        premium_args = dict(regular_weekly_limit=1, premium_daily_limit=5, now=101)
+        for target in (20, 21, 22, 23, 24):
             self.assertEqual(db.give_characteristic(
                 self.conn, 10, target, "токсик", -1, is_admin=False, is_premium=True,
                 week_key="2026-W44", day_key="2026-10-31", **premium_args,
             ), "applied")
         self.assertEqual(db.give_characteristic(
-            self.conn, 10, 22, "токсик", 1, is_admin=False, is_premium=True,
+            self.conn, 10, 25, "токсик", 1, is_admin=False, is_premium=True,
             week_key="2026-W44", day_key="2026-10-31", **premium_args,
         ), "daily_limit")
         self.assertEqual(db.give_characteristic(
             self.conn, 10, 20, "интеллект", 1, is_admin=False, is_premium=True,
+            week_key="2026-W44", day_key="2026-10-31", **premium_args,
+        ), "applied")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 10, 20, "токсик", 1, is_admin=False, is_premium=True,
             week_key="2026-W44", day_key="2026-11-01", **premium_args,
         ), "target_week_limit")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 10, 20, "интеллект", 1, is_admin=False, is_premium=True,
+            week_key="2026-W44", day_key="2026-11-01", **premium_args,
+        ), "target_week_limit")
+        self.assertEqual(db.give_characteristic(
+            self.conn, 10, 20, "токсик", 1, is_admin=False, is_premium=True,
+            week_key="2026-W45", day_key="2026-11-02", **premium_args,
+        ), "applied")
         self.assertEqual(db.give_characteristic(
             self.conn, 99, 99, "токсик", 1, is_admin=True, is_premium=False,
             week_key="2026-W44", day_key="2026-10-31", **common,
@@ -367,33 +379,47 @@ class DatabaseTests(unittest.TestCase):
         ), "applied")
         self.assertEqual(db.get_user_characteristics(self.conn, 2), {})
 
-    def test_premium_reputation_allows_two_distinct_targets_weekly(self):
+    def test_premium_reputation_allows_three_distinct_targets_daily_and_one_target_weekly(self):
+        first_day = int(datetime(2026, 10, 9, 12, tzinfo=config.CHAT_TZ).timestamp())
+        next_day = int(datetime(2026, 10, 10, 12, tzinfo=config.CHAT_TZ).timestamp())
         self.assertTrue(db.add_reputation_vote(
-            self.conn, 10, 20, 1, "2026-W44", now=100,
-            is_premium=True, premium_weekly_limit=2,
+            self.conn, 10, 20, 1, "2026-W41", now=first_day,
+            is_premium=True, premium_daily_limit=3,
         ))
         self.assertFalse(db.add_reputation_vote(
-            self.conn, 10, 20, -1, "2026-W44", now=101,
-            is_premium=True, premium_weekly_limit=2,
+            self.conn, 10, 20, -1, "2026-W41", now=first_day + 1,
+            is_premium=True, premium_daily_limit=3,
         ))
         self.assertTrue(db.add_reputation_vote(
-            self.conn, 10, 21, -1, "2026-W44", now=102,
-            is_premium=True, premium_weekly_limit=2,
+            self.conn, 10, 21, -1, "2026-W41", now=first_day + 2,
+            is_premium=True, premium_daily_limit=3,
+        ))
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 10, 22, 1, "2026-W41", now=first_day + 3,
+            is_premium=True, premium_daily_limit=3,
         ))
         self.assertFalse(db.add_reputation_vote(
-            self.conn, 10, 22, 1, "2026-W44", now=103,
-            is_premium=True, premium_weekly_limit=2,
+            self.conn, 10, 23, 1, "2026-W41", now=first_day + 4,
+            is_premium=True, premium_daily_limit=3,
         ))
         self.assertFalse(db.add_reputation_vote(
-            self.conn, 10, 10, 1, "2026-W44", now=104,
+            self.conn, 10, 20, -1, "2026-W41", now=next_day,
+            is_premium=True, premium_daily_limit=3,
+        ))
+        self.assertTrue(db.add_reputation_vote(
+            self.conn, 10, 23, 1, "2026-W41", now=next_day + 1,
+            is_premium=True, premium_daily_limit=3,
+        ))
+        self.assertFalse(db.add_reputation_vote(
+            self.conn, 10, 10, 1, "2026-W41", now=next_day + 2,
             is_admin=True, is_premium=False,
         ))
         self.assertTrue(db.add_reputation_vote(
-            self.conn, 99, 20, 1, "2026-W44", now=105,
+            self.conn, 99, 20, 1, "2026-W41", now=next_day + 3,
             is_admin=True, is_premium=False,
         ))
         self.assertTrue(db.add_reputation_vote(
-            self.conn, 99, 20, -1, "2026-W44", now=106,
+            self.conn, 99, 20, -1, "2026-W41", now=next_day + 4,
             is_admin=True, is_premium=False,
         ))
 
@@ -421,7 +447,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(db.get_reputation(self.conn, 2), 1)
         self.assertTrue(db.add_reputation_vote(
             self.conn, 1, 3, -1, "2026-W44", now=101,
-            is_premium=True, premium_weekly_limit=2,
+            is_premium=True, premium_daily_limit=3,
         ))
         self.assertEqual(db.get_reputation(self.conn, 3), -1)
 

@@ -1207,7 +1207,7 @@ def handle_reputation_command(
         now,
         is_admin=from_id in config.ADMIN_IDS,
         is_premium=db.is_premium_user(conn, from_id),
-        premium_weekly_limit=config.REPUTATION_WEEKLY_LIMIT_PREMIUM,
+        premium_daily_limit=config.REPUTATION_DAILY_LIMIT_PREMIUM,
     ):
         # Исчерпание недельной квоты и повторная оценка того же человека
         # остаются тихими, как и прежние повторные голоса.
