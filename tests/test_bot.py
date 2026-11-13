@@ -409,6 +409,16 @@ class BotTests(unittest.TestCase):
         )
         self.assertEqual(len(self.queued('mute')), 1)
 
+    def test_strict_chat_mute_notice_stays_visible_for_one_hour(self):
+        bot.send_mute_reason(
+            self.vk, 1, config.PROHIBITED_WORDS_MUTE_REASON,
+            config.MODERATION_CHAT_PEER_ID,
+        )
+        notice = self.queued('send')[0]
+        self.assertEqual(notice['peer_id'], config.MODERATION_CHAT_PEER_ID)
+        self.assertTrue(notice['temporary'])
+        self.assertEqual(notice['delay'], 3600)
+
     def test_link_attachment_is_moderated_in_strict_chat(self):
         bot.handle_new_message(self.vk, self.conn, self.message(
             '', peer=config.MODERATION_CHAT_PEER_ID,
@@ -726,7 +736,7 @@ class BotTests(unittest.TestCase):
         self.drain(self.now + 5)
         self.assertEqual(self.vk.messages.send.call_count, 1)
         self.assertIn('Test User,', self.vk.messages.send.call_args.kwargs['message'])
-        self.assertEqual(self.conn.execute('SELECT delete_at FROM bot_messages').fetchone()[0], self.now + 65)
+        self.assertEqual(self.conn.execute('SELECT delete_at FROM bot_messages').fetchone()[0], self.now + 3605)
 
     def test_restriction_expiry_does_not_lift_an_admin_mute(self):
         db.confirm_mute(self.conn, config.MODERATION_CHAT_PEER_ID, 1, self.now - 1)
@@ -999,10 +1009,10 @@ class BotTests(unittest.TestCase):
         self.assertEqual((task['peer_id'], task['cmid']), (config.MODERATION_CHAT_PEER_ID, 77))
         self.assertEqual(self.vk.messages.send.call_args.kwargs['peer_ids'], str(config.MODERATION_CHAT_PEER_ID))
         self.assertEqual(self.vk.messages.send.call_count, 1)
-        bot.cleanup_tick(self.conn, self.now + 60)
+        bot.cleanup_tick(self.conn, self.now + 3600)
         self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
             'conversation_message_id': 77, 'message_id': 0, 'response': 1}]
-        bot.deliver_outbox(self.vk, self.conn, self.now + 60)
+        bot.deliver_outbox(self.vk, self.conn, self.now + 3600)
         self.assertEqual(self.vk.messages.delete.call_args.kwargs['cmids'], '77')
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0], 0)
 
