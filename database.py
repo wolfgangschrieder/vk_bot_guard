@@ -1010,6 +1010,18 @@ def get_total_message_count(conn: sqlite3.Connection, user_id: int) -> int:
     return int(row[0] or 0)
 
 
+def get_chat_legends(conn: sqlite3.Connection, min_messages: int = 100_000) -> list[tuple[int, int]]:
+    """Return all users at or above the legend threshold, ordered by lifetime messages."""
+    with _lock:
+        rows = conn.execute(
+            "SELECT user_id, SUM(messages) AS total FROM daily_user_stats "
+            "GROUP BY user_id HAVING SUM(messages) >= ? "
+            "ORDER BY total DESC, user_id ASC",
+            (int(min_messages),),
+        ).fetchall()
+    return [(int(row["user_id"]), int(row["total"])) for row in rows]
+
+
 def record_mute(
     conn: sqlite3.Connection,
     user_id: int,

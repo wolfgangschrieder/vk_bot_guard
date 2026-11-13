@@ -929,6 +929,44 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
     return True
 
 
+def handle_legends_command(vk, conn, text: str) -> bool:
+    if text.strip().casefold() != "/легенды":
+        return False
+    legends = db.get_chat_legends(conn)
+    if not legends:
+        send_bot_message(
+            vk,
+            "Пока в чате нет ни одной Легенды. Станьте первым — отправьте 100 000 сообщений!",
+        )
+        return True
+
+    names = {}
+    for start in range(0, len(legends), 500):
+        names.update(get_user_names(vk, [user_id for user_id, _ in legends[start:start + 500]]))
+
+    messages = []
+    current = "🌟 ЛЕГЕНДЫ ЧАТА 🌟"
+    for index, (user_id, total) in enumerate(legends, start=1):
+        count = f"{total:,}".replace(",", " ")
+        line = f"{index}. {mention(user_id, names.get(user_id))} — {count} сообщений"
+        if len(current) + len(line) + 1 > 3500:
+            messages.append(current)
+            current = line
+        else:
+            current += "\n" + line
+
+    summary = f"Всего легенд: {len(legends)}"
+    if len(current) + len(summary) + 1 <= 3500:
+        current += "\n" + summary
+    else:
+        messages.append(current)
+        current = summary
+    messages.append(current)
+    for message in messages:
+        send_bot_message(vk, message)
+    return True
+
+
 def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.fullmatch(r"/чс(?:\s+(.*))?", text.strip(), re.IGNORECASE)
     if not match:
@@ -1564,6 +1602,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
     if handle_period_top_command(vk, conn, from_id, stripped, now, command_message):
+        return True
+    if handle_legends_command(vk, conn, stripped):
         return True
     if handle_characteristic_command(vk, conn, from_id, stripped, now, command_message):
         return True

@@ -203,6 +203,19 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(stats[20], {"messages": 1, "mutes": 0})
         self.assertEqual(stats[30], {"messages": 0, "mutes": 0})
 
+    def test_chat_legends_filter_threshold_and_sort_by_lifetime_messages(self):
+        self.conn.executemany(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES (?, ?, ?)",
+            [
+                ("2026-10-01", 10, 100_000),
+                ("2026-10-01", 20, 120_000),
+                ("2026-10-01", 30, 99_999),
+                ("2026-10-02", 10, 1),
+            ],
+        )
+        self.conn.commit()
+        self.assertEqual(db.get_chat_legends(self.conn), [(20, 120_000), (10, 100_001)])
+
     def test_reputation_one_vote_per_user_per_week(self):
         self.assertTrue(
             db.add_reputation_vote(

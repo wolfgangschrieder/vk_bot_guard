@@ -144,6 +144,33 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
 
+    def test_legends_command_lists_everyone_at_threshold_in_descending_order(self):
+        self.conn.executemany(
+            "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES (?, ?, ?)",
+            [
+                ('2026-10-01', 10, 100_000),
+                ('2026-10-01', 20, 125_000),
+                ('2026-10-01', 30, 99_999),
+            ],
+        )
+        self.conn.commit()
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/легенды', uid=5))
+
+        report = self.queued('send')[0]['message']
+        self.assertIn('🌟 ЛЕГЕНДЫ ЧАТА 🌟', report)
+        self.assertLess(report.index('1. [id20|Test User] — 125 000 сообщений'),
+                        report.index('2. [id10|Test User] — 100 000 сообщений'))
+        self.assertNotIn('@id30', report)
+        self.assertTrue(report.endswith('Всего легенд: 2'))
+
+    def test_legends_command_shows_empty_list_message(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/легенды'))
+        self.assertEqual(
+            self.queued('send')[0]['message'],
+            'Пока в чате нет ни одной Легенды. Станьте первым — отправьте 100 000 сообщений!',
+        )
+
     def test_profile_shows_donut_premium_only_when_active(self):
         event = {
             'event_id': 'premium-profile',
