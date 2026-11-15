@@ -605,6 +605,10 @@ def handle_commands_link_command(vk, from_id: int, text: str,
                                  command_message=None) -> bool:
     if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
         return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
     publish_commands_link(vk, peer_id=peer_id)
     return True

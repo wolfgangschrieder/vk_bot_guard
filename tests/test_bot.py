@@ -279,7 +279,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
 
-    def test_commands_link_is_available_to_everyone_and_stays_in_invoking_chat(self):
+    def test_commands_link_is_admin_only_and_stays_in_invoking_chat(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=99))
         payload = self.queued('send')[0]
         self.assertEqual(payload['message'],
@@ -288,9 +288,8 @@ class BotTests(unittest.TestCase):
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
 
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=1, mid=2))
-        self.assertEqual(len(self.queued('send')), 2)
-        self.assertEqual(self.queued('send')[1]['peer_id'], config.CHAT_PEER_ID)
-        self.assertEqual(len(self.queued('delete')), 0)
+        self.assertEqual(len(self.queued('send')), 1)
+        self.assertEqual(len(self.queued('delete')), 1)
 
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
