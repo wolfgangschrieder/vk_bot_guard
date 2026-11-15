@@ -1626,13 +1626,17 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         )
         return f"{value} {form}"
 
-    lines = [
-        f"👤 {mention(target_id, names.get(target_id))}",
-        "",
-    ]
+    lines = [f"👤 {mention(target_id, names.get(target_id))}"]
     if target_id in config.ADMIN_IDS:
-        lines.extend(["🛡️ АДМИНИСТРАТОР ЧАТА", ""])
+        lines.extend(["", "🛡️ АДМИНИСТРАТОР ЧАТА"])
+    if donut_premium:
+        lines.extend([
+            "",
+            "💎 ПОДДЕРЖИВАЕТ @vlgchat",
+            "✨ DON-ПРЕМИУМ АКТИВЕН ✨",
+        ])
     lines.extend([
+        "",
         f"⭐ Репутация: {reputation:+d}",
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
@@ -1644,8 +1648,6 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
             f"💍 В паре с: {mention(partner_id, names.get(partner_id))}",
             f"💒 Вместе с: {married_on}",
         ])
-    if donut_premium:
-        lines.append("💎 Дон-премиум: активен")
     if manual_premium_until > now:
         expires_label = datetime.fromtimestamp(
             manual_premium_until, config.CHAT_TZ

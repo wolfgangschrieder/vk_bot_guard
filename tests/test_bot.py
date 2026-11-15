@@ -378,7 +378,9 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.process_donut_event(self.conn, event, 50, now=self.now), 'activated')
         bot.handle_new_message(self.vk, self.conn, self.message('/profile', uid=1))
         profile = self.queued('send')[0]['message']
-        self.assertIn('💎 Дон-премиум: активен', profile)
+        self.assertEqual(profile.splitlines()[2], '💎 ПОДДЕРЖИВАЕТ @vlgchat')
+        self.assertEqual(profile.splitlines()[3], '✨ DON-ПРЕМИУМ АКТИВЕН ✨')
+        self.assertIn('⭐ Репутация:', profile)
 
     def test_admin_can_grant_and_extend_one_month_premium_subscription(self):
         bot.handle_new_message(
