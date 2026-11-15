@@ -70,19 +70,6 @@ def menu_keyboard() -> dict:
     }
 
 
-def commands_keyboard() -> dict:
-    return {
-        "inline": True,
-        "buttons": [[{
-            "action": {
-                "type": "open_link",
-                "link": COMMANDS_URL,
-                "label": "🤖 Команды бота",
-            },
-        }]],
-    }
-
-
 class TimeoutSession(requests.Session):
     def request(self, method, url, **kwargs):
         kwargs.setdefault("timeout", 10)
@@ -587,11 +574,11 @@ def send_bot_message(
     })
 
 
-def publish_commands_link(vk) -> int:
+def publish_commands_link(vk, peer_id: int | None = None) -> int:
     return send_bot_message(
         vk,
-        "🤖 Нужна команда? Полный список команд бота — по кнопке ниже.",
-        keyboard=commands_keyboard(),
+        f"📖 Список команд бота: [{COMMANDS_URL}|команды]",
+        peer_id=peer_id,
     )
 
 
@@ -618,11 +605,8 @@ def handle_commands_link_command(vk, from_id: int, text: str,
                                  command_message=None) -> bool:
     if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
         return False
-    if from_id not in config.ADMIN_IDS:
-        if command_message is not None:
-            delete_message(vk, command_message)
-        return True
-    publish_commands_link(vk)
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    publish_commands_link(vk, peer_id=peer_id)
     return True
 
 def send_mute_reason(vk, user_id: int, reason: str, peer_id: int, deletion_id=None) -> None:
@@ -2452,7 +2436,8 @@ def scheduler_tick(vk, conn, now=None):
                         if publish_period_hero(vk, conn, period_type, period_start,
                                                announce=(cursor == now.date())):
                             db.claim_scheduler_event(conn, event_key, int(now.timestamp()))
-            hours = [hour for hour in (6, 12, 18) if lower < midnight.replace(hour=hour) <= now]
+            hours = [hour for hour in config.DAILY_REPORT_HOURS
+                     if lower < midnight.replace(hour=hour) <= now]
             # A missed intraday snapshot cannot be reconstructed from daily totals.
             # Publish only the latest due snapshot for today's date.
             if cursor == now.date() and hours:

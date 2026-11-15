@@ -279,17 +279,18 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
 
-    def test_commands_link_command_is_admin_only_and_has_short_button(self):
+    def test_commands_link_is_available_to_everyone_and_stays_in_invoking_chat(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=99))
         payload = self.queued('send')[0]
-        self.assertIn('Полный список команд', payload['message'])
-        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
-            'type': 'open_link', 'link': bot.COMMANDS_URL, 'label': '🤖 Команды бота',
-        })
+        self.assertEqual(payload['message'],
+                         f'📖 Список команд бота: [{bot.COMMANDS_URL}|команды]')
+        self.assertIsNone(payload['keyboard'])
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
 
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=1, mid=2))
-        self.assertEqual(len(self.queued('send')), 1)
-        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(len(self.queued('send')), 2)
+        self.assertEqual(self.queued('send')[1]['peer_id'], config.CHAT_PEER_ID)
+        self.assertEqual(len(self.queued('delete')), 0)
 
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
@@ -1246,6 +1247,22 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), count + 1)
         bot.scheduler_tick(self.vk, self.conn, after)
         self.assertEqual(len(self.queued('send')), count + 1)
+
+    def test_daily_statistics_are_published_at_ten_fourteen_and_nineteen(self):
+        day = datetime(2026, 10, 9, tzinfo=config.CHAT_TZ)
+        db.claim_scheduler_event(self.conn, 'checkpoint', int(day.replace(hour=9).timestamp()))
+        for hour, minute in ((9, 55), (10, 5), (14, 5), (19, 5)):
+            bot.scheduler_tick(self.vk, self.conn, day.replace(hour=hour, minute=minute))
+        reports = [item['message'] for item in self.queued('send')
+                   if item['message'].startswith('📊 СТАТИСТИКА ЧАТА')]
+        self.assertEqual(len(reports), 3)
+        scheduled = {row['event_key'] for row in self.conn.execute(
+            "SELECT event_key FROM scheduler_state WHERE event_key LIKE 'daily:%-__'"
+        )}
+        self.assertTrue({
+            'daily:2026-10-09-10', 'daily:2026-10-09-14', 'daily:2026-10-09-19',
+        }.issubset(scheduled))
+        self.assertFalse(any(key.endswith(('-06', '-12', '-18')) for key in scheduled))
 
     def test_donut_promo_is_posted_once_at_noon(self):
         noon = datetime(2026, 10, 9, 12, 5, tzinfo=config.CHAT_TZ)
