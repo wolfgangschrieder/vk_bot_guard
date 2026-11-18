@@ -72,7 +72,11 @@ def menu_keyboard() -> dict:
 
 class TimeoutSession(requests.Session):
     def request(self, method, url, **kwargs):
-        kwargs.setdefault("timeout", 10)
+        # vk_api may pass timeout=None explicitly. setdefault() would leave
+        # that unbounded, allowing a stalled API call to hold an inbox event
+        # open forever.
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = 10
         return super().request(method, url, **kwargs)
 
 
@@ -1047,12 +1051,20 @@ def _get_social_chat_member_ids(vk) -> set[int] | None:
     offset = 0
     try:
         while True:
+            log.info(
+                "Проверка участников для свадьбы: peer=%s offset=%s",
+                config.CHAT_PEER_ID, offset,
+            )
             response = vk.messages.getConversationMembers(
                 peer_id=config.CHAT_PEER_ID, count=1000, offset=offset,
             )
             if not isinstance(response, dict) or not isinstance(response.get("items"), list):
                 return None
             members = response["items"]
+            log.info(
+                "VK вернул участников для свадьбы: peer=%s offset=%s count=%s",
+                config.CHAT_PEER_ID, offset, len(members),
+            )
             for member in members:
                 try:
                     member_id = int(member.get("member_id", 0))
