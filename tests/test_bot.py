@@ -11,6 +11,17 @@ import config
 import database as db
 
 
+class TimeoutSessionTests(unittest.TestCase):
+    def test_timeout_replaces_explicit_none_but_preserves_configured_value(self):
+        session = bot.TimeoutSession()
+        with patch.object(bot.requests.Session, 'request', return_value=object()) as request:
+            session.request('GET', 'https://api.vk.com', timeout=None)
+            self.assertEqual(request.call_args.kwargs['timeout'], 10)
+
+            session.request('GET', 'https://api.vk.com', timeout=30)
+            self.assertEqual(request.call_args.kwargs['timeout'], 30)
+
+
 class BotTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
