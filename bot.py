@@ -1092,7 +1092,8 @@ def _wedding_member_notice(vk, eligible: bool | None) -> None:
 
 def _wedding_don_notice(vk) -> None:
     send_bot_message(
-        vk, "💎 Предлагать и заключать брак могут только два участника с активной Don-подпиской.",
+        vk, "💎 Предлагать свадьбу могут премиум-участники и администраторы. "
+            "Принять приглашение может любой участник чата.",
         temporary=True,
     )
 
@@ -1114,7 +1115,7 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
         if target_id == from_id:
             send_bot_message(vk, "💍 Предложить свадьбу можно другому участнику, не себе.", temporary=True)
             return True
-        if not all(db.is_donut_premium_user(conn, user_id) for user_id in (from_id, target_id)):
+        if from_id not in config.ADMIN_IDS and not db.is_premium_user(conn, from_id, now):
             _wedding_don_notice(vk)
             return True
         eligible = _wedding_pair_is_eligible(vk, conn, (from_id, target_id))
@@ -1150,9 +1151,6 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
         proposer_id = resolve_target_user_id(vk, proposer_text)
         if proposer_id <= 0 or proposer_id == from_id:
             send_bot_message(vk, "❗ Укажи автора действующего предложения: /да @username", temporary=True)
-            return True
-        if not all(db.is_donut_premium_user(conn, user_id) for user_id in (proposer_id, from_id)):
-            _wedding_don_notice(vk)
             return True
         eligible = _wedding_pair_is_eligible(vk, conn, (proposer_id, from_id))
         if eligible is not True:
