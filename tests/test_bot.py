@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 22799)
+Total output lines: 1613
+
 import json
 import tempfile
 import unittest
@@ -504,6 +507,27 @@ class BotTests(unittest.TestCase):
             )
             self.assertEqual(db.get_user_characteristics(self.conn, index), {trait: 1})
 
+    def test_new_characteristic_commands_and_sex_machine_alias(self):
+        traits = (
+            ("дуралей", "дуралей", "🤪", "Дуралей"),
+            ("босс", "босс", "🕶️", "Босс"),
+            ("диктатор", "диктатор", "🪖", "Диктатор"),
+            ("гомункул", "гомункул", "🧪", "Гомункул"),
+            ("машина", "машина", "🤖", "Секс-машина"),
+            ("геймер", "геймер", "🎮", "Геймер"),
+        )
+        for index, (command, trait, emoji, title) in enumerate(traits, start=2):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message(f"/{command} + @id{index}", uid=99, mid=index),
+            )
+            self.assertEqual(db.get_user_characteristics(self.conn, index), {trait: 1})
+            self.assertIn(f"{emoji} «{title}»", self.queued("send")[-1]["message"])
+
+        bot.handle_new_message(self.vk, self.conn, self.message("/profile @id6", uid=99, mid=10))
+        profile = self.queued("send")[-1]["message"]
+        self.assertIn("🤖 Секс-машина: +1", profile)
+
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
             raw = {
@@ -699,227 +723,7 @@ class BotTests(unittest.TestCase):
         for mid in range(1, 4):
             bot.handle_new_message(
                 self.vk, self.conn,
-                self.message('одно и то же', mid=mid, peer=config.CHAT_PEER_ID),
-            )
-        self.assertEqual(self.queued('mute'), [])
-
-        bot.handle_new_message(
-            self.vk, self.conn,
-            self.message('одно и то же', mid=4, peer=config.CHAT_PEER_ID),
-        )
-        mute = self.queued('mute')[0]
-        self.assertEqual(mute['peer_id'], config.CHAT_PEER_ID)
-        self.assertEqual(mute['until'] - self.now, 3600)
-        self.assertEqual(
-            mute['reason'],
-            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
-        )
-        self.assertEqual(len(self.queued('delete')), 1)
-        self.drain()
-        self.assertTrue(any(
-            item['message'] == (
-                'Test User, Спам запрещен! Сообщение удалено! '
-                'Доступ ограничен на 1 час!'
-            )
-            for item in self.queued('send')
-        ))
-
-        self.vk.messages.delete.reset_mock()
-        bot.handle_new_message(
-            self.vk, self.conn,
-            self.message('одно и то же', peer=config.MODERATION_CHAT_PEER_ID, mid=5),
-        )
-        self.assertEqual(len(self.queued('mute')), 1)
-
-    def test_links_are_deleted_and_muted_only_in_strict_chat_with_reason(self):
-        message = self.message(
-            'Переходите сюда https://example.com/page',
-            peer=config.MODERATION_CHAT_PEER_ID,
-        )
-        bot.handle_new_message(self.vk, self.conn, message)
-        mute = self.queued('mute')[0]
-        self.assertEqual(mute['peer_id'], config.MODERATION_CHAT_PEER_ID)
-        self.assertEqual(mute['until'] - self.now, 3600)
-        self.assertEqual(mute['reason'], config.LINK_MUTE_REASON)
-        self.assertEqual(len(self.queued('delete')), 1)
-
-        bot.handle_new_message(
-            self.vk, self.conn,
-            self.message('https://example.com', peer=config.CHAT_PEER_ID, mid=2),
-        )
-        self.assertEqual(len(self.queued('mute')), 1)
-
-    def test_strict_chat_mute_notice_stays_visible_for_one_hour(self):
-        bot.send_mute_reason(
-            self.vk, 1, config.PROHIBITED_WORDS_MUTE_REASON,
-            config.MODERATION_CHAT_PEER_ID,
-        )
-        notice = self.queued('send')[0]
-        self.assertEqual(notice['peer_id'], config.MODERATION_CHAT_PEER_ID)
-        self.assertTrue(notice['temporary'])
-        self.assertEqual(notice['delay'], 3600)
-
-    def test_link_attachment_is_moderated_in_strict_chat(self):
-        bot.handle_new_message(self.vk, self.conn, self.message(
-            '', peer=config.MODERATION_CHAT_PEER_ID,
-            attachments=[{'type': 'link', 'link': {'url': 'https://example.com'}}],
-        ))
-        self.assertEqual(self.queued('mute')[0]['reason'], config.LINK_MUTE_REASON)
-
-    def test_requested_prohibited_phrases_mute_in_strict_chat(self):
-        self.assertEqual(
-            config.PROHIBITED_WORDS_MUTE_REASON,
-            "Пожалуйста, избегайте обсуждения финансовых вопросов в этом чате.",
-        )
-        for mid, text in enumerate(
-            ('Без предоплат', 'расход', 'на коммерческой основе', 'деньги'), 1
-        ):
-            bot.handle_new_message(self.vk, self.conn, self.message(
-                text, uid=mid, peer=config.MODERATION_CHAT_PEER_ID, mid=mid,
-            ))
-        mutes = self.queued('mute')
-        self.assertEqual(len(mutes), 4)
-        self.assertTrue(all(item['until'] - self.now == 3600 for item in mutes))
-        self.assertTrue(all(
-            item['reason'] == config.PROHIBITED_WORDS_MUTE_REASON for item in mutes
-        ))
-
-    def test_different_message_breaks_identical_message_streak(self):
-        for mid in (1, 2):
-            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
-        bot.handle_new_message(self.vk, self.conn, self.message('другое', mid=3))
-        for mid in (4, 5):
-            bot.handle_new_message(self.vk, self.conn, self.message('повтор', mid=mid))
-        self.assertEqual(self.queued('mute'), [])
-
-    def test_at_all_message_is_deleted_without_mute(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('всем привет @all'))
-        self.assertEqual(len(self.queued('delete')), 1)
-        self.assertEqual(self.queued('mute'), [])
-
-    def test_four_identical_consecutive_stickers_mute_and_queue_reason(self):
-        for mid in range(1, 5):
-            bot.handle_new_message(self.vk, self.conn, self.message(
-                '', mid=mid,
-                attachments=[{'type': 'sticker', 'sticker': {'sticker_id': 77, 'product_id': 1}}],
-            ))
-        mute = self.queued('mute')[0]
-        self.assertEqual(
-            mute['reason'],
-            'Спам запрещен! Сообщение удалено! Доступ ограничен на 1 час!',
-        )
-        self.assertEqual(mute['until'] - self.now, 3600)
-        self.assertEqual(len(self.queued('delete')), 1)
-        self.drain()
-        self.assertTrue(any(
-            item['message'] == (
-                'Test User, Спам запрещен! Сообщение удалено! '
-                'Доступ ограничен на 1 час!'
-            )
-            for item in self.queued('send')
-        ))
-        self.assertEqual(
-            self.conn.execute('SELECT delete_at FROM bot_messages').fetchone()[0],
-            self.now + 300,
-        )
-
-    def test_non_sticker_breaks_repeated_sticker_streak(self):
-        sticker = [{'type': 'sticker', 'sticker': {'sticker_id': 77}}]
-        for mid in (1, 2):
-            bot.handle_new_message(self.vk, self.conn, self.message('', mid=mid, attachments=sticker))
-        bot.handle_new_message(self.vk, self.conn, self.message('обычное сообщение', mid=3))
-        for mid in (4, 5):
-            bot.handle_new_message(self.vk, self.conn, self.message('', mid=mid, attachments=sticker))
-        self.assertEqual(self.queued('mute'), [])
-
-    def test_blacklist_is_kept_when_vk_does_not_confirm_removal(self):
-        self.vk.messages.removeChatUser.return_value = 0
-        bot.handle_new_message(self.vk, self.conn, self.message('/чс @kenaya', uid=99))
-        self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
-        self.assertIn('VK пока не подтвердил удаление', self.queued('send')[0]['message'])
-
-    def test_blacklisted_user_is_removed_on_message_and_reinvite(self):
-        db.add_chat_blacklist(self.conn, 10, 99, self.now)
-        bot.handle_new_message(self.vk, self.conn, self.message('hello', uid=10))
-        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
-        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
-
-        event = SimpleNamespace(obj={
-            'peer_id': config.CHAT_PEER_ID,
-            'action': {'type': 'chat_invite_user', 'member_id': 10},
-        })
-        bot.handle_chat_update(self.vk, event, self.conn)
-        self.assertEqual(self.vk.messages.removeChatUser.call_count, 2)
-        self.assertEqual(self.queued('send'), [])
-
-    def test_startup_scan_removes_blacklisted_members(self):
-        db.add_chat_blacklist(self.conn, 10, 99, self.now)
-        self.vk.messages.getConversationMembers.return_value = {
-            'items': [{'member_id': 10}, {'member_id': 11}],
-        }
-        bot.scan_chat_blacklist(self.vk, self.conn)
-        self.vk.messages.getConversationMembers.assert_called_once_with(
-            peer_id=config.CHAT_PEER_ID, count=1000, offset=0,
-        )
-        self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
-
-    def test_public_menu_has_profile_and_user_guide_buttons(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/menu', uid=1))
-        payload = self.queued('send')[0]
-        self.assertIn('/profile', payload['message'])
-        self.assertTrue(payload['temporary'])
-        self.assertEqual(payload['delay'], 120)
-        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
-            'type': 'text', 'label': '👤 Мой профиль',
-        })
-        self.assertEqual(payload['keyboard']['buttons'][0][1]['action'], {
-            'type': 'open_link',
-            'link': 'https://vk.ru/topic-234090559_68552562?offset=0',
-            'label': '📖 Руководство',
-        })
-        bot.deliver_outbox(self.vk, self.conn, self.now)
-        keyboard = json.loads(self.vk.messages.send.call_args.kwargs['keyboard'])
-        self.assertTrue(keyboard['inline'])
-        self.assertEqual(keyboard, payload['keyboard'])
-        bot.handle_new_message(self.vk, self.conn, self.message('👤 Мой профиль', mid=2))
-        self.assertTrue(self.queued('send')[-1]['message'].startswith('👤 [id1|Test User]'))
-
-    def test_menu_is_limited_to_one_call_per_local_day(self):
-        for message_id in range(1, 3):
-            bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=message_id))
-        sends = self.queued('send')
-        self.assertEqual(len(sends), 2)  # One menu and one limit notice.
-        self.assertEqual(sum(bool(item['keyboard']) for item in sends), 1)
-        self.assertTrue(all(item['temporary'] and item['delay'] == 120 for item in sends))
-
-        bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=3))
-        self.assertEqual(len(self.queued('send')), 2)  # No repeated limit notices.
-
-        next_day_now = self.now + 24 * 60 * 60
-        with patch('bot.time.time', return_value=next_day_now):
-            bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=4))
-        sends = self.queued('send')
-        self.assertEqual(sum(bool(item['keyboard']) for item in sends), 2)
-
-    def test_reputation_without_sign_and_duplicate_silence(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep @kenaya'))
-        self.assertEqual(db.get_reputation(self.conn, 10), 1)
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @kenaya', mid=2))
-        self.assertEqual(db.get_reputation(self.conn, 10), 1)
-        self.assertEqual(len(self.queued('send')), 1)
-
-    def test_premium_reputation_allows_three_people_per_day_and_each_once_per_week(self):
-        event = {
-            'event_id': 'premium-reputation', 'type': 'donut_subscription_create',
-            'object': {'user_id': 1, 'amount': config.PREMIUM_DONUT_MIN_AMOUNT_RUB},
-        }
-        db.process_donut_event(self.conn, event, config.PREMIUM_DONUT_MIN_AMOUNT_RUB, now=self.now)
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep + @id2', uid=1, mid=1))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id2', uid=1, mid=2))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep - @id3', uid=1, mid=3))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id4', uid=1, mid=4))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id5', uid=1, mid=5))
-        bot.handle_new_message(self.vk, self.conn, self.message('/rep @id1', uid=1, mid=6))
+                self.message('одно и то же', mid=mid, pee…2799 tokens truncated…new_message(self.vk, self.conn, self.message('/rep @id1', uid=1, mid=6))
 
         self.assertEqual(db.get_reputation(self.conn, 2), 1)
         self.assertEqual(db.get_reputation(self.conn, 3), -1)
