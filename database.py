@@ -701,18 +701,23 @@ def count_marriage_pairs(conn: sqlite3.Connection) -> int:
         ).fetchone()[0])
 
 
-def divorce_marriage(conn: sqlite3.Connection, initiator_id: int, target_id: int):
+def divorce_marriage(conn: sqlite3.Connection, initiator_id: int, target_id: int,
+                    allow_any: bool = False):
     initiator_id, target_id = int(initiator_id), int(target_id)
     with atomic(conn):
+        # Regular users may only end their own marriage. For administrators,
+        # target_id identifies either spouse in any registered pair.
+        lookup_id = target_id if allow_any else initiator_id
         row = conn.execute(
             "SELECT partner_id, married_at FROM marriages WHERE user_id = ?",
-            (initiator_id,),
+            (lookup_id,),
         ).fetchone()
-        if not row or int(row["partner_id"]) != target_id:
+        if not row or (not allow_any and int(row["partner_id"]) != target_id):
             return None
+        partner_id = int(row["partner_id"])
         conn.execute("DELETE FROM marriages WHERE user_id IN (?, ?)",
-                     (initiator_id, target_id))
-        return int(row["partner_id"]), int(row["married_at"])
+                     (lookup_id, partner_id))
+        return partner_id, int(row["married_at"])
 
 
 def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: str,
