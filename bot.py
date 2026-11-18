@@ -1236,26 +1236,28 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
 
     divorce_match = re.fullmatch(r"/развод(?:\s+\+?\s*(.+))?", stripped, re.IGNORECASE)
     if divorce_match:
-        if not db.is_donut_premium_user(conn, from_id):
-            send_bot_message(vk, "💎 Команда /развод доступна участникам с активной Don-подпиской.", temporary=True)
-            return True
         target_text = divorce_match.group(1)
         if not target_text:
-            send_bot_message(vk, "💔 Использование: /развод + @username своего супруга", temporary=True)
+            send_bot_message(vk, "💔 Использование: /развод + @username супруга (админ может указать любого супруга)", temporary=True)
             return True
         target_id = resolve_target_user_id(vk, target_text)
         if target_id <= 0:
             send_bot_message(vk, "❗ Не нашёл пользователя. Укажи @username или @id.", temporary=True)
             return True
-        result = db.divorce_marriage(conn, from_id, target_id)
+        is_admin = from_id in config.ADMIN_IDS
+        result = db.divorce_marriage(conn, from_id, target_id, allow_any=is_admin)
         if result is None:
-            send_bot_message(vk, "💔 Развестись этой командой можно только со своим супругом.", temporary=True)
+            message = ("💔 У этого участника нет зарегистрированного супруга."
+                       if is_admin else "💔 Развестись можно только со своим супругом.")
+            send_bot_message(vk, message, temporary=True)
             return True
-        names = get_user_names(vk, [from_id, target_id])
+        partner_id, married_at = result
+        names = get_user_names(vk, [target_id, partner_id])
+        initiator_name = "администратора" if is_admin else "одного из супругов"
         send_bot_message(
             vk,
-            f"💔 {mention(from_id, names.get(from_id))} и {mention(target_id, names.get(target_id))} "
-            "больше не пара. Брак расторгнут по команде Don-участника.",
+            f"💔 {mention(target_id, names.get(target_id))} и {mention(partner_id, names.get(partner_id))} "
+            f"больше не пара. Брак расторгнут по команде {initiator_name}.",
         )
         return True
 
