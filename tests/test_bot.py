@@ -156,6 +156,9 @@ class BotTests(unittest.TestCase):
         proposal = self.queued('send')[-1]['message']
         self.assertIn('предлагает', proposal)
         self.assertIn('/да @id1', proposal)
+        self.vk.messages.getConversationMembers.assert_called_with(
+            peer_id=config.CHAT_PEER_ID, member_ids='1,2', count=2,
+        )
         self.assertIsNone(db.get_marriage(self.conn, 1))
 
         bot.handle_new_message(self.vk, self.conn, self.message('/да @id1', uid=3, mid=2))
@@ -892,7 +895,7 @@ class BotTests(unittest.TestCase):
         }
         bot.scan_chat_blacklist(self.vk, self.conn)
         self.vk.messages.getConversationMembers.assert_called_once_with(
-            peer_id=config.CHAT_PEER_ID, count=1000, offset=0,
+            peer_id=config.CHAT_PEER_ID, member_ids='10', count=1,
         )
         self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
 
