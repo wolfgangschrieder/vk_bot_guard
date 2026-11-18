@@ -546,6 +546,39 @@ class BotTests(unittest.TestCase):
         profile = self.queued("send")[-1]["message"]
         self.assertIn("🤖 Секс-машина: +1", profile)
 
+    def test_new_traits_have_commands_and_flag_alias(self):
+        traits = (
+            ("нормис", "нормис", "😐", "Нормис"),
+            ("подпивас", "подпивас", "🍺", "Подпивас"),
+            ("ловилас", "ловилас", "😏", "Ловилас"),
+            ("котик", "котик", "🐈", "Котик"),
+            ("игнорщик", "игнорщик", "👻", "Игнорщик"),
+            ("бабник", "бабник", "💔", "Бабник"),
+            ("качок", "качок", "💪", "Качок"),
+            ("суетолог", "суетолог", "🏃", "Суетолог"),
+            ("гадалка", "гадалка", "🔮", "Гадалка"),
+            ("флаг", "редфлаг", "🚩", "Ред флаг"),
+            ("рэпер", "рэпер", "🎤", "Рэпер"),
+            ("рокер", "рокер", "🤘", "Рокер"),
+            ("чибик", "чибик", "🐶", "Чибик"),
+            ("мажор", "мажор", "💸", "Мажор"),
+            ("анимэшник", "анимэшник", "🎌", "Анимэшник"),
+            ("тролль", "тролль", "🧌", "Тролль"),
+            ("леди", "леди", "👒", "Леди"),
+            ("красотка", "красотка", "💄", "Красотка"),
+            ("хабалка", "хабалка", "🗣️", "Хабалка"),
+            ("вертихвостка", "вертихвостка", "🦋", "Вертихвостка"),
+            ("фитоняшка", "фитоняшка", "🏋️‍♀️", "Фитоняшка"),
+            ("содержанка", "содержанка", "💎", "Содержанка"),
+        )
+        for index, (command, trait, emoji, title) in enumerate(traits, start=2):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message(f"/{command} + @id{index}", uid=99, mid=index),
+            )
+            self.assertEqual(db.get_user_characteristics(self.conn, index), {trait: 1})
+            self.assertIn(f"{emoji} «{title}»", self.queued("send")[-1]["message"])
+
     def test_donut_longpoll_events_activate_cancel_and_expire_status(self):
         def event(event_type, event_id, **obj):
             raw = {
