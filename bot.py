@@ -308,16 +308,21 @@ def scan_blocklist_chat(vk) -> None:
         return
 
     try:
-        response = vk.messages.getConversationMembers(
-            peer_id=config.BLOCKLIST_CHAT_PEER_ID,
-            count=1000,
-        )
-        members = response.get("items", []) if isinstance(response, dict) else []
-        present_ids = {
-            int(member.get("member_id", 0))
-            for member in members
-            if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
-        }
+        present_ids = set()
+        blocked_ids = sorted(config.BLOCKED_USER_IDS)
+        for start in range(0, len(blocked_ids), 1000):
+            batch = blocked_ids[start:start + 1000]
+            response = vk.messages.getConversationMembers(
+                peer_id=config.BLOCKLIST_CHAT_PEER_ID,
+                member_ids=",".join(map(str, batch)),
+                count=len(batch),
+            )
+            members = response.get("items", []) if isinstance(response, dict) else []
+            present_ids.update(
+                int(member.get("member_id", 0))
+                for member in members
+                if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
+            )
         for user_id in present_ids & config.BLOCKED_USER_IDS:
             remove_user_from_chat(vk, config.BLOCKLIST_CHAT_PEER_ID, user_id)
     except Exception:
@@ -339,25 +344,21 @@ def scan_chat_blacklist(vk, conn) -> None:
         return
 
     try:
-        offset = 0
         present_ids = set()
-        while True:
+        blocked_list = sorted(blocked_ids)
+        for start in range(0, len(blocked_list), 1000):
+            batch = blocked_list[start:start + 1000]
             response = vk.messages.getConversationMembers(
                 peer_id=config.CHAT_PEER_ID,
-                count=1000,
-                offset=offset,
+                member_ids=",".join(map(str, batch)),
+                count=len(batch),
             )
             members = response.get("items", []) if isinstance(response, dict) else []
-            if not members:
-                break
             present_ids.update({
                 int(member.get("member_id", 0))
                 for member in members
                 if isinstance(member, dict) and int(member.get("member_id", 0) or 0) > 0
             })
-            if len(members) < 1000:
-                break
-            offset += len(members)
         for user_id in present_ids & blocked_ids:
             remove_user_from_chat(vk, config.CHAT_PEER_ID, user_id)
     except Exception:
@@ -1045,36 +1046,36 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
     return True
 
 
-def _get_social_chat_member_ids(vk) -> set[int] | None:
-    """Return verified member IDs, or None when VK cannot verify membership."""
-    member_ids = set()
-    offset = 0
+def _get_social_chat_member_ids(vk, user_ids: tuple[int, ...]) -> set[int] | None:
+    """Check only the requested IDs instead of paging through the whole chat."""
+    requested_ids = sorted({int(user_id) for user_id in user_ids if int(user_id) > 0})
+    if not requested_ids:
+        return set()
     try:
-        while True:
-            log.info(
-                "Проверка участников для свадьбы: peer=%s offset=%s",
-                config.CHAT_PEER_ID, offset,
-            )
-            response = vk.messages.getConversationMembers(
-                peer_id=config.CHAT_PEER_ID, count=1000, offset=offset,
-            )
-            if not isinstance(response, dict) or not isinstance(response.get("items"), list):
-                return None
-            members = response["items"]
-            log.info(
-                "VK вернул участников для свадьбы: peer=%s offset=%s count=%s",
-                config.CHAT_PEER_ID, offset, len(members),
-            )
-            for member in members:
-                try:
-                    member_id = int(member.get("member_id", 0))
-                except (TypeError, ValueError, AttributeError):
-                    continue
-                if member_id > 0:
-                    member_ids.add(member_id)
-            if len(members) < 1000:
-                return member_ids
-            offset += len(members)
+        log.info(
+            "Проверка участников для свадьбы: peer=%s requested=%s",
+            config.CHAT_PEER_ID, len(requested_ids),
+        )
+        response = vk.messages.getConversationMembers(
+            peer_id=config.CHAT_PEER_ID,
+            member_ids=",".join(map(str, requested_ids)),
+            count=len(requested_ids),
+        )
+        if not isinstance(response, dict) or not isinstance(response.get("items"), list):
+            return None
+        member_ids = set()
+        for member in response["items"]:
+            try:
+                member_id = int(member.get("member_id", 0))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if member_id > 0:
+                member_ids.add(member_id)
+        log.info(
+            "VK подтвердил участников для свадьбы: peer=%s found=%s",
+            config.CHAT_PEER_ID, len(member_ids),
+        )
+        return member_ids
     except Exception:
         log.exception("Не удалось проверить участников перед командой свадьбы.")
         return None
@@ -1083,7 +1084,7 @@ def _get_social_chat_member_ids(vk) -> set[int] | None:
 def _wedding_pair_is_eligible(vk, conn, user_ids: tuple[int, int]) -> bool | None:
     if any(db.is_chat_blacklisted(conn, user_id) for user_id in user_ids):
         return False
-    members = _get_social_chat_member_ids(vk)
+    members = _get_social_chat_member_ids(vk, user_ids)
     if members is None:
         return None
     return all(user_id in members for user_id in user_ids)
