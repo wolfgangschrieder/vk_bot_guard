@@ -1598,6 +1598,18 @@ def get_top_user_messages(
     return [(int(row["user_id"]), int(row["messages"])) for row in rows]
 
 
+def get_top_reputation(conn: sqlite3.Connection, limit: int = 10) -> list[tuple[int, int]]:
+    """Return users with positive net reputation, highest first."""
+    with _lock:
+        rows = conn.execute(
+            "SELECT receiver_id, SUM(value) AS reputation FROM reputation_votes "
+            "GROUP BY receiver_id HAVING SUM(value) > 0 "
+            "ORDER BY reputation DESC, receiver_id ASC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    return [(int(row["receiver_id"]), int(row["reputation"])) for row in rows]
+
+
 def has_reputation_vote(
     conn: sqlite3.Connection,
     giver_id: int,
