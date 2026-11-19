@@ -983,6 +983,28 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_reputation(self.conn, 10), 1)
         self.assertEqual(len(self.queued('send')), 1)
 
+    def test_reputation_top_lists_highest_net_scores_first(self):
+        votes = ((10, 2, 1), (11, 2, 1), (12, 3, 1), (15, 3, 1),
+                 (16, 3, 1), (13, 4, 1), (14, 4, 1), (17, 5, -1))
+        self.conn.executemany(
+            'INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) '
+            'VALUES (?, ?, ?, ?, ?)',
+            [(giver, receiver, f'2026-W{giver}', score, self.now)
+             for giver, receiver, score in votes],
+        )
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/топ'))
+
+        report = self.queued('send')[-1]['message']
+        self.assertLess(report.index('[id3|'), report.index('[id2|'))
+        self.assertLess(report.index('[id2|'), report.index('[id4|'))
+        self.assertIn('⭐ +3', report)
+        self.assertNotIn('[id5|', report)
+
+    def test_reputation_top_has_empty_state(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/топ'))
+        self.assertIn('нет участников с положительной репутацией', self.queued('send')[-1]['message'])
+
     def test_premium_reputation_allows_three_people_per_day_and_each_once_per_week(self):
         event = {
             'event_id': 'premium-reputation', 'type': 'donut_subscription_create',
