@@ -985,7 +985,8 @@ class BotTests(unittest.TestCase):
 
     def test_reputation_top_lists_highest_net_scores_first(self):
         votes = ((10, 2, 1), (11, 2, 1), (12, 3, 1), (15, 3, 1),
-                 (16, 3, 1), (13, 4, 1), (14, 4, 1), (17, 5, -1))
+                 (16, 3, 1), (13, 4, 1), (14, 4, 1), (17, 5, -1),
+                 (18, 6, 1), (19, 7, 1), (20, 8, 1))
         self.conn.executemany(
             'INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) '
             'VALUES (?, ?, ?, ?, ?)',
@@ -998,6 +999,9 @@ class BotTests(unittest.TestCase):
         report = self.queued('send')[-1]['message']
         self.assertLess(report.index('[id3|'), report.index('[id2|'))
         self.assertLess(report.index('[id2|'), report.index('[id4|'))
+        self.assertIn('ТОП-5', report)
+        self.assertIn('[id7|', report)
+        self.assertNotIn('[id8|', report)
         self.assertIn('⭐ +3', report)
         self.assertNotIn('[id5|', report)
 
