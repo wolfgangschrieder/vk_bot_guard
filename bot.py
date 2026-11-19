@@ -1305,13 +1305,13 @@ def handle_legends_command(vk, conn, text: str) -> bool:
 def handle_reputation_top_command(vk, conn, text: str) -> bool:
     if text.strip().casefold() != "/топ":
         return False
-    top = db.get_top_reputation(conn, limit=10)
+    top = db.get_top_reputation(conn, limit=5)
     if not top:
         send_bot_message(vk, "🏆 Пока в чате нет участников с положительной репутацией.")
         return True
     names = get_user_names(vk, [user_id for user_id, _ in top])
     medals = ("🥇", "🥈", "🥉")
-    lines = ["🏆 ТОП-10 УЧАСТНИКОВ ПО РЕПУТАЦИИ"]
+    lines = ["🏆 ТОП-5 УЧАСТНИКОВ ПО РЕПУТАЦИИ"]
     for index, (user_id, score) in enumerate(top, start=1):
         rank = medals[index - 1] if index <= len(medals) else f"{index}."
         lines.append(f"{rank} {mention(user_id, names.get(user_id))} — ⭐ {score:+d}")
