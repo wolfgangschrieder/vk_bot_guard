@@ -1565,7 +1565,17 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             else int(duel["opponent_id"]) if opponent_distance > challenger_distance
             else None
         )
-        completed = db.finish_chat_duel(conn, duel["duel_id"], target_number, loser_id, int(now))
+        winner_id = None if loser_id is None else (
+            int(duel["opponent_id"]) if loser_id == int(duel["challenger_id"])
+            else int(duel["challenger_id"])
+        )
+        winner_bonus = (
+            2 if winner_id is not None and loser_id in config.ADMIN_IDS
+            and winner_id not in config.ADMIN_IDS else 1
+        )
+        completed = db.finish_chat_duel(
+            conn, duel["duel_id"], target_number, loser_id, int(now), winner_bonus,
+        )
         if not completed:
             return True
         player_ids = [int(completed["challenger_id"]), int(completed["opponent_id"])]
@@ -1583,34 +1593,27 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         if loser_id is None:
             lines.append("🤝 Ничья! Репутация и ограничения не меняются.")
         else:
-            winner_id = player_ids[1] if loser_id == player_ids[0] else player_ids[0]
             loser = mention(loser_id, names.get(loser_id))
             winner = mention(winner_id, names.get(winner_id))
-            lines.append(f"🏆 Победитель: {winner}!")
-            lines.append(f"{loser} теряет 1 ⭐ репутации.")
+            lines.append(f"🏆 Победил {winner}!")
+            lines.append(f"✨ Победителю начислено +{winner_bonus} ⭐ репутации.")
             if loser_id in config.ADMIN_IDS:
                 lines.append(
-                    f"🎭 Админ {loser}, сегодня даже тайная цель была против тебя. "
-                    "Мут и временное звание администраторам не выдаются."
+                    f"{loser} теряет 1 ⭐ репутации. Админ проиграл — без мута и звания. "
+                    "Сегодня даже тайная цель оказалась сильнее!"
                 )
             else:
                 mute_queued = apply_mute(
                     vk, peer_id, loser_id, reason="Поражение в дуэли",
-                    duration_seconds=24 * 60 * 60, now=int(now), allow_extend=True,
+                    duration_seconds=60 * 60, now=int(now), allow_extend=True,
                 )
-                if mute_queued:
-                    lines.append(
-                        f"🎯 Почётное звание на час: «{DUEL_TITLE}». "
-                        "Мут назначен на 24 часа. Через час звание будет снято."
-                    )
-                else:
-                    lines.append(
-                        f"🎯 Почётное звание на час: «{DUEL_TITLE}». "
-                        "Участник уже под мутом, действующее ограничение не продлено."
-                    )
+                lines.append(
+                    f"🥴 {loser} — {DUEL_TITLE}: −1 ⭐, мут на 1 час."
+                    if mute_queued else
+                    f"🥴 {loser} — {DUEL_TITLE}: −1 ⭐. Участник уже под мутом."
+                )
                 status_message = (
-                    f"⏰ С {loser} снято временное звание «{DUEL_TITLE}». "
-                    "Мут за дуэль продолжает действовать до окончания 24 часов."
+                    f"⏰ С {loser} снято звание «{DUEL_TITLE}». Мут за дуэль завершён."
                 )
                 db.enqueue(conn, "send", {
                     "peer_id": peer_id, "message": status_message,
