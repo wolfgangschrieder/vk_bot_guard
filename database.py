@@ -784,7 +784,12 @@ def submit_chat_duel_guess(conn: sqlite3.Connection, peer_id: int, user_id: int,
         column = "challenger_guess" if int(duel["challenger_id"]) == int(user_id) else "opponent_guess"
         if duel[column] is not None:
             return None
-        conn.execute(f"UPDATE chat_duels SET {column} = ? WHERE duel_id = ?",
+        other_column = "opponent_guess" if column == "challenger_guess" else "challenger_guess"
+        if duel[other_column] is not None and int(duel[other_column]) == int(guess):
+            result = dict(duel)
+            result["guess_occupied"] = True
+            return result
+        conn.execute(f"UPDATE chat_duels SET {column} = ?",
                      (int(guess), int(duel["duel_id"])))
         return dict(conn.execute(
             "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel["duel_id"]),)
@@ -792,7 +797,7 @@ def submit_chat_duel_guess(conn: sqlite3.Connection, peer_id: int, user_id: int,
 
 
 def finish_chat_duel(conn: sqlite3.Connection, duel_id: int, target_number: int,
-                     loser_id: int | None, now: int):
+                     loser_id: int | None, now: int, winner_bonus: int = 1):
     with atomic(conn):
         duel = conn.execute(
             "SELECT * FROM chat_duels WHERE duel_id = ? AND status = 'active'",
@@ -809,14 +814,47 @@ def finish_chat_duel(conn: sqlite3.Connection, duel_id: int, target_number: int,
         if loser_id is not None:
             local_day = datetime.fromtimestamp(int(now), config.CHAT_TZ).date()
             week_key = f"duel:{int(duel_id)}:{local_day.isoformat()}"
+            loser_id = int(loser_id)
+            winner_id = (
+                int(duel["opponent_id"]) if loser_id == int(duel["challenger_id"])
+                else int(duel["challenger_id"])
+            )
             conn.execute(
                 "INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) "
                 "VALUES (?, ?, ?, -1, ?)",
-                (-int(duel_id), int(loser_id), week_key, int(now)),
+                (-int(duel_id), loser_id, week_key, int(now)),
             )
+            conn.execute(
+                "INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) "
+                "VALUES (?, ?, ?, 1, ?)",
+                (-int(duel_id), winner_id, week_key, int(now)),
+            )
+            if int(winner_bonus) > 1:
+                conn.execute(
+                    "INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (-int(duel_id), winner_id, f"{week_key}:bonus", int(winner_bonus) - 1, int(now)),
+                )
         return dict(conn.execute(
             "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel_id),)
         ).fetchone())
+
+
+def get_chat_duel_record(conn: sqlite3.Connection, user_id: int,
+                         peer_id: int | None = None) -> tuple[int, int]:
+    peer_id = int(config.CHAT_PEER_ID if peer_id is None else peer_id)
+    with _lock:
+        row = conn.execute(
+            "SELECT "
+            "COALESCE(SUM(CASE WHEN loser_id IS NOT NULL AND "
+            "((challenger_id = ? AND loser_id = opponent_id) OR "
+            "(opponent_id = ? AND loser_id = challenger_id)) THEN 1 ELSE 0 END), 0) AS wins, "
+            "COALESCE(SUM(CASE WHEN loser_id = ? THEN 1 ELSE 0 END), 0) AS losses "
+            "FROM chat_duels WHERE peer_id = ? AND status = 'completed' AND loser_id IS NOT NULL "
+            "AND (challenger_id = ? OR opponent_id = ?)",
+            (int(user_id), int(user_id), int(user_id), peer_id, int(user_id), int(user_id)),
+        ).fetchone()
+    return int(row["wins"] or 0), int(row["losses"] or 0)
 
 
 def expire_chat_duels(conn: sqlite3.Connection, now: int) -> int:
