@@ -436,6 +436,18 @@ def has_media_attachment(message) -> bool:
             return True
     return False
 
+def has_audio_recording(message) -> bool:
+    """Return true for VK music/audio-track attachments, excluding voice messages."""
+    for attachment in message_attachments(message):
+        attachment_type = str(
+            attachment.get("type", "")
+            if isinstance(attachment, dict)
+            else getattr(attachment, "type", "")
+        ).lower()
+        if attachment_type == "audio":
+            return True
+    return False
+
 
 def has_non_text_content(message) -> bool:
     """Return true for attachments or geolocation in a message or its forwards."""
@@ -2618,6 +2630,15 @@ def process_message(vk, conn, message) -> None:
             and has_non_text_content(message)):
         delete_message(vk, message)
         log.info("Ночной режим: удалено нетекстовое сообщение user=%s peer=%s", from_id, peer_id)
+        return
+
+    if (is_bot_feature_chat(peer_id) and has_audio_recording(message)
+            and not db.is_premium_user(conn, from_id, now)
+            and not db.claim_interval_cooldown(
+                conn, from_id, "audio_recording", now, 60 * 60,
+            )):
+        delete_message(vk, message)
+        log.info("Лимит аудиозаписей: удалено сообщение user=%s peer=%s", from_id, peer_id)
         return
 
     if is_bot_feature_chat(peer_id) and any(
