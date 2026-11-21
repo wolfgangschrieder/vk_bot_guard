@@ -759,10 +759,25 @@ def accept_chat_duel(conn: sqlite3.Connection, peer_id: int, user_id: int,
         ).fetchone()
         if active:
             return "busy", None
-        if not is_admin and not try_consume_daily_command(
-            conn, user_id, "duel_participation", day_key, 1
-        ):
-            return "limit", None
+        participants = (
+            (int(duel["challenger_id"]), int(duel["challenger_id"]) in config.ADMIN_IDS),
+            (int(user_id), bool(is_admin)),
+        )
+        for participant_id, participant_is_admin in participants:
+            if participant_is_admin:
+                continue
+            used = conn.execute(
+                "SELECT used FROM daily_command_usage WHERE user_id = ? "
+                "AND command = 'duel_participation' AND day_key = ?",
+                (participant_id, str(day_key)),
+            ).fetchone()
+            if used and int(used["used"]) >= 1:
+                return "limit", None
+        for participant_id, participant_is_admin in participants:
+            if not participant_is_admin:
+                try_consume_daily_command(
+                    conn, participant_id, "duel_participation", day_key, 1
+                )
         conn.execute(
             "UPDATE chat_duels SET status = 'active', guess_until = ? WHERE duel_id = ?",
             (int(guess_until), int(duel["duel_id"])),
