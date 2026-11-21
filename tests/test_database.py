@@ -393,7 +393,44 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 7, "commands_link", "2026-11-22", 3
         ))
 
-    def test_duel_daily_quota_is_consumed_by_both_players_only_when_started_or_accepted(self):
+    def test_duel_challenge_quota_is_ten_and_play_quota_is_separate(self):
+        for attempt in range(10):
+            status, duel_id = db.create_chat_duel(
+                self.conn, 2000000002, 1, attempt + 2, 100 + attempt,
+                400 + attempt, "2026-11-21", is_admin=False,
+            )
+            self.assertEqual(status, "created")
+            with db.atomic(self.conn):
+                self.conn.execute(
+                    "UPDATE chat_duels SET status = 'expired' WHERE duel_id = ?", (duel_id,)
+                )
+        status, _ = db.create_chat_duel(
+            self.conn, 2000000002, 1, 20, 200, 500, "2026-11-21", is_admin=False,
+        )
+        self.assertEqual(status, "limit")
+
+        status, duel_id = db.create_chat_duel(
+            self.conn, 2000000002, 30, 1, 201, 501, "2026-11-21", is_admin=True,
+        )
+        self.assertEqual(status, "created")
+        status, _ = db.accept_chat_duel(
+            self.conn, 2000000002, 1, 202, 502, "2026-11-21", is_admin=False,
+        )
+        self.assertEqual(status, "accepted")
+
+    def test_admin_duel_challenge_quota_is_unlimited(self):
+        for attempt in range(11):
+            status, duel_id = db.create_chat_duel(
+                self.conn, 2000000002, 99, attempt + 1, 100 + attempt,
+                400 + attempt, "2026-11-21", is_admin=True,
+            )
+            self.assertEqual(status, "created")
+            with db.atomic(self.conn):
+                self.conn.execute(
+                    "UPDATE chat_duels SET status = 'expired' WHERE duel_id = ?", (duel_id,)
+                )
+
+    def test_duel_daily_participation_quota_is_separate_from_challenges(self):
         status, duel_id = db.create_chat_duel(
             self.conn, 2000000002, 1, 2, 100, 400, "2026-11-21", is_admin=False,
         )
