@@ -318,6 +318,66 @@ class BotTests(unittest.TestCase):
         # Ordinary users and premium users over their daily quota are handled silently.
         self.assertEqual(len(self.queued('delete')), 2)
 
+    def test_duel_closes_with_rep_loss_day_mute_and_temporary_title(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/дуэль + @id2', uid=1, mid=1))
+        self.assertIn('/принять дуэль', self.queued('send')[0]['message'])
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/принять дуэль', uid=2, mid=2))
+        with patch.object(bot.random, 'randint', return_value=49):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 42', uid=1, mid=3))
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 55', uid=2, mid=4))
+        reports = [item['message'] for item in self.queued('send')]
+        result = next(message for message in reports if 'ДУЭЛЬ ЗАВЕРШЕНА' in message)
+        self.assertIn('🎯 Тайная цель: 49', result)
+        self.assertIn('Мастер промаха', result)
+        self.assertIn('Мут назначен на 24 часа', result)
+        self.assertEqual(db.get_reputation(self.conn, 1), -1)
+        mute = self.queued('mute')[0]
+        self.assertEqual(mute['until'], self.now + 24 * 60 * 60)
+        delayed = [row for row in self.conn.execute(
+            "SELECT payload, next_attempt FROM outbox WHERE kind = 'send' ORDER BY id"
+        )]
+        delayed_status = next(row for row in delayed
+                              if 'снято временное звание' in json.loads(row['payload'])['message'])
+        self.assertEqual(delayed_status['next_attempt'], self.now + 3600)
+
+    def test_duel_tie_has_no_penalty_mute_or_temporary_status(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/дуэль + @id2', uid=1, mid=1))
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/принять дуэль', uid=2, mid=2))
+        with patch.object(bot.random, 'randint', return_value=50):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 40', uid=1, mid=3))
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 60', uid=2, mid=4))
+        result = next(item['message'] for item in self.queued('send')
+                      if 'ДУЭЛЬ ЗАВЕРШЕНА' in item['message'])
+        self.assertIn('Ничья', result)
+        self.assertEqual(self.queued('mute'), [])
+        self.assertEqual(db.get_reputation(self.conn, 1), 0)
+        self.assertEqual(db.get_reputation(self.conn, 2), 0)
+
+    def test_admin_loser_loses_reputation_but_is_not_muted_or_given_title(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/дуэль + @id2', uid=99, mid=1))
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/принять дуэль', uid=2, mid=2))
+        with patch.object(bot.random, 'randint', return_value=100):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 0', uid=99, mid=3))
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 100', uid=2, mid=4))
+        result = next(item['message'] for item in self.queued('send')
+                      if 'ДУЭЛЬ ЗАВЕРШЕНА' in item['message'])
+        self.assertIn('администраторам не выдаются', result)
+        self.assertNotIn('Мастер промаха', result)
+        self.assertEqual(self.queued('mute'), [])
+        self.assertEqual(db.get_reputation(self.conn, 99), -1)
+
     def test_chat_ad_command_is_admin_only_with_donation_button(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/реклама', uid=99))
         payload = self.queued('send')[0]
