@@ -1382,9 +1382,13 @@ class BotTests(unittest.TestCase):
                 self.vk, self.conn,
                 self.message('', uid=99, mid=3, attachments=[{'type': 'audio_message'}]),
             )
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('Обычный текст разрешён', uid=1, mid=4),
+            )
         self.assertEqual(len(self.queued('delete')), 1)
         stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
-        self.assertEqual((stats['messages'], stats['photos'], stats['voices']), (2, 0, 1))
+        self.assertEqual((stats['messages'], stats['photos'], stats['voices']), (3, 0, 1))
 
     def test_night_mode_window_uses_moscow_midnight_to_eight(self):
         for hour, minute, expected in ((0, 0, True), (7, 59, True), (8, 0, False), (23, 59, False)):
