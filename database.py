@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 class Connection(sqlite3.Connection):
@@ -229,6 +229,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_19(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (19, int(time.time())))
+            current = 19
+
+        if current < 20:
+            _migration_20(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (20, int(time.time())))
 
         conn.commit()
 
@@ -686,6 +692,115 @@ def due_chat_trials(conn: sqlite3.Connection, now: int):
             (int(now),),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+
+def _migration_20(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_nominations (
+        nomination_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        peer_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        admin_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'closed')),
+        finalized_at INTEGER NOT NULL DEFAULT 0
+    )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS chat_nominations_one_active "
+                 "ON chat_nominations(peer_id) WHERE status = 'active'")
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_nomination_votes (
+        nomination_id INTEGER NOT NULL REFERENCES chat_nominations(nomination_id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL,
+        vote INTEGER NOT NULL CHECK(vote IN (-1, 1)),
+        voted_at INTEGER NOT NULL,
+        PRIMARY KEY(nomination_id, user_id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_nomination_votes_poll "
+                 "ON chat_nomination_votes(nomination_id, vote, user_id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_nomination_awards (
+        award_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nomination_id INTEGER NOT NULL UNIQUE REFERENCES chat_nominations(nomination_id),
+        user_id INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        awarded_at INTEGER NOT NULL
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_nomination_awards_user "
+                 "ON chat_nomination_awards(user_id, category, awarded_at)")
+
+
+def create_chat_nomination(conn: sqlite3.Connection, peer_id: int, target_id: int,
+                           admin_id: int, category: str, started_at: int,
+                           expires_at: int):
+    with atomic(conn):
+        active = conn.execute(
+            "SELECT nomination_id FROM chat_nominations WHERE peer_id = ? AND status = 'active'",
+            (int(peer_id),),
+        ).fetchone()
+        if active:
+            return None
+        cursor = conn.execute(
+            "INSERT INTO chat_nominations(peer_id, target_id, admin_id, category, started_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (int(peer_id), int(target_id), int(admin_id), str(category),
+             int(started_at), int(expires_at)),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_active_chat_nomination(conn: sqlite3.Connection, peer_id: int):
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM chat_nominations WHERE peer_id = ? AND status = 'active' "
+            "ORDER BY nomination_id DESC LIMIT 1",
+            (int(peer_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def cast_chat_nomination_vote(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                              vote: int, now: int) -> str:
+    vote = int(vote)
+    if vote not in (-1, 1):
+        return "invalid"
+    with atomic(conn):
+        nomination = conn.execute(
+            "SELECT nomination_id, target_id, expires_at FROM chat_nominations "
+            "WHERE peer_id = ? AND status = 'active' ORDER BY nomination_id DESC LIMIT 1",
+            (int(peer_id),),
+        ).fetchone()
+        if not nomination or int(nomination["expires_at"]) <= int(now):
+            return "closed"
+        if int(nomination["target_id"]) == int(user_id):
+            return "target"
+        conn.execute(
+            "INSERT INTO chat_nomination_votes(nomination_id, user_id, vote, voted_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(nomination_id, user_id) DO UPDATE SET "
+            "vote = excluded.vote, voted_at = excluded.voted_at",
+            (int(nomination["nomination_id"]), int(user_id), vote, int(now)),
+        )
+        return "accepted"
+
+
+def due_chat_nominations(conn: sqlite3.Connection, now: int):
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM chat_nominations WHERE status = 'active' AND expires_at <= ? "
+            "ORDER BY nomination_id",
+            (int(now),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_chat_nomination_wins(conn: sqlite3.Connection, user_id: int,
+                             category: str = "👑 Народная номинация") -> int:
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) AS wins FROM chat_nomination_awards "
+            "WHERE user_id = ? AND category = ?",
+            (int(user_id), str(category)),
+        ).fetchone()
+    return int(row["wins"] or 0)
 
 
 def get_marriage(conn: sqlite3.Connection, user_id: int):
