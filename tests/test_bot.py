@@ -1390,6 +1390,40 @@ class BotTests(unittest.TestCase):
         stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
         self.assertEqual((stats['messages'], stats['photos'], stats['voices']), (3, 0, 1))
 
+    def test_regular_user_can_send_one_audio_track_per_hour_silently(self):
+        track = [{'type': 'audio', 'audio': {'artist': 'Artist', 'title': 'Track'}}]
+        with patch('time.time', return_value=self.now):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('', uid=1, mid=1, attachments=track))
+        with patch('time.time', return_value=self.now + 30):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('', uid=1, mid=2, attachments=track))
+        with patch('time.time', return_value=self.now + 3600):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('', uid=1, mid=3, attachments=track))
+
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(self.queued('delete')[0]['params']['message_ids'], '2')
+        self.assertEqual(self.queued('send'), [])
+        stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
+        self.assertEqual((stats['messages'], stats['music']), (2, 2))
+
+    def test_audio_track_limit_does_not_apply_to_voice_messages_premium_or_admins(self):
+        db.grant_manual_premium_month(self.conn, 2, now=self.now)
+        track = [{'type': 'audio'}]
+        voice = [{'type': 'audio_message'}]
+        for mid, user_id, attachments in (
+            (1, 1, voice), (2, 1, voice),
+            (3, 2, track), (4, 2, track),
+            (5, 99, track), (6, 99, track),
+        ):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('', uid=user_id, mid=mid, attachments=attachments),
+            )
+        self.assertEqual(self.queued('delete'), [])
+        self.assertEqual(self.queued('send'), [])
+
     def test_night_mode_window_uses_moscow_midnight_to_eight(self):
         for hour, minute, expected in ((0, 0, True), (7, 59, True), (8, 0, False), (23, 59, False)):
             timestamp = int(datetime(2026, 10, 9, hour, minute, tzinfo=config.CHAT_TZ).timestamp())
