@@ -1423,6 +1423,34 @@ class BotTests(unittest.TestCase):
         stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
         self.assertEqual((stats['messages'], stats['photos'], stats['voices']), (3, 0, 1))
 
+    def test_active_heroes_of_all_levels_can_send_media_in_night_mode(self):
+        night_now = int(datetime(2026, 10, 9, 2, 0, tzinfo=config.CHAT_TZ).timestamp())
+        monday = date(2026, 10, 9) - timedelta(days=date(2026, 10, 9).weekday())
+        for period_type, period_key, user_id in (
+            ('day', '2026-10-09', 3),
+            ('week', monday.isoformat(), 4),
+            ('month', '2026-10', 5),
+            ('year', '2026', 6),
+        ):
+            db.save_hero_title(self.conn, period_type, period_key, user_id, 100)
+
+        with patch('time.time', return_value=night_now):
+            for user_id in (3, 4, 5, 6):
+                bot.handle_new_message(
+                    self.vk, self.conn,
+                    self.message('', uid=user_id, mid=user_id,
+                                 attachments=[{'type': 'photo'}]),
+                )
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('', uid=7, mid=7, attachments=[{'type': 'photo'}]),
+            )
+
+        self.assertEqual(len(self.queued('delete')), 1)
+        self.assertEqual(self.queued('delete')[0]['params']['message_ids'], '7')
+        stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
+        self.assertEqual((stats['messages'], stats['photos']), (4, 4))
+
     def test_regular_user_can_send_one_audio_track_per_hour_silently(self):
         track = [{'type': 'audio', 'audio': {'artist': 'Artist', 'title': 'Track'}}]
         with patch('time.time', return_value=self.now):
@@ -1489,7 +1517,11 @@ class BotTests(unittest.TestCase):
         self.assertIn('👥 Рекорд активных участников: 72 (16.10.2026)', report)
         self.assertIn('⚡ Рекорд активности чата: 1900 сообщений за день (07.10.2026)', report)
         self.assertIn('🌙 Ночной режим чата включён!', report)
-        self.assertIn('Don-премиум может отправлять сообщения любого типа.', report)
+        self.assertIn(
+            'Don-премиум и действующие Герои дня, недели, месяца и года '
+            'могут отправлять сообщения любого типа.',
+            report,
+        )
 
     def test_intraday_daily_report_does_not_include_all_time_records(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
