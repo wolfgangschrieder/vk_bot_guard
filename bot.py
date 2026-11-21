@@ -668,14 +668,20 @@ def publish_project_news(vk, news_text: str) -> int:
     return send_bot_message(vk, f"📰 Новости проекта\n\n{news_text}")
 
 
-def handle_commands_link_command(vk, from_id: int, text: str,
+def handle_commands_link_command(vk, conn, from_id: int, text: str, now: int,
                                  command_message=None) -> bool:
     if not re.fullmatch(r"/команды", text.strip(), re.IGNORECASE):
         return False
     if from_id not in config.ADMIN_IDS:
-        if command_message is not None:
-            delete_message(vk, command_message)
-        return True
+        is_premium = db.is_premium_user(conn, from_id, now)
+        day_key = datetime.fromtimestamp(int(now), config.CHAT_TZ).date().isoformat()
+        allowed = is_premium and db.try_consume_daily_command(
+            conn, from_id, "commands_link", day_key, 3
+        )
+        if not allowed:
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
     publish_commands_link(vk, peer_id=peer_id)
     return True
@@ -2283,7 +2289,7 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return True
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
-    if handle_commands_link_command(vk, from_id, stripped, command_message):
+    if handle_commands_link_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_donut_promo_command(vk, from_id, stripped, command_message):
         return True
