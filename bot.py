@@ -477,6 +477,16 @@ def is_night_mode_active(now=None) -> bool:
     return 0 <= local.hour < config.MORNING_POST_HOUR
 
 
+def is_active_chat_hero(conn, user_id: int, now=None) -> bool:
+    timestamp = int(time.time()) if now is None else int(now)
+    local_date = datetime.fromtimestamp(timestamp, config.CHAT_TZ).date()
+    if db.get_active_hero_title(conn, user_id, local_date) is not None:
+        return True
+    # Preserve the legacy daily-hero records during/after database migrations.
+    legacy = db.get_king(conn, local_date - timedelta(days=1))
+    return bool(legacy and int(legacy[0]) == int(user_id))
+
+
 def has_sticker_attachment(message) -> bool:
     return any(
         str(
@@ -895,7 +905,7 @@ def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False,
         report += (
             "\n\n🌙 Ночной режим чата включён!\n"
             "С 00:00 до 08:00 обычным участникам доступны только текстовые сообщения. "
-            "Don-премиум может отправлять сообщения любого типа."
+            "Don-премиум и действующие Герои дня, недели, месяца и года могут отправлять сообщения любого типа."
         )
     return send_bot_message(vk, report) > 0
 
@@ -2665,6 +2675,7 @@ def process_message(vk, conn, message) -> None:
 
     if (is_bot_feature_chat(peer_id) and is_night_mode_active(now)
             and not db.is_premium_user(conn, from_id, now)
+            and not is_active_chat_hero(conn, from_id, now)
             and has_non_text_content(message)):
         delete_message(vk, message)
         log.info("Ночной режим: удалено нетекстовое сообщение user=%s peer=%s", from_id, peer_id)
