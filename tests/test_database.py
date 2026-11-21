@@ -393,6 +393,25 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 7, "commands_link", "2026-11-22", 3
         ))
 
+    def test_duel_daily_quota_is_consumed_by_both_players_only_when_started_or_accepted(self):
+        status, duel_id = db.create_chat_duel(
+            self.conn, 2000000002, 1, 2, 100, 400, "2026-11-21", is_admin=False,
+        )
+        self.assertEqual(status, "created")
+        self.assertIsNotNone(duel_id)
+        status, _ = db.accept_chat_duel(
+            self.conn, 2000000002, 2, 101, 401, "2026-11-21", is_admin=False,
+        )
+        self.assertEqual(status, "accepted")
+        self.assertEqual(db.get_chat_duel(self.conn, duel_id)["status"], "active")
+        self.assertEqual(db.create_chat_duel(
+            self.conn, 2000000002, 1, 3, 102, 402, "2026-11-21", is_admin=False,
+        )[0], "busy")
+        self.assertTrue(db.submit_chat_duel_guess(self.conn, 2000000002, 1, 44, 110))
+        result = db.submit_chat_duel_guess(self.conn, 2000000002, 2, 51, 111)
+        self.assertEqual(result["challenger_guess"], 44)
+        self.assertEqual(result["opponent_guess"], 51)
+
     def test_characteristic_limits_and_signed_score(self):
         common = dict(regular_weekly_limit=1, premium_daily_limit=2, now=100)
         self.assertEqual(db.give_characteristic(
