@@ -323,7 +323,11 @@ class BotTests(unittest.TestCase):
     def test_duel_closes_with_rep_loss_day_mute_and_temporary_title(self):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/дуэль + @id2', uid=1, mid=1))
-        self.assertIn('/принять', self.queued('send')[0]['message'])
+        challenge = self.queued('send')[0]['message']
+        self.assertIn('/принять', challenge)
+        self.assertIn('командой /число 50', challenge)
+        self.assertIn('Бот выберет случайное число.', challenge)
+        self.assertIn('до 10 вызовов участникам чата', challenge)
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=49):
@@ -333,7 +337,10 @@ class BotTests(unittest.TestCase):
                                    self.message('/число 55', uid=2, mid=4))
         reports = [item['message'] for item in self.queued('send')]
         result = next(message for message in reports if 'ДУЭЛЬ ЗАВЕРШЕНА' in message)
-        self.assertIn('🎯 Тайная цель: 49', result)
+        self.assertIn('🎯 Загаданное ботом число: 49', result)
+        self.assertIn('🏆 Победил ', result)
+        self.assertIn('✨ Победителю начислено +1 ⭐ репутации.', result)
+        self.assertIn('−1 репутация ⭐, мут на 1 час.', result)
         self.assertIn('Неудачник', result)
         self.assertIn('мут на 1 час', result)
         self.assertEqual(db.get_reputation(self.conn, 1), -1)
