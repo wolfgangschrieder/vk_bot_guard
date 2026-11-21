@@ -103,6 +103,10 @@ class BotTests(unittest.TestCase):
         self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
 
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/профиль @kenaya', uid=99, mid=2))
+        self.assertEqual(self.queued('send')[1]['message'].splitlines()[0], '👤 [id10|Test User]')
+
     def test_admin_profile_has_distinct_shield_status_and_keeps_message_rank(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/profile @id99', uid=1))
         profile = self.queued('send')[0]['message']
@@ -358,9 +362,10 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/дуэли', uid=1))
         payload = self.queued('send')[0]
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
-        for expected in ('/дуэль + @username', '/принять', '/число 42',
+        for expected in ('/дуэль @username', '/принять', '/число 42',
                          'до 3 вызовов', 'Четвёртый вызов удаляется молча'):
             self.assertIn(expected, payload['message'])
+        self.assertIn('/дуэль + @username', payload['message'])
         self.assertIn('ничья', payload['message'].casefold())
 
     def test_challenge_notifies_when_target_already_played_today(self):
@@ -403,7 +408,7 @@ class BotTests(unittest.TestCase):
 
     def test_duel_rejects_a_number_already_chosen_by_the_opponent(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/дуэль + @id2', uid=1, mid=1))
+                               self.message('/дуэль @id2', uid=1, mid=1))
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=50):
