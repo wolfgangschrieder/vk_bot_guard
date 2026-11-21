@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 class Connection(sqlite3.Connection):
@@ -235,6 +235,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_20(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (20, int(time.time())))
+            current = 20
+
+        if current < 21:
+            _migration_21(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (21, int(time.time())))
 
         conn.commit()
 
@@ -942,6 +948,27 @@ def try_consume_profile_view(conn: sqlite3.Connection, user_id: int, day_key: st
             "INSERT INTO profile_view_usage(user_id, day_key, view_type, used) VALUES (?, ?, ?, 1) "
             "ON CONFLICT(user_id, day_key, view_type) DO UPDATE SET used = used + 1",
             (int(user_id), str(day_key), view_type),
+        )
+        return True
+
+
+def try_consume_daily_command(conn: sqlite3.Connection, user_id: int,
+                              command: str, day_key: str, limit: int) -> bool:
+    if int(limit) < 1:
+        return False
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT used FROM daily_command_usage "
+            "WHERE user_id = ? AND command = ? AND day_key = ?",
+            (int(user_id), str(command), str(day_key)),
+        ).fetchone()
+        if row and int(row["used"]) >= int(limit):
+            return False
+        conn.execute(
+            "INSERT INTO daily_command_usage(user_id, command, day_key, used) "
+            "VALUES (?, ?, ?, 1) "
+            "ON CONFLICT(user_id, command, day_key) DO UPDATE SET used = used + 1",
+            (int(user_id), str(command), str(day_key)),
         )
         return True
 
@@ -2262,3 +2289,16 @@ def prune_operational_history(conn, now=None):
         conn.execute('DELETE FROM outbox WHERE done_at > 0 AND done_at < ?', (cutoff,))
         conn.execute('DELETE FROM scheduler_state WHERE created_at < ?', (cutoff,))
         conn.commit()
+
+
+
+def _migration_21(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_command_usage (
+            user_id INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            day_key TEXT NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, command, day_key)
+        )
+    """)
