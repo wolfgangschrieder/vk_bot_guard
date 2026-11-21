@@ -2224,6 +2224,27 @@ def chat_rank_for_messages(total_messages: int) -> str:
     return "Новичок"
 
 
+def chat_rank_number_for_messages(total_messages: int) -> int:
+    rank_title = chat_rank_for_messages(total_messages)
+    return next(
+        number
+        for number, (_, title) in enumerate(reversed(CHAT_MESSAGE_RANKS), start=1)
+        if title == rank_title
+    )
+
+
+def format_chat_rank(total_messages: int) -> str:
+    rank_number = chat_rank_number_for_messages(total_messages)
+    rank_title = chat_rank_for_messages(total_messages)
+    level_emoji = (
+        "🥉" if rank_number <= 3 else
+        "🥈" if rank_number <= 6 else
+        "🥇" if rank_number <= 9 else
+        "👑"
+    )
+    return f"🎖 Ранг: {level_emoji} {rank_number} · {rank_title}"
+
+
 def announce_rank_achievement(vk, user_id: int, previous_total: int) -> None:
     new_total = previous_total + 1
     old_rank = chat_rank_for_messages(previous_total)
@@ -2313,7 +2334,7 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
     lines.extend([
         "",
         f"⭐ Репутация: {reputation:+d}",
-        f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
+        format_chat_rank(stats['all_time_messages']),
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ])
     nomination_wins = db.get_chat_nomination_wins(conn, target_id)
