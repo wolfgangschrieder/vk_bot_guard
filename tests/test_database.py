@@ -393,8 +393,8 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 7, "commands_link", "2026-11-22", 3
         ))
 
-    def test_duel_challenge_quota_is_ten_and_play_quota_is_separate(self):
-        for attempt in range(10):
+    def test_duel_challenge_quota_is_three_and_play_quota_is_separate(self):
+        for attempt in range(3):
             status, duel_id = db.create_chat_duel(
                 self.conn, 2000000002, 1, attempt + 2, 100 + attempt,
                 400 + attempt, "2026-11-21", is_admin=False,
