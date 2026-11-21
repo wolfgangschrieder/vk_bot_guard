@@ -36,10 +36,7 @@ CHAT_NOMINATION_TITLE = "👑 Народная номинация"
 DUEL_TITLE = "🥴 Неудачник"
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
-CHAT_RULES_URL = (
-    "https://vk.ru/vlgchat?trackcode=0xabcdefomdfZrMZkF8PJ5B1ZTpdMYwpBTNHIio0wDhKLR1j-cNofKdsC24gQfhiqkrjL4hm6lPyUSNppjaINYBh-XXyXPhMhzzyJKZxqG74I-oz8y7CExJGRDeVV4gu_Wn9K4BPgkNfNGFk5Q"
-    "&w=wall-234090559_33"
-)
+CHAT_RULES_URL = "https://vk.ru/vlgchat?w=wall-234090559_33"
 DONATE_GOAL_URL = (
     "https://vk.ru/vlgchat?w=app51528700_38291769%3FisCloseForwardPush%3Dtrue"
     "%23%3Fowner_id%3D-234090559%26type%3Dgoal%26params%3D%7B%2522goal_id%2522"
