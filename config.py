@@ -103,6 +103,10 @@ MORNING_GOOGLE_SHEET_ID = os.getenv(
     "MORNING_GOOGLE_SHEET_ID",
     "1us-ZoLGbyNYI-J6HQMHofHCPIdEcUes-Sj3KkKjqLyg",
 ).strip()
+CHAT_STATS_GOOGLE_SHEET_ID = os.getenv(
+    "CHAT_STATS_GOOGLE_SHEET_ID",
+    "1WU-LGlmZ9zmfLG11TnRm3splKHuwEBj6iFZpbFC5sqQ",
+).strip()
 GOOGLE_SERVICE_ACCOUNT_FILE = Path(os.getenv(
     "GOOGLE_SERVICE_ACCOUNT_FILE", str(BASE_DIR / "google-service-account.json")
 ).strip())
