@@ -397,7 +397,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/номинация + @id2', uid=99, mid=2))
         start = self.queued('send')[0]['message']
-        self.assertIn('👑 НАРОДНАЯ НОМИНАЦИЯ', start)
+        self.assertIn('👑 Народная номинация', start)
         self.assertIn('Сейчас чат решает, достоин ли', start)
         self.assertIn('[id2|Test User] звания', start)
         self.assertIn('за вклад в жизнь чата!', start)
