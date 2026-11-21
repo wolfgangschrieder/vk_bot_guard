@@ -347,6 +347,29 @@ class BotTests(unittest.TestCase):
                               if 'снято звание' in json.loads(row['payload'])['message'])
         self.assertEqual(delayed_status['next_attempt'], self.now + 3600)
 
+    def test_eleventh_daily_duel_invitation_is_deleted_without_reply(self):
+        for attempt in range(10):
+            target_id = attempt + 2
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message(f'/дуэль + @id{target_id}', uid=1, mid=attempt + 1),
+            )
+            duel_id = self.conn.execute(
+                "SELECT MAX(duel_id) FROM chat_duels"
+            ).fetchone()[0]
+            with db.atomic(self.conn):
+                self.conn.execute(
+                    "UPDATE chat_duels SET status = 'expired' WHERE duel_id = ?", (duel_id,)
+                )
+
+        sent_before = len(self.queued('send'))
+        bot.handle_new_message(
+            self.vk, self.conn, self.message('/дуэль + @id20', uid=1, mid=11)
+        )
+        self.assertEqual(len(self.queued('send')), sent_before)
+        deleted_ids = [item['params'].get('message_ids') for item in self.queued('delete')]
+        self.assertIn('11', deleted_ids)
+
     def test_duel_rejects_a_number_already_chosen_by_the_opponent(self):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/дуэль + @id2', uid=1, mid=1))
