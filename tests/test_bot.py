@@ -1739,7 +1739,12 @@ class BotTests(unittest.TestCase):
             )
             pending = [json.loads(row['payload']) for row in self.conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending' ORDER BY id")]
             self.assertEqual(pending[0]['hero_period_type'], period_type)
-            self.assertEqual(pending[0]['until'] - self.now, hours * 3600)
+            if period_type == 'week':
+                self.assertEqual(pending[0]['until'] - self.now, 3600)
+                self.assertEqual(len(pending), 4)
+                self.assertEqual(pending[-1]['until'] - self.now, hours * 3600)
+            else:
+                self.assertEqual(pending[0]['until'] - self.now, hours * 3600)
             db.set_command_cooldown(
                 self.conn, 1, f'hero_mute:{period_type}:{period_key}', 0, self.now
             )
