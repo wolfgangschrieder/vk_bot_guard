@@ -1167,6 +1167,27 @@ def try_consume_daily_command(conn: sqlite3.Connection, user_id: int,
         )
         return True
 
+def claim_interval_cooldown(conn: sqlite3.Connection, user_id: int,
+                            command: str, now: int, interval_seconds: int) -> bool:
+    """Claim a command slot unless the same user used it within the interval."""
+    timestamp = int(now)
+    interval = max(0, int(interval_seconds))
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT last_used_at FROM command_cooldowns "
+            "WHERE user_id = ? AND command = ? AND target_user_id = 0",
+            (int(user_id), str(command)),
+        ).fetchone()
+        if row and timestamp - int(row["last_used_at"]) < interval:
+            return False
+        conn.execute(
+            "INSERT INTO command_cooldowns(user_id, command, target_user_id, last_used_at) "
+            "VALUES (?, ?, 0, ?) ON CONFLICT(user_id, command, target_user_id) "
+            "DO UPDATE SET last_used_at = excluded.last_used_at",
+            (int(user_id), str(command), timestamp),
+        )
+        return True
+
 
 def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
                         trait_key: str, delta: int, *, is_admin: bool,
