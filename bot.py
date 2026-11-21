@@ -918,9 +918,17 @@ def publish_period_hero(
                   period_start.isoformat())
     if db.get_hero_title(conn, period_type, period_key):
         return True
-    lookback_days = {"week": 7, "month": 30, "year": 365}[period_type]
     stats_end = window_end or period_start
-    stats_start = stats_end - timedelta(days=lookback_days)
+    if period_type == "week":
+        # The title starts on Monday; count the previous complete Monday–Sunday.
+        stats_start = stats_end - timedelta(days=7)
+    elif period_type == "month":
+        # At the first of the month, count the previous calendar month in full.
+        previous_month_last_day = stats_end - timedelta(days=1)
+        stats_start = previous_month_last_day.replace(day=1)
+    else:
+        # The year title follows the existing 365-day lookback rule.
+        stats_start = stats_end - timedelta(days=365)
     top = db.get_top_user_messages(conn, stats_start, stats_end, limit=1)
     if not top:
         log.info("Герой %s не назначен: %s — нет сообщений за период", period_type, period_key)
