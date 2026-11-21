@@ -31,6 +31,7 @@ logging.basicConfig(
 log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
+CHAT_NOMINATION_TITLE = "👑 Народная номинация"
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
 DONATE_GOAL_URL = (
@@ -1408,6 +1409,8 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
         target_id = resolve_target_user_id(vk, start_match.group(1))
         if target_id <= 0 or target_id == from_id:
             return True
+        if db.get_active_chat_nomination(conn, peer_id):
+            return True
         started_at = int(now)
         expires_at = started_at + 10 * 60
         trial_id = db.create_chat_trial(
@@ -1503,6 +1506,125 @@ def finalize_due_chat_trials(vk, conn, now: int | None = None) -> int:
                              peer_id=int(trial["peer_id"]))
             finalized += 1
     return finalized
+
+
+def handle_nomination_command(vk, conn, from_id: int, text: str, now: int,
+                              command_message=None) -> bool:
+    stripped = text.strip()
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    start_match = re.fullmatch(r"/номинация\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    if start_match:
+        if from_id not in config.ADMIN_IDS:
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        target_id = resolve_target_user_id(vk, start_match.group(1))
+        if target_id <= 0 or target_id == from_id or db.get_active_chat_trial(conn, peer_id):
+            return True
+        started_at = int(now)
+        expires_at = started_at + 10 * 60
+        nomination_id = db.create_chat_nomination(
+            conn, peer_id, target_id, from_id, CHAT_NOMINATION_TITLE,
+            started_at, expires_at,
+        )
+        if nomination_id is None:
+            return True
+        name = get_user_names(vk, [target_id]).get(target_id)
+        deadline = datetime.fromtimestamp(expires_at, config.CHAT_TZ).strftime("%H:%M")
+        message = (
+            "👑 НАРОДНАЯ НОМИНАЦИЯ\n\n"
+            "Сейчас чат решает, достоин ли\n"
+            f"{mention(target_id, name)} звания\n"
+            "«👑 Народная номинация» за вклад в жизнь чата!\n\n"
+            "🗳 Голосование открыто на 10 минут:\n\n"
+            "/достоин — поддержать номинацию\n"
+            "/мимо — пока не присуждать\n\n"
+            "Голосуйте по совести — чат всё запомнит!\n"
+            f"Итоги будут в {deadline}."
+        )
+        send_bot_message(vk, message, peer_id=peer_id)
+        return True
+
+    vote_match = re.fullmatch(r"/(достоин|мимо)", stripped, re.IGNORECASE)
+    if vote_match:
+        vote = 1 if vote_match.group(1).casefold() == "достоин" else -1
+        db.cast_chat_nomination_vote(conn, peer_id, from_id, vote, int(now))
+        return True
+    return False
+
+
+def finalize_due_chat_nominations(vk, conn, now: int | None = None) -> int:
+    """Close expired nomination votes and store wins with the final post."""
+    global ACTIVE_CONN
+    ACTIVE_CONN = conn
+    timestamp = int(time.time()) if now is None else int(now)
+    finalized = 0
+    for nomination in db.due_chat_nominations(conn, timestamp):
+        with db._lock:
+            vote_rows = conn.execute(
+                "SELECT user_id FROM chat_nomination_votes WHERE nomination_id = ? ORDER BY user_id",
+                (nomination["nomination_id"],),
+            ).fetchall()
+        voter_ids = [int(row["user_id"]) for row in vote_rows]
+        names = get_user_names(vk, [nomination["target_id"], *voter_ids])
+
+        with db.atomic(conn):
+            changed = conn.execute(
+                "UPDATE chat_nominations SET status = 'closed', finalized_at = ? "
+                "WHERE nomination_id = ? AND status = 'active' AND expires_at <= ?",
+                (timestamp, nomination["nomination_id"], timestamp),
+            ).rowcount
+            if not changed:
+                continue
+            votes = conn.execute(
+                "SELECT user_id, vote FROM chat_nomination_votes WHERE nomination_id = ? "
+                "ORDER BY user_id",
+                (nomination["nomination_id"],),
+            ).fetchall()
+            worthy_ids = [int(row["user_id"]) for row in votes if int(row["vote"]) == 1]
+            pass_ids = [int(row["user_id"]) for row in votes if int(row["vote"]) == -1]
+            won = len(worthy_ids) > len(pass_ids)
+            target_id = int(nomination["target_id"])
+            target_name = mention(target_id, names.get(target_id))
+            category = str(nomination["category"])
+            if won:
+                conn.execute(
+                    "INSERT OR IGNORE INTO chat_nomination_awards "
+                    "(nomination_id, user_id, category, awarded_at) VALUES (?, ?, ?, ?)",
+                    (int(nomination["nomination_id"]), target_id, category, timestamp),
+                )
+                result_lines = [
+                    "🏆 ПРИЗНАНИЕ ПРИСУЖДЕНО",
+                    "",
+                    f"{target_name} получает звание",
+                    f"«{category}»",
+                    "",
+                    f"🔵 Достоин — {len(worthy_ids)}",
+                    format_court_voters(worthy_ids, names),
+                    "",
+                    f"⚪ Мимо — {len(pass_ids)}",
+                    format_court_voters(pass_ids, names),
+                    "",
+                    "Чат заметил твой вклад — и теперь это останется в профиле 💛",
+                ]
+            else:
+                result_lines = [
+                    "🏅 ИТОГИ ГОЛОСОВАНИЯ",
+                    "",
+                    f"За номинацию «{category}»:",
+                    "",
+                    f"🔵 Достоин — {len(worthy_ids)}",
+                    format_court_voters(worthy_ids, names),
+                    "",
+                    f"⚪ Мимо — {len(pass_ids)}",
+                    format_court_voters(pass_ids, names),
+                    "",
+                    "В этот раз признание не присуждено.",
+                ]
+            send_bot_message(vk, "\n".join(result_lines), peer_id=int(nomination["peer_id"]))
+            finalized += 1
+    return finalized
+
 
 
 def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> bool:
@@ -1857,6 +1979,12 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         f"🎖 Ранг: {chat_rank_for_messages(stats['all_time_messages'])}",
         f"💬 Сообщений за всё время: {stats['all_time_messages']:,}".replace(",", " "),
     ])
+    nomination_wins = db.get_chat_nomination_wins(conn, target_id)
+    if nomination_wins:
+        lines.append(
+            f"{CHAT_NOMINATION_TITLE} — "
+            f"{count_label(nomination_wins, 'победа', 'победы', 'побед')}"
+        )
     if marriage:
         partner_id, married_at = marriage
         married_on = datetime.fromtimestamp(married_at, config.CHAT_TZ).strftime("%d.%m.%Y")
@@ -2145,6 +2273,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_manual_premium_command(vk, conn, from_id, stripped, now):
         return True
     if handle_court_command(vk, conn, from_id, stripped, now, command_message):
+        return True
+    if handle_nomination_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_admin_ban_command(vk, conn, from_id, stripped, now):
         return True
@@ -2590,6 +2720,7 @@ def scheduler_tick(vk, conn, now=None):
     ACTIVE_CONN = conn
     now = datetime.now(config.CHAT_TZ) if now is None else now.astimezone(config.CHAT_TZ)
     finalize_due_chat_trials(vk, conn, int(now.timestamp()))
+    finalize_due_chat_nominations(vk, conn, int(now.timestamp()))
     today_midnight = datetime.combine(now.date(), datetime.min.time(), config.CHAT_TZ)
     morning_at = today_midnight.replace(hour=config.MORNING_POST_HOUR)
     morning_event_key = f"morning:{now.date().isoformat()}"
