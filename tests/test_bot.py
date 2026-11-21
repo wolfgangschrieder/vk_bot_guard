@@ -363,6 +363,21 @@ class BotTests(unittest.TestCase):
             self.assertIn(expected, payload['message'])
         self.assertIn('ничья', payload['message'].casefold())
 
+    def test_challenge_notifies_when_target_already_played_today(self):
+        day_key = datetime.fromtimestamp(self.now, config.CHAT_TZ).date().isoformat()
+        self.assertTrue(db.try_consume_daily_command(
+            self.conn, 2, 'duel_participation', day_key, 1,
+        ))
+        bot.handle_new_message(
+            self.vk, self.conn,
+            self.message('/дуэль + @id2', uid=1, mid=1),
+        )
+        sent = [item['message'] for item in self.queued('send')]
+        self.assertEqual(len(sent), 1)
+        self.assertIn('уже была дуэль сегодня', sent[0].casefold())
+        self.assertIn('после 00:00 по Москве', sent[0])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM chat_duels').fetchone()[0], 0)
+
     def test_eleventh_daily_duel_invitation_is_deleted_without_reply(self):
         for attempt in range(10):
             target_id = attempt + 2
