@@ -600,6 +600,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('🌦 Волгоград:', report)
         self.assertIn('🧥 Совет дня: Возьми с собой зонт.', report)
         self.assertIn('💬 Вопрос дня: Что сегодня может сделать день лучше?', report)
+        self.assertIn('🌅 Ночной режим чата отключён.', report)
 
     def test_morning_post_is_scheduled_once_at_eight_moscow_time(self):
         morning = datetime(2026, 10, 9, 8, 5, tzinfo=config.CHAT_TZ)
@@ -616,6 +617,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(morning_reports), 1)
         self.assertIn('🧥 Совет дня: Проветри комнату.', morning_reports[0])
         self.assertIn('💬 Вопрос дня: Как настроение?', morning_reports[0])
+        self.assertIn('🌅 Ночной режим чата отключён.', morning_reports[0])
         load.assert_called_once_with(morning.date())
         weather.assert_called_once()
 
@@ -1364,6 +1366,31 @@ class BotTests(unittest.TestCase):
         stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
         self.assertEqual((stats['messages'], stats['photos']), (1, 1))
 
+    def test_night_mode_blocks_attachments_for_regular_users_only(self):
+        night_now = int(datetime(2026, 10, 9, 2, 0, tzinfo=config.CHAT_TZ).timestamp())
+        db.grant_manual_premium_month(self.conn, 2, now=night_now)
+        with patch('time.time', return_value=night_now):
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('', uid=1, mid=1, attachments=[{'type': 'photo'}]),
+            )
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('', uid=2, mid=2, attachments=[{'type': 'sticker'}]),
+            )
+            bot.handle_new_message(
+                self.vk, self.conn,
+                self.message('', uid=99, mid=3, attachments=[{'type': 'audio_message'}]),
+            )
+        self.assertEqual(len(self.queued('delete')), 1)
+        stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
+        self.assertEqual((stats['messages'], stats['photos'], stats['voices']), (2, 0, 1))
+
+    def test_night_mode_window_uses_moscow_midnight_to_eight(self):
+        for hour, minute, expected in ((0, 0, True), (7, 59, True), (8, 0, False), (23, 59, False)):
+            timestamp = int(datetime(2026, 10, 9, hour, minute, tzinfo=config.CHAT_TZ).timestamp())
+            self.assertEqual(bot.is_night_mode_active(timestamp), expected)
+
     def test_daily_report_publishes_active_users_and_activity_percent(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
         stats = {
@@ -1381,7 +1408,8 @@ class BotTests(unittest.TestCase):
         self.conn.commit()
         with patch.object(db, 'get_daily_stats', return_value=stats):
             self.assertTrue(bot.publish_daily_stats(
-                self.vk, self.conn, stat_date, include_records=True
+                self.vk, self.conn, stat_date, include_records=True,
+                include_night_mode_notice=True,
             ))
 
         report = self.queued('send')[0]['message']
@@ -1389,6 +1417,8 @@ class BotTests(unittest.TestCase):
         self.assertIn('⚡ Активность чата: 150% от среднего за 7 дней', report)
         self.assertIn('👥 Рекорд активных участников: 72 (16.10.2026)', report)
         self.assertIn('⚡ Рекорд активности чата: 1900 сообщений за день (07.10.2026)', report)
+        self.assertIn('🌙 Ночной режим чата включён!', report)
+        self.assertIn('Don-премиум может отправлять сообщения любого типа.', report)
 
     def test_intraday_daily_report_does_not_include_all_time_records(self):
         stat_date = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
