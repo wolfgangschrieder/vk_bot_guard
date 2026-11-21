@@ -1541,7 +1541,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         send_bot_message(
             vk,
             "⚔️ КАК ПРОХОДИТ ДУЭЛЬ\n\n"
-            "1. Вызови участника: /дуэль + @username\n"
+            "1. Вызови участника: /дуэль @username (также работает /дуэль + @username)\n"
             "2. Он принимает вызов командой /принять в течение 5 минут.\n"
             "3. После старта оба отправляют своё число: /число 42. Можно выбрать любое "
             "число от 0 до 100, но числа соперников должны отличаться. На выбор — 5 минут.\n"
@@ -1556,7 +1556,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         )
         return True
 
-    challenge = re.fullmatch(r"/дуэль\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    challenge = re.fullmatch(r"/дуэль(?:\s*\+\s*|\s+)(.+)", stripped, re.IGNORECASE)
     if challenge:
         target_id = resolve_target_user_id(vk, challenge.group(1))
         if target_id <= 0 or target_id == int(from_id):
@@ -2224,7 +2224,7 @@ def record_social_message(vk, conn, user_id: int, message, now: int) -> None:
 
 def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
                            command_message=None) -> bool:
-    match = re.match(r"^/profile(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
+    match = re.match(r"^/(?:profile|профиль)(?:\s+(.+))?$", text.strip(), re.IGNORECASE)
     if not match:
         return False
 
