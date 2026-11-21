@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 class Connection(sqlite3.Connection):
@@ -223,6 +223,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_18(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (18, int(time.time())))
+            current = 18
+
+        if current < 19:
+            _migration_19(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (19, int(time.time())))
 
         conn.commit()
 
@@ -594,6 +600,92 @@ def _migration_18(conn):
                  "ON marriage_proposals(expires_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS marriage_proposals_target "
                  "ON marriage_proposals(target_id, expires_at)")
+
+
+
+def _migration_19(conn):
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_trials (
+        trial_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        peer_id INTEGER NOT NULL,
+        target_id INTEGER NOT NULL,
+        admin_id INTEGER NOT NULL,
+        started_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'closed')),
+        finalized_at INTEGER NOT NULL DEFAULT 0
+    )""")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS chat_trials_one_active "
+                 "ON chat_trials(peer_id) WHERE status = 'active'")
+    conn.execute("""CREATE TABLE IF NOT EXISTS chat_trial_votes (
+        trial_id INTEGER NOT NULL REFERENCES chat_trials(trial_id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL,
+        vote INTEGER NOT NULL CHECK(vote IN (-1, 1)),
+        voted_at INTEGER NOT NULL,
+        PRIMARY KEY(trial_id, user_id)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_trial_votes_trial "
+                 "ON chat_trial_votes(trial_id, vote, user_id)")
+
+
+def create_chat_trial(conn: sqlite3.Connection, peer_id: int, target_id: int,
+                      admin_id: int, started_at: int, expires_at: int):
+    with atomic(conn):
+        active = conn.execute(
+            "SELECT trial_id FROM chat_trials WHERE peer_id = ? AND status = 'active'",
+            (int(peer_id),),
+        ).fetchone()
+        if active:
+            return None
+        cursor = conn.execute(
+            "INSERT INTO chat_trials(peer_id, target_id, admin_id, started_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (int(peer_id), int(target_id), int(admin_id), int(started_at), int(expires_at)),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_active_chat_trial(conn: sqlite3.Connection, peer_id: int):
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM chat_trials WHERE peer_id = ? AND status = 'active' "
+            "ORDER BY trial_id DESC LIMIT 1",
+            (int(peer_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def cast_chat_trial_vote(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                         vote: int, now: int) -> str:
+    vote = int(vote)
+    if vote not in (-1, 1):
+        return "invalid"
+    with atomic(conn):
+        trial = conn.execute(
+            "SELECT trial_id, target_id, expires_at FROM chat_trials "
+            "WHERE peer_id = ? AND status = 'active' ORDER BY trial_id DESC LIMIT 1",
+            (int(peer_id),),
+        ).fetchone()
+        if not trial or int(trial["expires_at"]) <= int(now):
+            return "closed"
+        if int(trial["target_id"]) == int(user_id):
+            return "target"
+        conn.execute(
+            "INSERT INTO chat_trial_votes(trial_id, user_id, vote, voted_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(trial_id, user_id) DO UPDATE SET "
+            "vote = excluded.vote, voted_at = excluded.voted_at",
+            (int(trial["trial_id"]), int(user_id), vote, int(now)),
+        )
+        return "accepted"
+
+
+def due_chat_trials(conn: sqlite3.Connection, now: int):
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM chat_trials WHERE status = 'active' AND expires_at <= ? "
+            "ORDER BY trial_id",
+            (int(now),),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_marriage(conn: sqlite3.Connection, user_id: int):
