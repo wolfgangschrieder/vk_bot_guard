@@ -35,11 +35,27 @@ def format_table(table):
             f"Место {p.seat}: [id{p.user_id}|Игрок] — {p.stack} фишек"
             + (f" ({', '.join(flags)})" if flags else "")
         )
-    lines.append(f"Банк: {sum(p.committed for p in table.players.values())}")
-    if table.board:
-        lines.append("Общие карты: " + " ".join(table.board))
-    if table.stage in ("preflop", "flop", "turn", "river"):
-        lines.append(f"Ставка раунда: {table.current_bet}")
+    if table.stage == "complete":
+        if table.payouts:
+            winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
+            winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat))
+            lines.append("🏆 Итоги раздачи:")
+            for uid, chips in winners:
+                lines.append(f"• [id{uid}|Игрок] получил {chips} фишек")
+        if table.board:
+            lines.append("Общие карты: " + " ".join(table.board))
+        lines.append("Следующая раздача: /next → /ready → /start")
+    else:
+        lines.append(f"Банк: {sum(p.committed for p in table.players.values())}")
+        if table.board:
+            lines.append("Общие карты: " + " ".join(table.board))
+        if table.stage in ("preflop", "flop", "turn", "river"):
+            lines.append(f"Ставка раунда: {table.current_bet}")
+            if table.turn:
+                acting = table.players[table.turn]
+                to_call = max(0, table.current_bet - acting.street_bet)
+                lines.append(f"▶ [id{table.turn}|Игрок], к уравниванию: {to_call} фишек")
+                lines.append(f"Минимальное повышение: {table.min_raise} фишек")
     return "\n".join(lines)
 
 
