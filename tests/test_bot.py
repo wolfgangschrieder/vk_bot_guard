@@ -347,6 +347,15 @@ class BotTests(unittest.TestCase):
                               if 'снято звание' in json.loads(row['payload'])['message'])
         self.assertEqual(delayed_status['next_attempt'], self.now + 3600)
 
+    def test_duels_help_command_explains_rules_for_chat_users(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/дуэли', uid=1))
+        payload = self.queued('send')[0]
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
+        for expected in ('/дуэль + @username', '/принять', '/число 42',
+                         'до 10 вызовов', 'Одиннадцатый вызов удаляется молча'):
+            self.assertIn(expected, payload['message'])
+        self.assertIn('ничья', payload['message'].casefold())
+
     def test_eleventh_daily_duel_invitation_is_deleted_without_reply(self):
         for attempt in range(10):
             target_id = attempt + 2
