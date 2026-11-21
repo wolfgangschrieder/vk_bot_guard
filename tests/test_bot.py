@@ -99,6 +99,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(profile.splitlines()[0], '👤 [id10|Test User]')
         self.assertNotIn('🛡️ АДМИНИСТРАТОР ЧАТА', profile)
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
         self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
 
@@ -141,6 +142,7 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertTrue(profile.startswith('👤 [id10|Test User]'))
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
+        self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
         self.assertIn('⭐ Репутация: +12', profile)
         self.assertIn('🎖 Ранг: Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
@@ -321,9 +323,9 @@ class BotTests(unittest.TestCase):
     def test_duel_closes_with_rep_loss_day_mute_and_temporary_title(self):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/дуэль + @id2', uid=1, mid=1))
-        self.assertIn('/принять дуэль', self.queued('send')[0]['message'])
+        self.assertIn('/принять', self.queued('send')[0]['message'])
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/принять дуэль', uid=2, mid=2))
+                               self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=49):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('/число 42', uid=1, mid=3))
@@ -332,23 +334,40 @@ class BotTests(unittest.TestCase):
         reports = [item['message'] for item in self.queued('send')]
         result = next(message for message in reports if 'ДУЭЛЬ ЗАВЕРШЕНА' in message)
         self.assertIn('🎯 Тайная цель: 49', result)
-        self.assertIn('Мастер промаха', result)
-        self.assertIn('Мут назначен на 24 часа', result)
+        self.assertIn('Неудачник', result)
+        self.assertIn('мут на 1 час', result)
         self.assertEqual(db.get_reputation(self.conn, 1), -1)
+        self.assertEqual(db.get_reputation(self.conn, 2), 1)
         mute = self.queued('mute')[0]
-        self.assertEqual(mute['until'], self.now + 24 * 60 * 60)
+        self.assertEqual(mute['until'], self.now + 60 * 60)
         delayed = [row for row in self.conn.execute(
             "SELECT payload, next_attempt FROM outbox WHERE kind = 'send' ORDER BY id"
         )]
         delayed_status = next(row for row in delayed
-                              if 'снято временное звание' in json.loads(row['payload'])['message'])
+                              if 'снято звание' in json.loads(row['payload'])['message'])
         self.assertEqual(delayed_status['next_attempt'], self.now + 3600)
+
+    def test_duel_rejects_a_number_already_chosen_by_the_opponent(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/дуэль + @id2', uid=1, mid=1))
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/принять', uid=2, mid=2))
+        with patch.object(bot.random, 'randint', return_value=50):
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 50', uid=1, mid=3))
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 50', uid=2, mid=4))
+            self.assertIn('Число 50 уже занято', self.queued('send')[-1]['message'])
+            bot.handle_new_message(self.vk, self.conn,
+                                   self.message('/число 51', uid=2, mid=5))
+        self.assertEqual(db.get_chat_duel_record(self.conn, 1), (1, 0))
+        self.assertEqual(db.get_chat_duel_record(self.conn, 2), (0, 1))
 
     def test_duel_tie_has_no_penalty_mute_or_temporary_status(self):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/дуэль + @id2', uid=1, mid=1))
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/принять дуэль', uid=2, mid=2))
+                               self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=50):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('/число 40', uid=1, mid=3))
@@ -365,7 +384,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/дуэль + @id2', uid=99, mid=1))
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/принять дуэль', uid=2, mid=2))
+                               self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=100):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('/число 0', uid=99, mid=3))
@@ -373,10 +392,11 @@ class BotTests(unittest.TestCase):
                                    self.message('/число 100', uid=2, mid=4))
         result = next(item['message'] for item in self.queued('send')
                       if 'ДУЭЛЬ ЗАВЕРШЕНА' in item['message'])
-        self.assertIn('администраторам не выдаются', result)
-        self.assertNotIn('Мастер промаха', result)
+        self.assertIn('без мута и звания', result)
+        self.assertNotIn('Неудачник', result)
         self.assertEqual(self.queued('mute'), [])
         self.assertEqual(db.get_reputation(self.conn, 99), -1)
+        self.assertEqual(db.get_reputation(self.conn, 2), 2)
 
     def test_chat_ad_command_is_admin_only_with_donation_button(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/реклама', uid=99))
@@ -1172,7 +1192,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=3))
         self.assertEqual(len(self.queued('send')), 2)  # No repeated limit notices.
 
-        next_day_now = self.now + 24 * 60 * 60
+        next_day_now = self.now + 60 * 60
         with patch('bot.time.time', return_value=next_day_now):
             bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=4))
         sends = self.queued('send')
