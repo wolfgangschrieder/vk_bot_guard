@@ -2133,6 +2133,7 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
 
     reputation = db.get_reputation(conn, target_id)
     marriage = db.get_marriage(conn, target_id)
+    duel_record = db.get_chat_duel_record(conn, target_id)
     names = get_user_names(vk, [target_id] + ([marriage[0]] if marriage else []))
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
     stats = db.get_user_profile_stats(conn, target_id, today)
@@ -2202,6 +2203,8 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
             f"(последний: {last_label})"
         )
     lines.extend([
+        "",
+        f"⚔️ ДУЭЛИ (победы/поражения): {duel_record[0]}/{duel_record[1]}",
         "",
         "📊 АКТИВНОСТЬ",
         f"Сегодня: {count_label(stats['today'], 'сообщение', 'сообщения', 'сообщений')}",
