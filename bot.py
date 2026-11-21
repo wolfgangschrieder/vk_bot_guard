@@ -36,6 +36,10 @@ CHAT_NOMINATION_TITLE = "👑 Народная номинация"
 DUEL_TITLE = "🥴 Неудачник"
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
+CHAT_RULES_URL = (
+    "https://vk.ru/vlgchat?trackcode=0xabcdefomdfZrMZkF8PJ5B1ZTpdMYwpBTNHIio0wDhKLR1j-cNofKdsC24gQfhiqkrjL4hm6lPyUSNppjaINYBh-XXyXPhMhzzyJKZxqG74I-oz8y7CExJGRDeVV4gu_Wn9K4BPgkNfNGFk5Q"
+    "&w=wall-234090559_33"
+)
 DONATE_GOAL_URL = (
     "https://vk.ru/vlgchat?w=app51528700_38291769%3FisCloseForwardPush%3Dtrue"
     "%23%3Fowner_id%3D-234090559%26type%3Dgoal%26params%3D%7B%2522goal_id%2522"
@@ -103,6 +107,19 @@ def chat_donation_keyboard() -> dict:
                 "type": "open_link",
                 "link": DONATE_GOAL_URL,
                 "label": "💛 Поддержать чат донатом",
+            },
+        }]],
+    }
+
+
+def chat_rules_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": CHAT_RULES_URL,
+                "label": "📜 Читать правила чата",
             },
         }]],
     }
@@ -689,6 +706,24 @@ def handle_donut_promo_command(vk, from_id: int, text: str,
         return True
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
     publish_chat_ad(vk, peer_id=peer_id)
+    return True
+
+
+def handle_rules_command(vk, from_id: int, text: str, command_message=None) -> bool:
+    if not re.fullmatch(r"/правила", text.strip(), re.IGNORECASE):
+        return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    send_bot_message(
+        vk,
+        "📜 Перед общением ознакомьтесь с правилами чата. "
+        "Нажмите кнопку ниже, чтобы открыть пост с правилами.",
+        peer_id=peer_id,
+        keyboard=chat_rules_keyboard(),
+    )
     return True
 
 
@@ -2541,6 +2576,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_commands_link_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_donut_promo_command(vk, from_id, stripped, command_message):
+        return True
+    if handle_rules_command(vk, from_id, stripped, command_message):
         return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
