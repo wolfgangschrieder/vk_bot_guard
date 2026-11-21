@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 class Connection(sqlite3.Connection):
@@ -241,6 +241,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_21(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (21, int(time.time())))
+            current = 21
+
+        if current < 22:
+            _migration_22(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (22, int(time.time())))
 
         conn.commit()
 
@@ -698,6 +704,130 @@ def due_chat_trials(conn: sqlite3.Connection, now: int):
             (int(now),),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+
+def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
+                     opponent_id: int, now: int, accept_until: int,
+                     day_key: str, *, is_admin: bool) -> tuple[str, int | None]:
+    with atomic(conn):
+        active = conn.execute(
+            "SELECT duel_id FROM chat_duels WHERE peer_id = ? AND status IN ('pending', 'active') "
+            "AND (challenger_id IN (?, ?) OR opponent_id IN (?, ?)) LIMIT 1",
+            (int(peer_id), int(challenger_id), int(opponent_id),
+             int(challenger_id), int(opponent_id)),
+        ).fetchone()
+        if active:
+            return "busy", None
+        if not is_admin and not try_consume_daily_command(
+            conn, challenger_id, "duel", day_key, 1
+        ):
+            return "limit", None
+        cursor = conn.execute(
+            "INSERT INTO chat_duels(peer_id, challenger_id, opponent_id, status, created_at, accept_until) "
+            "VALUES (?, ?, ?, 'pending', ?, ?)",
+            (int(peer_id), int(challenger_id), int(opponent_id), int(now), int(accept_until)),
+        )
+        return "created", int(cursor.lastrowid)
+
+
+def get_chat_duel(conn: sqlite3.Connection, duel_id: int):
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel_id),)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def accept_chat_duel(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                     now: int, guess_until: int, day_key: str,
+                     *, is_admin: bool) -> tuple[str, int | None]:
+    with atomic(conn):
+        duel = conn.execute(
+            "SELECT * FROM chat_duels WHERE peer_id = ? AND opponent_id = ? "
+            "AND status = 'pending' ORDER BY duel_id DESC LIMIT 1",
+            (int(peer_id), int(user_id)),
+        ).fetchone()
+        if not duel or int(duel["accept_until"]) <= int(now):
+            return "missing", None
+        active = conn.execute(
+            "SELECT duel_id FROM chat_duels WHERE peer_id = ? AND status IN ('pending', 'active') "
+            "AND (challenger_id = ? OR opponent_id = ?) AND duel_id != ? LIMIT 1",
+            (int(peer_id), int(user_id), int(user_id), int(duel["duel_id"])),
+        ).fetchone()
+        if active:
+            return "busy", None
+        if not is_admin and not try_consume_daily_command(
+            conn, user_id, "duel", day_key, 1
+        ):
+            return "limit", None
+        conn.execute(
+            "UPDATE chat_duels SET status = 'active', guess_until = ? WHERE duel_id = ?",
+            (int(guess_until), int(duel["duel_id"])),
+        )
+        return "accepted", int(duel["duel_id"])
+
+
+def submit_chat_duel_guess(conn: sqlite3.Connection, peer_id: int, user_id: int,
+                           guess: int, now: int):
+    if not 0 <= int(guess) <= 100:
+        return None
+    with atomic(conn):
+        duel = conn.execute(
+            "SELECT * FROM chat_duels WHERE peer_id = ? AND status = 'active' "
+            "AND guess_until > ? AND (challenger_id = ? OR opponent_id = ?) "
+            "ORDER BY duel_id DESC LIMIT 1",
+            (int(peer_id), int(now), int(user_id), int(user_id)),
+        ).fetchone()
+        if not duel:
+            return None
+        column = "challenger_guess" if int(duel["challenger_id"]) == int(user_id) else "opponent_guess"
+        if duel[column] is not None:
+            return None
+        conn.execute(f"UPDATE chat_duels SET {column} = ? WHERE duel_id = ?",
+                     (int(guess), int(duel["duel_id"])))
+        return dict(conn.execute(
+            "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel["duel_id"]),)
+        ).fetchone())
+
+
+def finish_chat_duel(conn: sqlite3.Connection, duel_id: int, target_number: int,
+                     loser_id: int | None, now: int):
+    with atomic(conn):
+        duel = conn.execute(
+            "SELECT * FROM chat_duels WHERE duel_id = ? AND status = 'active'",
+            (int(duel_id),),
+        ).fetchone()
+        if not duel or duel["challenger_guess"] is None or duel["opponent_guess"] is None:
+            return None
+        conn.execute(
+            "UPDATE chat_duels SET status = 'completed', target_number = ?, loser_id = ?, completed_at = ? "
+            "WHERE duel_id = ?",
+            (int(target_number), int(loser_id) if loser_id is not None else None,
+             int(now), int(duel_id)),
+        )
+        if loser_id is not None:
+            local_day = datetime.fromtimestamp(int(now), config.CHAT_TZ).date()
+            week_key = f"duel:{int(duel_id)}:{local_day.isoformat()}"
+            conn.execute(
+                "INSERT INTO reputation_votes(giver_id, receiver_id, week_key, value, created_at) "
+                "VALUES (?, ?, ?, -1, ?)",
+                (-int(duel_id), int(loser_id), week_key, int(now)),
+            )
+        return dict(conn.execute(
+            "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel_id),)
+        ).fetchone())
+
+
+def expire_chat_duels(conn: sqlite3.Connection, now: int) -> int:
+    with atomic(conn):
+        return conn.execute(
+            "UPDATE chat_duels SET status = 'expired' WHERE status = 'pending' AND accept_until <= ?",
+            (int(now),),
+        ).rowcount + conn.execute(
+            "UPDATE chat_duels SET status = 'expired' WHERE status = 'active' AND guess_until <= ?",
+            (int(now),),
+        ).rowcount
 
 
 
@@ -2302,3 +2432,27 @@ def _migration_21(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (user_id, command, day_key)
         )
     """)
+
+
+
+def _migration_22(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chat_duels (
+            duel_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            peer_id INTEGER NOT NULL,
+            challenger_id INTEGER NOT NULL,
+            opponent_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'active', 'completed', 'expired')),
+            created_at INTEGER NOT NULL,
+            accept_until INTEGER NOT NULL,
+            guess_until INTEGER NOT NULL DEFAULT 0,
+            challenger_guess INTEGER,
+            opponent_guess INTEGER,
+            target_number INTEGER,
+            loser_id INTEGER,
+            completed_at INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_duels_participants "
+                 "ON chat_duels(peer_id, status, challenger_id, opponent_id)")
