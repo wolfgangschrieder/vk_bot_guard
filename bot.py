@@ -1514,11 +1514,10 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             f"{mention(from_id, names.get(from_id))} вызывает на дуэль "
             f"{mention(target_id, names.get(target_id))}!\n\n"
             f"Чтобы принять вызов, ответь командой /принять до {deadline}.\n"
-            "После принятия оба участника отправляют число от 0 до 100 командой /число 42.\n"
-            "Бот выберет тайную цель. Победит тот, чьё число окажется ближе.\n"
-            "Числа бот удалит после получения. При равном расстоянии будет ничья.\n"
-            "Можно отправить до 10 вызовов за московские сутки; сыграть — один раз в сутки. "
-            "Администраторам лимиты не действуют.",
+            "После принятия оба участника отправляют число от 0 до 100 командой /число 50.\n"
+            "Бот выберет случайное число. Победит тот, чьё число окажется ближе.\n"
+            "Можно отправить до 10 вызовов участникам чата за московские сутки; сыграть — один раз в сутки.\n"
+            "У администраторов ограничений нет.",
             peer_id=peer_id,
         )
         log.info("Дуэль вызвана: duel=%s peer=%s challenger=%s opponent=%s",
@@ -1607,7 +1606,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             "",
             f"{challenger}: {challenger_guess} — {challenger_distance} от цели",
             f"{opponent}: {opponent_guess} — {opponent_distance} от цели",
-            f"🎯 Тайная цель: {target_number}",
+            f"🎯 Загаданное ботом число: {target_number}",
             "",
         ]
         if loser_id is None:
@@ -1628,9 +1627,9 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
                     duration_seconds=60 * 60, now=int(now), allow_extend=True,
                 )
                 lines.append(
-                    f"🥴 {loser} — {DUEL_TITLE}: −1 ⭐, мут на 1 час."
+                    f"🥴 {loser} — {DUEL_TITLE}: −1 репутация ⭐, мут на 1 час."
                     if mute_queued else
-                    f"🥴 {loser} — {DUEL_TITLE}: −1 ⭐. Участник уже под мутом."
+                    f"🥴 {loser} — {DUEL_TITLE}: −1 репутация ⭐. Участник уже под мутом."
                 )
                 status_message = (
                     f"⏰ С {loser} снято звание «{DUEL_TITLE}». Мут за дуэль завершён."
