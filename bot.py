@@ -33,6 +33,7 @@ log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
 CHAT_NOMINATION_TITLE = "👑 Народная номинация"
+DUEL_TITLE = "🎯 Мастер промаха"
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
 DONATE_GOAL_URL = (
@@ -194,9 +195,10 @@ def apply_mute(
     rank_user_id=None,
     rank_title=None,
     rank_cooldown_key=None,
+    allow_extend=False,
 ) -> bool:
     now = int(time.time()) if now is None else int(now)
-    if db.mute_deadline(ACTIVE_CONN, peer_id, user_id) > now:
+    if db.mute_deadline(ACTIVE_CONN, peer_id, user_id) > now and not allow_extend:
         return False
     segments = max(1, int(hourly_segments))
     duration = max(1, int(duration_seconds or config.MUTE_SECONDS))
@@ -1448,6 +1450,172 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
     return False
 
 
+def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
+                        command_message=None) -> bool:
+    stripped = text.strip()
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    challenge = re.fullmatch(r"/дуэль\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    if challenge:
+        target_id = resolve_target_user_id(vk, challenge.group(1))
+        if target_id <= 0 or target_id == int(from_id):
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        if db.is_chat_blacklisted(conn, target_id) or db.is_chat_blacklisted(conn, from_id):
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        members = _get_social_chat_member_ids(vk, (from_id, target_id))
+        if members is None:
+            send_bot_message(vk, "⚠️ Не удалось проверить участников чата. Попробуйте позже.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        if from_id not in members or target_id not in members:
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        now_local = datetime.fromtimestamp(int(now), config.CHAT_TZ)
+        status, duel_id = db.create_chat_duel(
+            conn, peer_id, from_id, target_id, int(now), int(now) + 5 * 60,
+            now_local.date().isoformat(), is_admin=from_id in config.ADMIN_IDS,
+        )
+        if status == "limit":
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        if status == "busy":
+            send_bot_message(vk, "⚔️ Один из участников уже участвует в незавершённой дуэли.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        names = get_user_names(vk, [from_id, target_id])
+        deadline = datetime.fromtimestamp(int(now) + 5 * 60, config.CHAT_TZ).strftime("%H:%M")
+        send_bot_message(
+            vk,
+            "⚔️ ВЫЗОВ НА ДУЭЛЬ\n\n"
+            f"{mention(from_id, names.get(from_id))} вызывает на дуэль "
+            f"{mention(target_id, names.get(target_id))}!\n\n"
+            f"Чтобы принять вызов, ответь командой /принять дуэль до {deadline}.\n"
+            "После принятия оба участника отправляют число от 0 до 100 командой /число 42.\n"
+            "Бот выберет тайную цель. Победит тот, чьё число окажется ближе.\n"
+            "Числа бот удалит после получения. При равном расстоянии будет ничья.\n"
+            "Участие доступно раз в сутки; администраторам — без лимита.",
+            peer_id=peer_id,
+        )
+        log.info("Дуэль вызвана: duel=%s peer=%s challenger=%s opponent=%s",
+                 duel_id, peer_id, from_id, target_id)
+        return True
+
+    if re.fullmatch(r"/принять\s+дуэль", stripped, re.IGNORECASE):
+        now_local = datetime.fromtimestamp(int(now), config.CHAT_TZ)
+        status, duel_id = db.accept_chat_duel(
+            conn, peer_id, from_id, int(now), int(now) + 5 * 60,
+            now_local.date().isoformat(), is_admin=from_id in config.ADMIN_IDS,
+        )
+        if status == "limit":
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        if status == "accepted":
+            duel = db.get_chat_duel(conn, duel_id)
+            names = get_user_names(vk, [duel["challenger_id"], duel["opponent_id"]])
+            send_bot_message(
+                vk,
+                "🤝 Вызов принят!\n\n"
+                f"{mention(duel['challenger_id'], names.get(duel['challenger_id']))} и "
+                f"{mention(duel['opponent_id'], names.get(duel['opponent_id']))}, отправьте "
+                "свои числа командой /число 0–100.\n"
+                "У вас 5 минут. Числа будут удалены ботом после получения.",
+                peer_id=peer_id,
+            )
+        elif status == "busy":
+            send_bot_message(vk, "⚔️ Ты уже участвуешь в другой дуэли.",
+                             temporary=True, peer_id=peer_id)
+        else:
+            if command_message is not None:
+                delete_message(vk, command_message)
+        return True
+
+    guess_match = re.fullmatch(r"/число\s+(\d{1,3})", stripped, re.IGNORECASE)
+    if guess_match:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        guess = int(guess_match.group(1))
+        if not 0 <= guess <= 100:
+            send_bot_message(vk, "🎯 Число должно быть от 0 до 100.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        duel = db.submit_chat_duel_guess(conn, peer_id, from_id, guess, int(now))
+        if not duel:
+            return True
+        if duel["challenger_guess"] is None or duel["opponent_guess"] is None:
+            return True
+        target_number = random.randint(0, 100)
+        challenger_guess = int(duel["challenger_guess"])
+        opponent_guess = int(duel["opponent_guess"])
+        challenger_distance = abs(challenger_guess - target_number)
+        opponent_distance = abs(opponent_guess - target_number)
+        loser_id = (
+            int(duel["challenger_id"]) if challenger_distance > opponent_distance
+            else int(duel["opponent_id"]) if opponent_distance > challenger_distance
+            else None
+        )
+        completed = db.finish_chat_duel(conn, duel["duel_id"], target_number, loser_id, int(now))
+        if not completed:
+            return True
+        player_ids = [int(completed["challenger_id"]), int(completed["opponent_id"])]
+        names = get_user_names(vk, player_ids)
+        challenger = mention(player_ids[0], names.get(player_ids[0]))
+        opponent = mention(player_ids[1], names.get(player_ids[1]))
+        lines = [
+            "⚔️ ДУЭЛЬ ЗАВЕРШЕНА",
+            "",
+            f"{challenger}: {challenger_guess} — {challenger_distance} от цели",
+            f"{opponent}: {opponent_guess} — {opponent_distance} от цели",
+            f"🎯 Тайная цель: {target_number}",
+            "",
+        ]
+        if loser_id is None:
+            lines.append("🤝 Ничья! Репутация и ограничения не меняются.")
+        else:
+            winner_id = player_ids[1] if loser_id == player_ids[0] else player_ids[0]
+            loser = mention(loser_id, names.get(loser_id))
+            winner = mention(winner_id, names.get(winner_id))
+            lines.append(f"🏆 Победитель: {winner}!")
+            lines.append(f"{loser} теряет 1 ⭐ репутации.")
+            if loser_id in config.ADMIN_IDS:
+                lines.append(
+                    f"🎭 Админ {loser}, сегодня даже тайная цель была против тебя. "
+                    "Мут и временное звание администраторам не выдаются."
+                )
+            else:
+                mute_queued = apply_mute(
+                    vk, peer_id, loser_id, reason="Поражение в дуэли",
+                    duration_seconds=24 * 60 * 60, now=int(now), allow_extend=True,
+                )
+                if mute_queued:
+                    lines.append(
+                        f"🎯 Почётное звание на час: «{DUEL_TITLE}». "
+                        "Мут назначен на 24 часа. Через час звание будет снято."
+                    )
+                else:
+                    lines.append(
+                        f"🎯 Почётное звание на час: «{DUEL_TITLE}». "
+                        "Участник уже под мутом, действующее ограничение не продлено."
+                    )
+                status_message = (
+                    f"⏰ С {loser} снято временное звание «{DUEL_TITLE}». "
+                    "Мут за дуэль продолжает действовать до окончания 24 часов."
+                )
+                db.enqueue(conn, "send", {
+                    "peer_id": peer_id, "message": status_message,
+                    "temporary": True, "delay": 300, "depends_on": None,
+                    "keyboard": None,
+                }, next_attempt=int(now) + 60 * 60)
+        send_bot_message(vk, "\n".join(lines), peer_id=peer_id)
+        return True
+    return False
+
+
 def finalize_due_chat_trials(vk, conn, now: int | None = None) -> int:
     """Close expired trials and atomically queue their verdict and any mute."""
     global ACTIVE_CONN
@@ -2279,6 +2447,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
 
     if handle_manual_premium_command(vk, conn, from_id, stripped, now):
         return True
+    if handle_duel_command(vk, conn, from_id, stripped, now, command_message):
+        return True
     if handle_court_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_nomination_command(vk, conn, from_id, stripped, now, command_message):
@@ -2732,6 +2902,7 @@ def scheduler_tick(vk, conn, now=None):
             db.claim_scheduler_event(conn, export_key, int(now.timestamp()))
     finalize_due_chat_trials(vk, conn, int(now.timestamp()))
     finalize_due_chat_nominations(vk, conn, int(now.timestamp()))
+    db.expire_chat_duels(conn, int(now.timestamp()))
     today_midnight = datetime.combine(now.date(), datetime.min.time(), config.CHAT_TZ)
     morning_at = today_midnight.replace(hour=config.MORNING_POST_HOUR)
     morning_event_key = f"morning:{now.date().isoformat()}"
