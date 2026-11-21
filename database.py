@@ -711,6 +711,12 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
                      opponent_id: int, now: int, accept_until: int,
                      day_key: str, *, is_admin: bool) -> tuple[str, int | None]:
     with atomic(conn):
+        # Count challenge commands per Moscow day, including attempts made
+        # while an invitation or another duel is already active.
+        if not is_admin and not try_consume_daily_command(
+            conn, challenger_id, "duel_challenge", day_key, 10
+        ):
+            return "limit", None
         active = conn.execute(
             "SELECT duel_id FROM chat_duels WHERE peer_id = ? AND status IN ('pending', 'active') "
             "AND (challenger_id IN (?, ?) OR opponent_id IN (?, ?)) LIMIT 1",
@@ -719,10 +725,6 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
         ).fetchone()
         if active:
             return "busy", None
-        if not is_admin and not try_consume_daily_command(
-            conn, challenger_id, "duel", day_key, 1
-        ):
-            return "limit", None
         cursor = conn.execute(
             "INSERT INTO chat_duels(peer_id, challenger_id, opponent_id, status, created_at, accept_until) "
             "VALUES (?, ?, ?, 'pending', ?, ?)",
@@ -758,7 +760,7 @@ def accept_chat_duel(conn: sqlite3.Connection, peer_id: int, user_id: int,
         if active:
             return "busy", None
         if not is_admin and not try_consume_daily_command(
-            conn, user_id, "duel", day_key, 1
+            conn, user_id, "duel_participation", day_key, 1
         ):
             return "limit", None
         conn.execute(
