@@ -1532,7 +1532,7 @@ def handle_nomination_command(vk, conn, from_id: int, text: str, now: int,
         name = get_user_names(vk, [target_id]).get(target_id)
         deadline = datetime.fromtimestamp(expires_at, config.CHAT_TZ).strftime("%H:%M")
         message = (
-            "👑 НАРОДНАЯ НОМИНАЦИЯ\n\n"
+            "👑 Народная номинация\n\n"
             "Сейчас чат решает, достоин ли\n"
             f"{mention(target_id, name)} звания\n"
             "«👑 Народная номинация» за вклад в жизнь чата!\n\n"
