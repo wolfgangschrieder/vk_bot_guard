@@ -2683,6 +2683,8 @@ def process_message(vk, conn, message) -> None:
 
     if (is_bot_feature_chat(peer_id) and has_audio_recording(message)
             and not db.is_premium_user(conn, from_id, now)
+            and not (is_night_mode_active(now)
+                     and is_active_chat_hero(conn, from_id, now))
             and not db.claim_interval_cooldown(
                 conn, from_id, "audio_recording", now, 60 * 60,
             )):
