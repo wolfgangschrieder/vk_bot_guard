@@ -470,6 +470,22 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), 1)
         self.assertEqual(len(self.queued('delete')), 1)
 
+    def test_rules_command_is_admin_only_and_has_link_button(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/правила', uid=99))
+        payload = self.queued('send')[0]
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
+        self.assertIn('ознакомьтесь с правилами чата', payload['message'])
+        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
+            'type': 'open_link',
+            'link': bot.CHAT_RULES_URL,
+            'label': '📜 Читать правила чата',
+        })
+
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/правила', uid=10, mid=2))
+        self.assertEqual(len(self.queued('send')), 1)
+        self.assertEqual(len(self.queued('delete')), 1)
+
     def test_court_is_admin_only_and_opens_for_ten_minutes(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=10))
         self.assertEqual(self.queued('send'), [])
