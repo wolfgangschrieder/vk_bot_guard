@@ -393,6 +393,12 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 7, "commands_link", "2026-11-22", 3
         ))
 
+    def test_interval_cooldown_blocks_until_full_hour_has_elapsed(self):
+        self.assertTrue(db.claim_interval_cooldown(self.conn, 7, "audio_recording", 1000, 3600))
+        self.assertFalse(db.claim_interval_cooldown(self.conn, 7, "audio_recording", 4599, 3600))
+        self.assertTrue(db.claim_interval_cooldown(self.conn, 7, "audio_recording", 4600, 3600))
+        self.assertTrue(db.claim_interval_cooldown(self.conn, 8, "audio_recording", 1001, 3600))
+
     def test_duel_challenge_quota_is_three_and_play_quota_is_separate(self):
         for attempt in range(3):
             status, duel_id = db.create_chat_duel(
