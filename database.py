@@ -714,7 +714,7 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
         # Count challenge commands per Moscow day, including attempts made
         # while an invitation or another duel is already active.
         if not is_admin and not try_consume_daily_command(
-            conn, challenger_id, "duel_challenge", day_key, 10
+            conn, challenger_id, "duel_challenge", day_key, 3
         ):
             return "limit", None
         for participant_id in (int(challenger_id), int(opponent_id)):
