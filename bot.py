@@ -33,6 +33,15 @@ log = logging.getLogger("vk_bot_guard")
 CHAT_PEER_START = 2_000_000_000
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
+DONATE_GOAL_URL = (
+    "https://vk.ru/vlgchat?w=app51528700_38291769%3FisCloseForwardPush%3Dtrue"
+    "%23%3Fowner_id%3D-234090559%26type%3Dgoal%26params%3D%7B%2522goal_id%2522"
+    "%3A16677%7D%26in_modal%3Dtrue"
+)
+DONUT_SUBSCRIPTION_URL = (
+    "https://vk.ru/vlgchat?analytics_screen=group&levelId=2482&"
+    "source=donut_banner&w=donut_payment-234090559"
+)
 DONUT_EVENT_TYPES = {
     "donut_subscription_create",
     "donut_subscription_prolonged",
@@ -67,6 +76,32 @@ def menu_keyboard() -> dict:
                 },
             },
         ]],
+    }
+
+
+def donut_subscription_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": DONUT_SUBSCRIPTION_URL,
+                "label": "💎 Оформить Don-подписку",
+            },
+        }]],
+    }
+
+
+def chat_donation_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": DONATE_GOAL_URL,
+                "label": "💛 Поддержать чат донатом",
+            },
+        }]],
     }
 
 
@@ -587,19 +622,44 @@ def publish_commands_link(vk, peer_id: int | None = None) -> int:
     )
 
 
-def publish_donut_promo(vk) -> int:
+def publish_donut_promo(vk, peer_id: int | None = None) -> int:
     message = (
-        "💎 Хочешь больше возможностей в чате?\n"
-        "Don-премиум открывает расширенные лимиты:\n"
-        "• Профиль — 5 просмотров своего и 5 чужих профилей в день вместо 2 и 2.\n"
-        "• Характеристики — до 5 разных участников в день вместо одной выдачи в неделю.\n"
-        "• Репутация — до 3 разных участников в день вместо одного голоса в неделю.\n"
-        "• 💍 /Свадьба — предложить и заключить брак могут два участника с активным Don, после согласия второго.\n"
-        "• 💔 /Развод — расторгнуть свой брак без подтверждения партнёра.\n"
-        "Подписка VK Donut @vlgchat - 100 ₽ в месяц. Её поддержка помогает нам развивать чат! "
-        "Подробности - в разделе Donut сообщества. Спасибо!"
+        "💎 Хочешь больше возможностей в @vlgchat? Поддержи чат подпиской Don-премиум!\\n\\n"
+        "✨ Тебе откроются расширенные возможности:\\n"
+        "• 👤 Профиль — 5 просмотров своего и 5 чужих профилей в день.\\n"
+        "• 🎭 Характеристики — до 5 разных участников в день.\\n"
+        "• ⭐ Репутация — до 3 разных участников в день.\\n"
+        "• 💍 Свадьба — можешь предложить её любому участнику; принять приглашение может каждый.\\n"
+        "• 💔 Развод — расторгнуть свой брак без согласия партнёра.\\n\\n"
+        "Подписка — 100 ₽ в месяц. Твоя поддержка помогает развивать чат и добавлять новые функции. "
+        "Нажми кнопку ниже, чтобы оформить Don-подписку. Спасибо, что ты с нами!"
     )
-    return send_bot_message(vk, message)
+    return send_bot_message(vk, message, peer_id=peer_id, keyboard=donut_subscription_keyboard())
+
+
+def publish_chat_ad(vk, peer_id: int | None = None) -> int:
+    message = (
+        "🌟 Добро пожаловать в @vlgchat!\\n\\n"
+        "Здесь знакомятся, общаются и вместе создают истории чата. Профили, рейтинги, "
+        "характеристики, Герои дня и другие механики помогают сделать общение живее.\\n\\n"
+        "Мы развиваем проект для всего сообщества. Если тебе нравится чат и хочется помочь ему расти — "
+        "поддержи @vlgchat донатом 💛\\n\\n"
+        "Спасибо каждому, кто делает это место живым!"
+    )
+    return send_bot_message(vk, message, peer_id=peer_id, keyboard=chat_donation_keyboard())
+
+
+def handle_donut_promo_command(vk, from_id: int, text: str,
+                               command_message=None) -> bool:
+    if not re.fullmatch(r"/реклама", text.strip(), re.IGNORECASE):
+        return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    publish_chat_ad(vk, peer_id=peer_id)
+    return True
 
 
 def publish_project_news(vk, news_text: str) -> int:
@@ -1973,6 +2033,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
     if handle_commands_link_command(vk, from_id, stripped, command_message):
+        return True
+    if handle_donut_promo_command(vk, from_id, stripped, command_message):
         return True
     if handle_stat_command(vk, conn, from_id, stripped, now):
         return True
