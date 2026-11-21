@@ -312,6 +312,24 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), 1)
         self.assertEqual(len(self.queued('delete')), 1)
 
+    def test_chat_ad_command_is_admin_only_with_donation_button(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/реклама', uid=99))
+        payload = self.queued('send')[0]
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
+        self.assertIn('Добро пожаловать в @vlgchat!', payload['message'])
+        self.assertIn('поддержи @vlgchat донатом', payload['message'])
+        self.assertNotIn('расширенные возможности', payload['message'])
+        action = payload['keyboard']['buttons'][0][0]['action']
+        self.assertEqual(action, {
+            'type': 'open_link',
+            'link': 'https://vk.ru/vlgchat?w=app51528700_38291769%3FisCloseForwardPush%3Dtrue%23%3Fowner_id%3D-234090559%26type%3Dgoal%26params%3D%7B%2522goal_id%2522%3A16677%7D%26in_modal%3Dtrue',
+            'label': '💛 Поддержать чат донатом',
+        })
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/реклама', uid=10, mid=2))
+        self.assertEqual(len(self.queued('send')), 1)
+        self.assertEqual(len(self.queued('delete')), 1)
+
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
             date(2026, 10, 9),
@@ -1366,23 +1384,29 @@ class BotTests(unittest.TestCase):
         }.issubset(scheduled))
         self.assertFalse(any(key.endswith(('-06', '-12', '-18')) for key in scheduled))
 
-    def test_donut_promo_is_posted_once_at_noon(self):
+    def test_donut_promo_is_posted_once_at_noon_with_subscription_button(self):
         noon = datetime(2026, 10, 9, 12, 5, tzinfo=config.CHAT_TZ)
         bot.scheduler_tick(self.vk, self.conn, noon)
         bot.scheduler_tick(self.vk, self.conn, noon + timedelta(minutes=1))
         promos = [item['message'] for item in self.queued('send')
-                  if item['message'].startswith('💎 Хочешь больше возможностей в чате?')]
+                  if item['message'].startswith('💎 Хочешь больше возможностей в @vlgchat?')]
         self.assertEqual(promos, [
-            "💎 Хочешь больше возможностей в чате?\n"
-            "Don-премиум открывает расширенные лимиты:\n"
-            "• Профиль — 5 просмотров своего и 5 чужих профилей в день вместо 2 и 2.\n"
-            "• Характеристики — до 5 разных участников в день вместо одной выдачи в неделю.\n"
-            "• Репутация — до 3 разных участников в день вместо одного голоса в неделю.\n"
-            "• 💍 /Свадьба — предложить и заключить брак могут два участника с активным Don, после согласия второго.\n"
-            "• 💔 /Развод — расторгнуть свой брак без подтверждения партнёра.\n"
-            "Подписка VK Donut @vlgchat - 100 ₽ в месяц. Её поддержка помогает нам развивать чат! "
-            "Подробности - в разделе Donut сообщества. Спасибо!"
+            "💎 Хочешь больше возможностей в @vlgchat? Поддержи чат подпиской Don-премиум!\\n\\n"
+            "✨ Тебе откроются расширенные возможности:\\n"
+            "• 👤 Профиль — 5 просмотров своего и 5 чужих профилей в день.\\n"
+            "• 🎭 Характеристики — до 5 разных участников в день.\\n"
+            "• ⭐ Репутация — до 3 разных участников в день.\\n"
+            "• 💍 Свадьба — можешь предложить её любому участнику; принять приглашение может каждый.\\n"
+            "• 💔 Развод — расторгнуть свой брак без согласия партнёра.\\n\\n"
+            "Подписка — 100 ₽ в месяц. Твоя поддержка помогает развивать чат и добавлять новые функции. "
+            "Нажми кнопку ниже, чтобы оформить Don-подписку. Спасибо, что ты с нами!"
         ])
+        promo_payload = next(item for item in self.queued('send')
+                             if item['message'].startswith('💎 Хочешь больше возможностей'))
+        action = promo_payload['keyboard']['buttons'][0][0]['action']
+        self.assertEqual(action['link'],
+                         'https://vk.ru/vlgchat?analytics_screen=group&levelId=2482&source=donut_banner&w=donut_payment-234090559')
+        self.assertEqual(action['label'], '💎 Оформить Don-подписку')
 
     def test_donut_promo_missed_by_more_than_30_minutes_is_skipped(self):
         late = datetime(2026, 10, 9, 12, 40, tzinfo=config.CHAT_TZ)
