@@ -1428,6 +1428,42 @@ class BotTests(unittest.TestCase):
         self.assertEqual(db.get_hero_title(self.conn, 'month', '2026-01'), (42, 1))
         self.assertEqual(db.get_hero_title(self.conn, 'year', '2026'), (42, 9))
 
+    def test_week_hero_uses_monday_through_sunday_and_resets_each_monday(self):
+        def add_messages(user_id, day, count):
+            start = int(datetime.combine(day, datetime.min.time(), config.CHAT_TZ).timestamp())
+            for offset in range(count):
+                db.record_message(self.conn, user_id, start + 12 * 3600 + offset)
+
+        first_monday = date(2026, 10, 12)
+        add_messages(90, first_monday - timedelta(days=8), 100)  # outside the week
+        add_messages(42, first_monday - timedelta(days=7), 2)  # Monday
+        add_messages(43, first_monday - timedelta(days=1), 5)  # Sunday
+        add_messages(44, first_monday, 200)  # new Monday
+
+        self.assertTrue(bot.publish_period_hero(self.vk, self.conn, 'week', first_monday))
+        self.assertEqual(db.get_hero_title(self.conn, 'week', first_monday.isoformat()), (43, 5))
+
+        next_monday = first_monday + timedelta(days=7)
+        add_messages(45, next_monday + timedelta(days=6), 4)
+        self.assertTrue(bot.publish_period_hero(self.vk, self.conn, 'week', next_monday))
+        self.assertEqual(db.get_hero_title(self.conn, 'week', next_monday.isoformat()), (44, 200))
+        self.assertIsNone(db.get_active_hero_title(self.conn, 43, next_monday))
+        self.assertEqual(db.get_active_hero_title(self.conn, 44, next_monday)['period_type'], 'week')
+
+    def test_month_hero_uses_previous_full_calendar_month(self):
+        def add_messages(user_id, day, count):
+            start = int(datetime.combine(day, datetime.min.time(), config.CHAT_TZ).timestamp())
+            for offset in range(count):
+                db.record_message(self.conn, user_id, start + 12 * 3600 + offset)
+
+        add_messages(90, date(2026, 9, 30), 100)  # outside October
+        add_messages(42, date(2026, 10, 1), 2)
+        add_messages(43, date(2026, 10, 31), 5)
+        add_messages(44, date(2026, 11, 1), 200)  # current month, not counted
+
+        self.assertTrue(bot.publish_period_hero(self.vk, self.conn, 'month', date(2026, 11, 1)))
+        self.assertEqual(db.get_hero_title(self.conn, 'month', '2026-11'), (43, 5))
+
     def test_scheduler_does_not_assign_period_heroes_mid_period_on_first_install(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
         for offset in range(5):
