@@ -42,6 +42,7 @@ DONATE_GOAL_URL = (
     "%23%3Fowner_id%3D-234090559%26type%3Dgoal%26params%3D%7B%2522goal_id%2522"
     "%3A16677%7D%26in_modal%3Dtrue"
 )
+DAY_MUTE_DONATION_URL = "https://vk.ru/vlgchat/monetization/goals/edit/16692"
 DONUT_SUBSCRIPTION_URL = (
     "https://vk.ru/vlgchat?analytics_screen=group&levelId=2482&"
     "source=donut_banner&w=donut_payment-234090559"
@@ -104,6 +105,19 @@ def chat_donation_keyboard() -> dict:
                 "type": "open_link",
                 "link": DONATE_GOAL_URL,
                 "label": "💛 Поддержать чат донатом",
+            },
+        }]],
+    }
+
+
+def day_mute_donation_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": DAY_MUTE_DONATION_URL,
+                "label": "🔇 Поддержать чат на 1 000 ₽",
             },
         }]],
     }
@@ -703,6 +717,18 @@ def publish_chat_ad(vk, peer_id: int | None = None) -> int:
     return send_bot_message(vk, message, peer_id=peer_id, keyboard=chat_donation_keyboard())
 
 
+def publish_day_mute_donation_ad(vk, peer_id: int | None = None) -> int:
+    message = (
+        "🔇 Хочешь на 24 часа отправить кого-то подумать о своём поведении?\n\n"
+        "Поддержи @vlgchat донатом на 1 000 ₽ и получи возможность выдать одному участнику "
+        "чата мут на сутки!\n"
+        "Нажми кнопку ниже, чтобы перейти к цели поддержки. Спасибо! 💛"
+    )
+    return send_bot_message(
+        vk, message, peer_id=peer_id, keyboard=day_mute_donation_keyboard()
+    )
+
+
 def handle_donut_promo_command(vk, from_id: int, text: str,
                                command_message=None) -> bool:
     if not re.fullmatch(r"/реклама", text.strip(), re.IGNORECASE):
@@ -713,6 +739,19 @@ def handle_donut_promo_command(vk, from_id: int, text: str,
         return True
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
     publish_chat_ad(vk, peer_id=peer_id)
+    return True
+
+
+def handle_day_mute_ad_command(vk, from_id: int, text: str,
+                               command_message=None) -> bool:
+    if not re.fullmatch(r"/вбан", text.strip(), re.IGNORECASE):
+        return False
+    if from_id not in config.ADMIN_IDS:
+        if command_message is not None:
+            delete_message(vk, command_message)
+        return True
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    publish_day_mute_donation_ad(vk, peer_id=peer_id)
     return True
 
 
@@ -2587,6 +2626,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_commands_link_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_donut_promo_command(vk, from_id, stripped, command_message):
+        return True
+    if handle_day_mute_ad_command(vk, from_id, stripped, command_message):
         return True
     if handle_rules_command(vk, from_id, stripped, command_message):
         return True
