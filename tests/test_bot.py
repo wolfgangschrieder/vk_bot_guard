@@ -971,15 +971,15 @@ class BotTests(unittest.TestCase):
     def test_profile_rank_display_includes_tier_number_and_title(self):
         cases = (
             (0, '🥉 Ранг:  1 · Новичок'),
-            (10_000, '🎖 Ранг: 🥉 2 · Участник'),
-            (20_000, '🎖 Ранг: 🥉 3 · Читатель'),
-            (30_000, '🎖 Ранг: 🥈 4 · Болтун'),
-            (40_000, '🎖 Ранг: 🥈 5 · Активный'),
-            (50_000, '🎖 Ранг: 🥈 6 · Флирт-мастер'),
-            (60_000, '🎖 Ранг: 🥇 7 · Душа чата'),
-            (70_000, '🎖 Ранг: 🥇 8 · Опытный'),
-            (80_000, '🎖 Ранг: 🥇 9 · Ветеран любви'),
-            (100_000, '🎖 Ранг: 👑 10 · Легенда чата'),
+            (10_000, '🥉 Ранг:  2 · Участник'),
+            (20_000, '🥉 Ранг:  3 · Читатель'),
+            (30_000, '🥈 Ранг:  4 · Болтун'),
+            (40_000, '🥈 Ранг:  5 · Активный'),
+            (50_000, '🥈 Ранг:  6 · Флирт-мастер'),
+            (60_000, '🥇 Ранг:  7 · Душа чата'),
+            (70_000, '🥇 Ранг:  8 · Опытный'),
+            (80_000, '🥇 Ранг:  9 · Ветеран любви'),
+            (100_000, '👑 Ранг:  10 · Легенда чата'),
         )
         for total, expected in cases:
             with self.subTest(total=total):
@@ -1322,7 +1322,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=3))
         self.assertEqual(len(self.queued('send')), 2)  # No repeated limit notices.
 
-        next_day_now = self.now + 60 * 60
+        next_day_now = self.now + 24 * 60 * 60
         with patch('bot.time.time', return_value=next_day_now):
             bot.handle_new_message(self.vk, self.conn, self.message('/menu', mid=4))
         sends = self.queued('send')
@@ -1737,7 +1737,7 @@ class BotTests(unittest.TestCase):
             bot.handle_new_message(
                 self.vk, self.conn, self.message('/мут @id2', mid=100 + index)
             )
-            pending = self.queued('mute')
+            pending = [json.loads(row['payload']) for row in self.conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending' ORDER BY id")]
             self.assertEqual(pending[0]['hero_period_type'], period_type)
             self.assertEqual(pending[0]['until'] - self.now, hours * 3600)
             db.set_command_cooldown(
@@ -1750,7 +1750,7 @@ class BotTests(unittest.TestCase):
             # Each right is independent; the next command uses the next title.
 
         bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2', mid=200))
-        self.assertEqual(self.queued('mute'), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE kind = 'mute' AND status = 'pending'").fetchone()[0], 0)
 
     def test_premium_hero_can_mute_another_premium_user(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
