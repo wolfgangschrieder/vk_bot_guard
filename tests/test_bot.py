@@ -388,6 +388,66 @@ class BotTests(unittest.TestCase):
         self.assertEqual(mutes[0]['user_id'], 2)
         self.assertEqual(mutes[0]['until'] - mutes[0]['requested_at'], 3600)
 
+    def test_nomination_is_admin_only_and_winning_is_saved_in_profile(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/номинация + @id2', uid=10))
+        self.assertEqual(self.queued('send'), [])
+        self.assertEqual(len(self.queued('delete')), 1)
+
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/номинация + @id2', uid=99, mid=2))
+        start = self.queued('send')[0]['message']
+        self.assertIn('👑 НАРОДНАЯ НОМИНАЦИЯ', start)
+        self.assertIn('Сейчас чат решает, достоин ли', start)
+        self.assertIn('[id2|Test User] звания', start)
+        self.assertIn('за вклад в жизнь чата!', start)
+        self.assertIn('/достоин — поддержать номинацию', start)
+        self.assertIn('/мимо — пока не присуждать', start)
+        nomination = db.get_active_chat_nomination(self.conn, config.CHAT_PEER_ID)
+        self.assertEqual(nomination['expires_at'] - nomination['started_at'], 600)
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/достоин', uid=2, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/достоин', uid=3, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мимо', uid=4, mid=5))
+        bot.handle_new_message(self.vk, self.conn, self.message('/достоин', uid=4, mid=6))
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) FROM chat_nomination_votes'
+        ).fetchone()[0], 2)
+
+        self.assertEqual(bot.finalize_due_chat_nominations(
+            self.vk, self.conn, self.now + 600,
+        ), 1)
+        sends = self.queued('send')
+        self.assertEqual(len(sends), 2)
+        result = sends[-1]['message']
+        self.assertIn('🏆 ПРИЗНАНИЕ ПРИСУЖДЕНО', result)
+        self.assertIn('«👑 Народная номинация»', result)
+        self.assertIn('🔵 Достоин — 2', result)
+        self.assertIn('[id3|Test User]', result)
+        self.assertIn('[id4|Test User]', result)
+        self.assertIn('⚪ Мимо — 0', result)
+        self.assertEqual(db.get_chat_nomination_wins(self.conn, 2), 1)
+
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/profile @id2', uid=99, mid=7))
+        profile = self.queued('send')[-1]['message']
+        self.assertIn('👑 Народная номинация — 1 победа', profile)
+
+    def test_nomination_tie_does_not_award_profile_record(self):
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/номинация + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/достоин', uid=3, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мимо', uid=4, mid=3))
+
+        self.assertEqual(bot.finalize_due_chat_nominations(
+            self.vk, self.conn, self.now + 600,
+        ), 1)
+        result = self.queued('send')[-1]['message']
+        self.assertIn('🏅 ИТОГИ ГОЛОСОВАНИЯ', result)
+        self.assertIn('В этот раз признание не присуждено.', result)
+        self.assertEqual(db.get_chat_nomination_wins(self.conn, 2), 0)
+
+
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
             date(2026, 10, 9),
