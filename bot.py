@@ -1110,16 +1110,20 @@ def publish_period_hero(
                   period_start.isoformat())
     if db.get_hero_title(conn, period_type, period_key):
         return True
-    stats_end = window_end or period_start
     if period_type == "week":
-        # The title starts on Monday; count the previous complete Monday–Sunday.
-        stats_start = stats_end - timedelta(days=7)
+        # period_start is Monday 00:00: count the previous Monday through Sunday.
+        # The end is exclusive, so Sunday is fully included and the new Monday
+        # belongs to the next weekly period.
+        stats_start = period_start - timedelta(days=7)
+        stats_end = period_start
     elif period_type == "month":
+        stats_end = window_end or period_start
         # At the first of the month, count the previous calendar month in full.
         previous_month_last_day = stats_end - timedelta(days=1)
         stats_start = previous_month_last_day.replace(day=1)
     else:
         # The year title follows the existing 365-day lookback rule.
+        stats_end = window_end or period_start
         stats_start = stats_end - timedelta(days=365)
     top = db.get_top_user_messages(conn, stats_start, stats_end, limit=1)
     if not top:
