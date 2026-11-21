@@ -717,6 +717,16 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
             conn, challenger_id, "duel_challenge", day_key, 10
         ):
             return "limit", None
+        for participant_id in (int(challenger_id), int(opponent_id)):
+            if participant_id in config.ADMIN_IDS:
+                continue
+            participation = conn.execute(
+                "SELECT used FROM daily_command_usage WHERE user_id = ? "
+                "AND command = 'duel_participation' AND day_key = ?",
+                (participant_id, str(day_key)),
+            ).fetchone()
+            if participation and int(participation["used"]) >= 1:
+                return "participated", participant_id
         active = conn.execute(
             "SELECT duel_id FROM chat_duels WHERE peer_id = ? AND status IN ('pending', 'active') "
             "AND (challenger_id IN (?, ?) OR opponent_id IN (?, ?)) LIMIT 1",
