@@ -1236,10 +1236,16 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
         return True
     label, days = periods[command]
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    start_date = today - timedelta(days=days - 1)
-    end_date = today + timedelta(days=1)
+    if command == "/неделя":
+        start_date = today - timedelta(days=today.weekday())
+        end_date = start_date + timedelta(days=7)
+        display_end = end_date - timedelta(days=1)
+    else:
+        start_date = today - timedelta(days=days - 1)
+        end_date = today + timedelta(days=1)
+        display_end = today
     top = db.get_top_user_messages(conn, start_date, end_date, limit=5)
-    period_label = f"{start_date:%d.%m.%Y} — {today:%d.%m.%Y}"
+    period_label = f"{start_date:%d.%m.%Y} — {display_end:%d.%m.%Y}"
     report = (
         f"📊 ТОП-5 ЗА {label}\n"
         f"{period_label}\n\n"
