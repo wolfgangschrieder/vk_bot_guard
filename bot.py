@@ -33,7 +33,7 @@ log = logging.getLogger("vk_bot_guard")
 
 CHAT_PEER_START = 2_000_000_000
 CHAT_NOMINATION_TITLE = "👑 Народная номинация"
-DUEL_TITLE = "🎯 Мастер промаха"
+DUEL_TITLE = "🥴 Неудачник"
 USER_GUIDE_URL = "https://vk.ru/topic-234090559_68552562?offset=0"
 COMMANDS_URL = "https://vk.ru/topic-234090559_68552562"
 DONATE_GOAL_URL = (
@@ -1494,7 +1494,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             "⚔️ ВЫЗОВ НА ДУЭЛЬ\n\n"
             f"{mention(from_id, names.get(from_id))} вызывает на дуэль "
             f"{mention(target_id, names.get(target_id))}!\n\n"
-            f"Чтобы принять вызов, ответь командой /принять дуэль до {deadline}.\n"
+            f"Чтобы принять вызов, ответь командой /принять до {deadline}.\n"
             "После принятия оба участника отправляют число от 0 до 100 командой /число 42.\n"
             "Бот выберет тайную цель. Победит тот, чьё число окажется ближе.\n"
             "Числа бот удалит после получения. При равном расстоянии будет ничья.\n"
@@ -1505,7 +1505,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
                  duel_id, peer_id, from_id, target_id)
         return True
 
-    if re.fullmatch(r"/принять\s+дуэль", stripped, re.IGNORECASE):
+    if re.fullmatch(r"/принять", stripped, re.IGNORECASE):
         now_local = datetime.fromtimestamp(int(now), config.CHAT_TZ)
         status, duel_id = db.accept_chat_duel(
             conn, peer_id, from_id, int(now), int(now) + 5 * 60,
@@ -1520,11 +1520,11 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             names = get_user_names(vk, [duel["challenger_id"], duel["opponent_id"]])
             send_bot_message(
                 vk,
-                "🤝 Вызов принят!\n\n"
-                f"{mention(duel['challenger_id'], names.get(duel['challenger_id']))} и "
-                f"{mention(duel['opponent_id'], names.get(duel['opponent_id']))}, отправьте "
-                "свои числа командой /число 0–100.\n"
-                "У вас 5 минут. Числа будут удалены ботом после получения.",
+                "⚔️ ДУЭЛЬ НАЧАЛАСЬ\n\n"
+                f"Дуэль между {mention(duel['challenger_id'], names.get(duel['challenger_id']))} и "
+                f"{mention(duel['opponent_id'], names.get(duel['opponent_id']))}!\n\n"
+                "Отправьте команду /число N, где N — число от 0 до 100.\n"
+                "На выбор числа есть 5 минут. Если число соперника уже занято, выберите другое.",
                 peer_id=peer_id,
             )
         elif status == "busy":
