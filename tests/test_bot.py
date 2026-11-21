@@ -475,6 +475,27 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), 1)
         self.assertEqual(len(self.queued('delete')), 1)
 
+    def test_day_mute_donation_ad_command_is_admin_only_and_has_goal_button(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/вбан', uid=99))
+        payload = self.queued('send')[0]
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
+        self.assertEqual(payload['message'], (
+            "🔇 Хочешь на 24 часа отправить кого-то подумать о своём поведении?\\n\\n"
+            "Поддержи @vlgchat донатом на 1 000 ₽ и получи возможность выдать одному участнику "
+            "чата мут на сутки!\\n"
+            "Нажми кнопку ниже, чтобы перейти к цели поддержки. Спасибо! 💛"
+        ))
+        self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
+            'type': 'open_link',
+            'link': 'https://vk.ru/vlgchat/monetization/goals/edit/16692',
+            'label': '🔇 Поддержать чат на 1 000 ₽',
+        })
+
+        bot.handle_new_message(self.vk, self.conn,
+                               self.message('/вбан', uid=10, mid=2))
+        self.assertEqual(len(self.queued('send')), 1)
+        self.assertEqual(len(self.queued('delete')), 1)
+
     def test_rules_command_is_admin_only_and_has_link_button(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/правила', uid=99))
         payload = self.queued('send')[0]
