@@ -417,6 +417,11 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 2000000002, 1, 202, 502, "2026-11-21", is_admin=False,
         )
         self.assertEqual(status, "accepted")
+        status, blocked_user_id = db.create_chat_duel(
+            self.conn, 2000000002, 31, 1, 203, 503, "2026-11-21", is_admin=False,
+        )
+        self.assertEqual(status, "participated")
+        self.assertEqual(blocked_user_id, 1)
 
     def test_admin_duel_challenge_quota_is_unlimited(self):
         for attempt in range(11):
