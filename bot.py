@@ -2252,7 +2252,7 @@ def format_chat_rank(total_messages: int) -> str:
         "🥇" if rank_number <= 9 else
         "👑"
     )
-    return f"🎖 Ранг: {level_emoji} {rank_number} · {rank_title}"
+    return f"{level_emoji} Ранг:  {rank_number} · {rank_title}"
 
 
 def announce_rank_achievement(vk, user_id: int, previous_total: int) -> None:
@@ -2571,19 +2571,42 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int,
         return True
 
     if hero:
-        period_type = hero["period_type"]
-        period_key = hero["period_key"]
-        cooldown_key = f"hero_mute:{period_type}:{period_key}"
-        if pending_king_mute(conn, from_id, period_key):
+        # Each active hero title grants its own mute. Spend the longest one first.
+        week_key = (local_date - timedelta(days=local_date.weekday())).isoformat()
+        active_keys = {
+            "day": local_date.isoformat(),
+            "week": week_key,
+            "month": local_date.strftime("%Y-%m"),
+            "year": local_date.strftime("%Y"),
+        }
+        with db._lock:
+            active_titles = conn.execute(
+                "SELECT period_type, period_key FROM hero_titles WHERE user_id = ? "
+                "AND ((period_type = 'day' AND period_key = ?) "
+                "OR (period_type = 'week' AND period_key = ?) "
+                "OR (period_type = 'month' AND period_key = ?) "
+                "OR (period_type = 'year' AND period_key = ?))",
+                (from_id, active_keys["day"], active_keys["week"],
+                 active_keys["month"], active_keys["year"]),
+            ).fetchall()
+        available = [(row["period_type"], row["period_key"]) for row in active_titles]
+        if hero["period_type"] == "day" and ("day", active_keys["day"]) not in available:
+            # Legacy daily-hero history may not yet be backfilled.
+            available.append(("day", active_keys["day"]))
+        available.sort(key=lambda item: HERO_MUTE_SECONDS[item[0]], reverse=True)
+        if any(pending_king_mute(conn, from_id, key, period_type=kind)
+               for kind, key in available):
             send_bot_message(vk, "⏳ Твой мут уже ожидает подтверждения VK.", temporary=True)
             return True
-        if db.get_command_cooldown(conn, from_id, cooldown_key):
-            send_bot_message(
-                vk,
-                f"🏅 Ты уже использовал мут как {HERO_NAMES[period_type].lower()} в этом периоде.",
-                temporary=True,
-            )
+        remaining = [
+            (kind, key, f"hero_mute:{kind}:{key}")
+            for kind, key in available
+            if not db.get_command_cooldown(conn, from_id, f"hero_mute:{kind}:{key}")
+        ]
+        if not remaining:
+            send_bot_message(vk, "🏅 Все муты за действующие звания героев уже использованы.", temporary=True)
             return True
+        period_type, period_key, cooldown_key = remaining[0]
         if not apply_mute(
             vk, config.CHAT_PEER_ID, target_id, king_id=from_id, now=now,
             duration_seconds=HERO_MUTE_SECONDS[period_type],
@@ -2821,15 +2844,16 @@ def process_message(vk, conn, message) -> None:
 
 
 
-def pending_king_mute(conn, user_id, period_key):
+def pending_king_mute(conn, user_id, period_key, period_type=None):
     with db._lock:
         for row in conn.execute("SELECT payload FROM outbox WHERE kind = 'mute' AND status = 'pending'"):
             payload = json.loads(row["payload"])
             if payload.get("king_id") != user_id:
                 continue
-            if payload.get("hero_period_key") == period_key:
+            if (payload.get("hero_period_key") == period_key
+                    and (period_type is None or payload.get("hero_period_type") == period_type)):
                 return True
-            if not payload.get("hero_period_key"):
+            if not payload.get("hero_period_key") and period_type in (None, "day"):
                 request_date = datetime.fromtimestamp(payload["requested_at"], config.CHAT_TZ).date()
                 if request_date.isoformat() == period_key:
                     return True
