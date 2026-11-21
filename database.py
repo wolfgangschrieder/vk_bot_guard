@@ -789,7 +789,7 @@ def submit_chat_duel_guess(conn: sqlite3.Connection, peer_id: int, user_id: int,
             result = dict(duel)
             result["guess_occupied"] = True
             return result
-        conn.execute(f"UPDATE chat_duels SET {column} = ?",
+        conn.execute(f"UPDATE chat_duels SET {column} = ? WHERE duel_id = ?",
                      (int(guess), int(duel["duel_id"])))
         return dict(conn.execute(
             "SELECT * FROM chat_duels WHERE duel_id = ?", (int(duel["duel_id"]),)
