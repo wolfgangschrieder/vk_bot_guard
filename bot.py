@@ -1502,6 +1502,17 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             if command_message is not None:
                 delete_message(vk, command_message)
             return True
+        if status == "participated":
+            participant_id = int(duel_id)
+            names = get_user_names(vk, [participant_id])
+            participant = mention(participant_id, names.get(participant_id))
+            send_bot_message(
+                vk,
+                f"⚔️ У {participant} уже была дуэль сегодня. "
+                "Повторно участвовать можно после 00:00 по Москве.",
+                peer_id=peer_id,
+            )
+            return True
         if status == "busy":
             send_bot_message(vk, "⚔️ Один из участников уже участвует в незавершённой дуэли.",
                              temporary=True, peer_id=peer_id)
