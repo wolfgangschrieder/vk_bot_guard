@@ -112,7 +112,7 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertEqual(profile.splitlines()[0], '👤 [id99|Test User]')
         self.assertEqual(profile.splitlines()[2], '🛡️ АДМИНИСТРАТОР ЧАТА')
-        self.assertIn('🎖 Ранг: Новичок', profile)
+        self.assertIn('🎖 Ранг: 🥉 1 · Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 0', profile)
 
     def test_profile_shows_reputation_hero_activity_and_best_day(self):
@@ -148,7 +148,7 @@ class BotTests(unittest.TestCase):
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
         self.assertIn('⭐ Репутация: +12', profile)
-        self.assertIn('🎖 Ранг: Новичок', profile)
+        self.assertIn('🎖 Ранг: 🥉 1 · Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
         self.assertIn('🏆 Герой дня: 3 раза (последний: 09.10.2026)', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
@@ -967,6 +967,23 @@ class BotTests(unittest.TestCase):
         for total, expected in cases:
             with self.subTest(total=total):
                 self.assertEqual(bot.chat_rank_for_messages(total), expected)
+
+    def test_profile_rank_display_includes_tier_number_and_title(self):
+        cases = (
+            (0, '🎖 Ранг: 🥉 1 · Новичок'),
+            (10_000, '🎖 Ранг: 🥉 2 · Участник'),
+            (20_000, '🎖 Ранг: 🥉 3 · Читатель'),
+            (30_000, '🎖 Ранг: 🥈 4 · Болтун'),
+            (40_000, '🎖 Ранг: 🥈 5 · Активный'),
+            (50_000, '🎖 Ранг: 🥈 6 · Флирт-мастер'),
+            (60_000, '🎖 Ранг: 🥇 7 · Душа чата'),
+            (70_000, '🎖 Ранг: 🥇 8 · Опытный'),
+            (80_000, '🎖 Ранг: 🥇 9 · Ветеран любви'),
+            (100_000, '🎖 Ранг: 👑 10 · Легенда чата'),
+        )
+        for total, expected in cases:
+            with self.subTest(total=total):
+                self.assertEqual(bot.format_chat_rank(total), expected)
 
     def test_rank_up_is_announced_once_when_message_crosses_threshold(self):
         self.conn.execute(
