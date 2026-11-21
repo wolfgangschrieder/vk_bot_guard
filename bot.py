@@ -19,6 +19,7 @@ from vk_api.exceptions import ApiError, VkApiError
 import config
 import database as db
 import morning_content
+import chat_stats_export
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2719,6 +2720,10 @@ def scheduler_tick(vk, conn, now=None):
     global ACTIVE_CONN
     ACTIVE_CONN = conn
     now = datetime.now(config.CHAT_TZ) if now is None else now.astimezone(config.CHAT_TZ)
+    export_key = f"chat-stats-export:{now.date().isoformat()}"
+    if not db.scheduler_event_claimed(conn, export_key):
+        if chat_stats_export.export_history(conn, now.date()):
+            db.claim_scheduler_event(conn, export_key, int(now.timestamp()))
     finalize_due_chat_trials(vk, conn, int(now.timestamp()))
     finalize_due_chat_nominations(vk, conn, int(now.timestamp()))
     today_midnight = datetime.combine(now.date(), datetime.min.time(), config.CHAT_TZ)
