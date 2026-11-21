@@ -300,7 +300,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 3)
 
-    def test_commands_link_is_admin_only_and_stays_in_invoking_chat(self):
+    def test_commands_link_allows_admin_and_three_daily_premium_uses(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=99))
         payload = self.queued('send')[0]
         self.assertEqual(payload['message'],
@@ -309,8 +309,14 @@ class BotTests(unittest.TestCase):
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
 
         bot.handle_new_message(self.vk, self.conn, self.message('/команды', uid=1, mid=2))
-        self.assertEqual(len(self.queued('send')), 1)
-        self.assertEqual(len(self.queued('delete')), 1)
+        db.grant_manual_premium_month(self.conn, 2, now=self.now)
+        for mid in (3, 4, 5, 6):
+            bot.handle_new_message(
+                self.vk, self.conn, self.message('/команды', uid=2, mid=mid)
+            )
+        self.assertEqual(len(self.queued('send')), 4)
+        # Ordinary users and premium users over their daily quota are handled silently.
+        self.assertEqual(len(self.queued('delete')), 2)
 
     def test_chat_ad_command_is_admin_only_with_donation_button(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/реклама', uid=99))
