@@ -437,6 +437,20 @@ def has_media_attachment(message) -> bool:
     return False
 
 
+def has_non_text_content(message) -> bool:
+    """Return true for attachments or geolocation in a message or its forwards."""
+    for item in moderated_contents(message):
+        if message_attachments(item) or event_field(item, "geo"):
+            return True
+    return False
+
+
+def is_night_mode_active(now=None) -> bool:
+    timestamp = int(time.time()) if now is None else int(now)
+    local = datetime.fromtimestamp(timestamp, config.CHAT_TZ)
+    return 0 <= local.hour < config.MORNING_POST_HOUR
+
+
 def has_sticker_attachment(message) -> bool:
     return any(
         str(
@@ -791,7 +805,8 @@ def format_top(vk, rows, medals: tuple[str, ...]) -> str:
     return "\n".join(lines) if lines else "Пока нет сообщений."
 
 
-def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False) -> bool:
+def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False,
+                        include_night_mode_notice=False) -> bool:
     stats = db.get_daily_stats(conn, stat_date)
     top3 = stats["top_users"][:3]
     month = config.MONTH_NAMES[stat_date.month - 1]
@@ -828,6 +843,12 @@ def publish_daily_stats(vk, conn, stat_date: date, *, include_records=False) -> 
             else:
                 record_lines.append(f"{label}: пока нет данных")
         report += "\n\n📈 РЕКОРДЫ ЧАТА\n" + "\n".join(record_lines)
+    if include_night_mode_notice:
+        report += (
+            "\n\n🌙 Ночной режим чата включён!\n"
+            "С 00:00 до 08:00 обычным участникам доступны только текстовые сообщения. "
+            "Don-премиум может отправлять сообщения любого типа."
+        )
     return send_bot_message(vk, report) > 0
 
 
@@ -880,6 +901,10 @@ def build_morning_message(stat_date: date, weather_line: str | None = None,
         lines.append(f"🧥 Совет дня: {advice['text']}")
     if question:
         lines.append(f"💬 Вопрос дня: {question['text']}")
+    lines.extend((
+        "",
+        "🌅 Ночной режим чата отключён. Всем участникам снова доступны сообщения любого типа.",
+    ))
     return "\n".join(lines)
 
 
@@ -2588,6 +2613,13 @@ def process_message(vk, conn, message) -> None:
             db.track_spam_streak(conn, peer_id, from_id, None, now)
         return
 
+    if (is_bot_feature_chat(peer_id) and is_night_mode_active(now)
+            and not db.is_premium_user(conn, from_id, now)
+            and has_non_text_content(message)):
+        delete_message(vk, message)
+        log.info("Ночной режим: удалено нетекстовое сообщение user=%s peer=%s", from_id, peer_id)
+        return
+
     if is_bot_feature_chat(peer_id) and any(
         re.search(r"(?<!\w)@all(?!\w)", message_text(item), re.IGNORECASE)
         for item in moderated_contents(message)
@@ -3001,7 +3033,13 @@ def scheduler_tick(vk, conn, now=None):
                     if not db.scheduler_event_claimed(conn, key):
                         queued = (publisher(vk, conn, yesterday, announce=(cursor == now.date()))
                                   if publisher is publish_king
-                                  else publisher(vk, conn, yesterday, include_records=True))
+                                  else publisher(
+                                      vk, conn, yesterday, include_records=True,
+                                      include_night_mode_notice=(
+                                          cursor == now.date()
+                                          and now < midnight.replace(hour=config.MORNING_POST_HOUR)
+                                      ),
+                                  ))
                         if queued:
                             db.claim_scheduler_event(conn, key, int(now.timestamp()))
                 periodic_heroes = []
