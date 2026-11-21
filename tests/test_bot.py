@@ -486,6 +486,23 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), 1)
         self.assertEqual(len(self.queued('delete')), 1)
 
+    def test_rules_post_is_scheduled_once_each_wednesday_at_thirteen_moscow(self):
+        wednesday = datetime(2026, 11, 18, 12, 55, tzinfo=config.CHAT_TZ)
+        db.claim_scheduler_event(self.conn, 'checkpoint', int(wednesday.timestamp()))
+        for tick in (wednesday + timedelta(minutes=10),
+                     wednesday + timedelta(minutes=11)):
+            bot.scheduler_tick(self.vk, self.conn, tick)
+
+        messages = [item for item in self.queued('send')
+                    if 'ознакомьтесь с правилами чата' in item['message']]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]['peer_id'], config.CHAT_PEER_ID)
+        self.assertEqual(
+            messages[0]['keyboard']['buttons'][0][0]['action']['link'],
+            'https://vk.ru/topic-234090559_69535638',
+        )
+        self.assertTrue(db.scheduler_event_claimed(self.conn, 'rules-post:2026-11-18'))
+
     def test_court_is_admin_only_and_opens_for_ten_minutes(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=10))
         self.assertEqual(self.queued('send'), [])
