@@ -714,14 +714,18 @@ def handle_rules_command(vk, from_id: int, text: str, command_message=None) -> b
             delete_message(vk, command_message)
         return True
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
-    send_bot_message(
+    publish_rules_message(vk, peer_id=peer_id)
+    return True
+
+
+def publish_rules_message(vk, peer_id: int | None = None) -> int:
+    return send_bot_message(
         vk,
         "📜 Перед общением ознакомьтесь с правилами чата. "
         "Нажмите кнопку ниже, чтобы открыть пост с правилами.",
-        peer_id=peer_id,
+        peer_id=peer_id or config.CHAT_PEER_ID,
         keyboard=chat_rules_keyboard(),
     )
-    return True
 
 
 def publish_project_news(vk, news_text: str) -> int:
@@ -3153,6 +3157,16 @@ def scheduler_tick(vk, conn, now=None):
                 key = f"weekly:{start_date.isoformat()}"
                 if not db.scheduler_event_claimed(conn, key):
                     if publish_weekly_stats(vk, conn, start_date, cursor):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
+            rules_at = midnight.replace(hour=config.RULES_POST_HOUR)
+            if cursor.weekday() == 2 and lower < rules_at <= now:
+                key = f"rules-post:{cursor.isoformat()}"
+                if not db.scheduler_event_claimed(conn, key):
+                    delay = now - rules_at
+                    if delay > timedelta(minutes=config.RULES_POST_LATE_WINDOW_MINUTES):
+                        db.claim_scheduler_event(conn, key, int(now.timestamp()))
+                        log.info("Публикация правил пропущена: окно отправки прошло (%s)", cursor)
+                    elif publish_rules_message(vk, peer_id=config.CHAT_PEER_ID):
                         db.claim_scheduler_event(conn, key, int(now.timestamp()))
             cursor += timedelta(days=1)
         conn.execute("INSERT INTO scheduler_state(event_key, created_at) VALUES ('checkpoint', ?) "
