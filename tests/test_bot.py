@@ -1441,6 +1441,12 @@ class BotTests(unittest.TestCase):
                     self.message('', uid=user_id, mid=user_id,
                                  attachments=[{'type': 'photo'}]),
                 )
+                for index in (1, 2):
+                    bot.handle_new_message(
+                        self.vk, self.conn,
+                        self.message('', uid=user_id, mid=user_id * 10 + index,
+                                     attachments=[{'type': 'audio'}]),
+                    )
             bot.handle_new_message(
                 self.vk, self.conn,
                 self.message('', uid=7, mid=7, attachments=[{'type': 'photo'}]),
@@ -1449,7 +1455,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('delete')), 1)
         self.assertEqual(self.queued('delete')[0]['params']['message_ids'], '7')
         stats = db.get_daily_stats(self.conn, date(2026, 10, 9))
-        self.assertEqual((stats['messages'], stats['photos']), (4, 4))
+        self.assertEqual((stats['messages'], stats['photos'], stats['music']), (12, 4, 8))
 
     def test_regular_user_can_send_one_audio_track_per_hour_silently(self):
         track = [{'type': 'audio', 'audio': {'artist': 'Artist', 'title': 'Track'}}]
