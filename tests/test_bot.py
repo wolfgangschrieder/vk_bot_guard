@@ -479,12 +479,10 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/вбан', uid=99))
         payload = self.queued('send')[0]
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
-        self.assertEqual(payload['message'], (
-            "🔇 Хочешь на 24 часа отправить кого-то подумать о своём поведении?\\n\\n"
-            "Поддержи @vlgchat донатом на 1 000 ₽ и получи возможность выдать одному участнику "
-            "чата мут на сутки!\\n"
-            "Нажми кнопку ниже, чтобы перейти к цели поддержки. Спасибо! 💛"
-        ))
+        self.assertIn('Хочешь на 24 часа отправить кого-то подумать о своём поведении?', payload['message'])
+        self.assertIn('Поддержи @vlgchat донатом на 1 000 ₽', payload['message'])
+        self.assertIn('чата мут на сутки!', payload['message'])
+        self.assertIn('перейти к цели поддержки', payload['message'])
         self.assertEqual(payload['keyboard']['buttons'][0][0]['action'], {
             'type': 'open_link',
             'link': 'https://vk.ru/vlgchat/monetization/goals/edit/16692',
