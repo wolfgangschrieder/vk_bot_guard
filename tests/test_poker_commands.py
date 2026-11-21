@@ -7,6 +7,25 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_table_shows_turn_cost_and_completed_payouts(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+
+        table = Table()
+        for user_id in (101, 202):
+            table.join(user_id)
+            table.ready(user_id)
+        table.start()
+        during = format_table(table)
+        self.assertIn("к уравниванию: 50 фишек", during)
+        self.assertIn("Минимальное повышение: 100 фишек", during)
+        table.act(table.turn, "fold")
+        finished = format_table(table)
+        self.assertIn("🏆 Итоги раздачи:", finished)
+        self.assertIn("получил 150 фишек", finished)
+        self.assertIn("/next → /ready → /start", finished)
+        self.assertNotIn("Закрытые карты", finished)
+
     def test_parser(self):
         self.assertEqual(parse_command("/raise 500"), ("raise", 500))
         self.assertIsNone(parse_command("обычное сообщение"))
