@@ -330,6 +330,64 @@ class BotTests(unittest.TestCase):
         self.assertEqual(len(self.queued('send')), 1)
         self.assertEqual(len(self.queued('delete')), 1)
 
+    def test_court_is_admin_only_and_opens_for_ten_minutes(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=10))
+        self.assertEqual(self.queued('send'), [])
+        self.assertEqual(len(self.queued('delete')), 1)
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99, mid=2))
+        payload = self.queued('send')[0]
+        self.assertIn('⚖️ СУД ЧАТА ОТКРЫТ', payload['message'])
+        self.assertIn('На скамье подсудимых — [id2|Test User]', payload['message'])
+        self.assertIn('Обвиняется во всех грехах мира!', payload['message'])
+        self.assertIn('/виновен — поддержать обвинение', payload['message'])
+        self.assertIn('/оправдан — поддержать защиту', payload['message'])
+        self.assertIn('мут на 1 час', payload['message'])
+        self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
+        trial = db.get_active_chat_trial(self.conn, config.CHAT_PEER_ID)
+        self.assertEqual(trial['target_id'], 2)
+        self.assertEqual(trial['expires_at'] - trial['started_at'], 600)
+
+    def test_court_target_cannot_vote_and_tie_acquits(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99))
+        start_sends = len(self.queued('send'))
+        bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=2, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=3, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/оправдан', uid=4, mid=4))
+        bot.handle_new_message(self.vk, self.conn, self.message('/оправдан', uid=3, mid=5))
+        count = self.conn.execute('SELECT COUNT(*) FROM chat_trial_votes').fetchone()[0]
+        self.assertEqual(count, 2)
+
+        self.assertEqual(bot.finalize_due_chat_trials(self.vk, self.conn, self.now + 600), 1)
+        sends = self.queued('send')
+        self.assertEqual(len(sends), start_sends + 1)
+        result = sends[-1]['message']
+        self.assertIn('🔴 За обвинение: 0', result)
+        self.assertIn('🟢 За оправдание: 2', result)
+        self.assertIn('Вердикт: ОПРАВДАН.', result)
+        self.assertIn('Подсудимый свободен!', result)
+        self.assertEqual(self.queued('mute'), [])
+
+    def test_court_majority_guilty_queues_one_hour_mute_and_lists_voters(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=3, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=4, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/оправдан', uid=5, mid=4))
+
+        self.assertEqual(bot.finalize_due_chat_trials(self.vk, self.conn, self.now + 600), 1)
+        sends = self.queued('send')
+        result = sends[-1]['message']
+        self.assertIn('🔴 За обвинение: 2', result)
+        self.assertIn('[id3|Test User]', result)
+        self.assertIn('[id4|Test User]', result)
+        self.assertIn('🟢 За оправдание: 1', result)
+        self.assertIn('Вердикт: ВИНОВЕН.', result)
+        self.assertIn('Мут выдан.', result)
+        mutes = self.queued('mute')
+        self.assertEqual(len(mutes), 1)
+        self.assertEqual(mutes[0]['user_id'], 2)
+        self.assertEqual(mutes[0]['until'] - mutes[0]['requested_at'], 3600)
+
     def test_morning_post_formats_date_weather_advice_and_question(self):
         report = bot.build_morning_message(
             date(2026, 10, 9),
