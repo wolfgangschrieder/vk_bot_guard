@@ -448,6 +448,16 @@ class DatabaseTests(unittest.TestCase):
         result = db.submit_chat_duel_guess(self.conn, 2000000002, 2, 51, 111)
         self.assertEqual(result["challenger_guess"], 44)
         self.assertEqual(result["opponent_guess"], 51)
+        db.finish_chat_duel(self.conn, duel_id, 47, 1, 112)
+
+        # Both players use their daily participation when a duel starts.
+        _, next_duel_id = db.create_chat_duel(
+            self.conn, 2000000002, 99, 1, 113, 413, "2026-11-21", is_admin=True,
+        )
+        self.assertIsNotNone(next_duel_id)
+        self.assertEqual(db.accept_chat_duel(
+            self.conn, 2000000002, 1, 114, 414, "2026-11-21", is_admin=False,
+        )[0], "limit")
 
     def test_characteristic_limits_and_signed_score(self):
         common = dict(regular_weekly_limit=1, premium_daily_limit=2, now=100)
