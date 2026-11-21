@@ -1547,6 +1547,12 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         duel = db.submit_chat_duel_guess(conn, peer_id, from_id, guess, int(now))
         if not duel:
             return True
+        if duel.get("guess_occupied"):
+            send_bot_message(
+                vk, f"🔢 Число {guess} уже занято. Выбери другое от 0 до 100.",
+                temporary=True, peer_id=peer_id,
+            )
+            return True
         if duel["challenger_guess"] is None or duel["opponent_guess"] is None:
             return True
         target_number = random.randint(0, 100)
