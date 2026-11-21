@@ -812,12 +812,41 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
     return True
 
 
+def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
+    """Show the available commands with a per-user daily cooldown."""
+    if not re.fullmatch(r"/menu", text.strip(), re.IGNORECASE):
+        return False
+
+    local_day = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+    last_used = db.get_command_cooldown(conn, from_id, "menu")
+    if last_used and datetime.fromtimestamp(last_used, config.CHAT_TZ).date() == local_day:
+        return True
+
+    menu = (
+        "📋 КОМАНДЫ ЧАТА\\n\\n"
+        "/profile — мой профиль\\n"
+        "/profile @id123 — профиль участника\\n"
+        "/rep + @id123 — повысить репутацию\\n"
+        "/rep - @id123 — понизить репутацию\\n"
+        "/мут @id123 — мут от Героя чата (1 раз в день)\\n"
+        "/menu — показать это меню (1 раз в день)"
+    )
+    message_id = send_bot_message(
+        vk, menu, temporary=True, delete_after_seconds=120
+    )
+    if message_id > 0:
+        db.set_command_cooldown(conn, from_id, "menu", 0, now)
+    return True
+
+
 def handle_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     stripped = text.strip()
     if not stripped.startswith("/"):
         return False
 
     if handle_stat_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
     if handle_profile_command(vk, conn, from_id, stripped, now):
         return True
