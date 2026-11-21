@@ -112,7 +112,7 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertEqual(profile.splitlines()[0], '👤 [id99|Test User]')
         self.assertEqual(profile.splitlines()[2], '🛡️ АДМИНИСТРАТОР ЧАТА')
-        self.assertIn('🎖 Ранг: 🥉 1 · Новичок', profile)
+        self.assertIn('🥉 Ранг:  1 · Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 0', profile)
 
     def test_profile_shows_reputation_hero_activity_and_best_day(self):
@@ -148,7 +148,7 @@ class BotTests(unittest.TestCase):
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
         self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
         self.assertIn('⭐ Репутация: +12', profile)
-        self.assertIn('🎖 Ранг: 🥉 1 · Новичок', profile)
+        self.assertIn('🥉 Ранг:  1 · Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
         self.assertIn('🏆 Герой дня: 3 раза (последний: 09.10.2026)', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
@@ -970,7 +970,7 @@ class BotTests(unittest.TestCase):
 
     def test_profile_rank_display_includes_tier_number_and_title(self):
         cases = (
-            (0, '🎖 Ранг: 🥉 1 · Новичок'),
+            (0, '🥉 Ранг:  1 · Новичок'),
             (10_000, '🎖 Ранг: 🥉 2 · Участник'),
             (20_000, '🎖 Ранг: 🥉 3 · Читатель'),
             (30_000, '🎖 Ранг: 🥈 4 · Болтун'),
@@ -1720,6 +1720,37 @@ class BotTests(unittest.TestCase):
         payload = mutes[0]
         self.assertEqual(payload['hero_period_type'], 'month')
         self.assertEqual(payload['until'] - self.now, 8 * 3600)
+
+    def test_hero_mute_rights_stack_and_use_longest_available_first(self):
+        today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
+        monday = today - timedelta(days=today.weekday())
+        titles = (
+            ('year', today.strftime('%Y'), 24),
+            ('month', today.strftime('%Y-%m'), 8),
+            ('week', monday.isoformat(), 4),
+            ('day', today.isoformat(), 1),
+        )
+        for period_type, period_key, _ in titles:
+            db.save_hero_title(self.conn, period_type, period_key, 1, 20)
+
+        for index, (period_type, period_key, hours) in enumerate(titles):
+            bot.handle_new_message(
+                self.vk, self.conn, self.message('/мут @id2', mid=100 + index)
+            )
+            pending = self.queued('mute')
+            self.assertEqual(pending[0]['hero_period_type'], period_type)
+            self.assertEqual(pending[0]['until'] - self.now, hours * 3600)
+            db.set_command_cooldown(
+                self.conn, 1, f'hero_mute:{period_type}:{period_key}', 0, self.now
+            )
+            with db.atomic(self.conn):
+                self.conn.execute(
+                    "UPDATE outbox SET status = 'done' WHERE kind = 'mute' AND status = 'pending'"
+                )
+            # Each right is independent; the next command uses the next title.
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2', mid=200))
+        self.assertEqual(self.queued('mute'), [])
 
     def test_premium_hero_can_mute_another_premium_user(self):
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
