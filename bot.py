@@ -1387,6 +1387,124 @@ def handle_reputation_top_command(vk, conn, text: str) -> bool:
     return True
 
 
+
+def format_court_voters(user_ids: list[int], names: dict[int, str]) -> str:
+    if not user_ids:
+        return "—"
+    return ", ".join(mention(user_id, names.get(user_id)) for user_id in user_ids)
+
+
+def handle_court_command(vk, conn, from_id: int, text: str, now: int,
+                         command_message=None) -> bool:
+    stripped = text.strip()
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+
+    start_match = re.fullmatch(r"/суд\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    if start_match:
+        if from_id not in config.ADMIN_IDS:
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        target_id = resolve_target_user_id(vk, start_match.group(1))
+        if target_id <= 0 or target_id == from_id:
+            return True
+        started_at = int(now)
+        expires_at = started_at + 10 * 60
+        trial_id = db.create_chat_trial(
+            conn, peer_id, target_id, from_id, started_at, expires_at,
+        )
+        if trial_id is None:
+            return True
+        name = get_user_names(vk, [target_id]).get(target_id)
+        deadline = datetime.fromtimestamp(expires_at, config.CHAT_TZ).strftime("%H:%M")
+        message = (
+            "⚖️ СУД ЧАТА ОТКРЫТ\n\n"
+            f"На скамье подсудимых — {mention(target_id, name)}\n"
+            "Обвиняется во всех грехах мира!\n\n"
+            "🗳 У вас есть 10 минут, чтобы вынести вердикт:\n\n"
+            "/виновен — поддержать обвинение\n"
+            "/оправдан — поддержать защиту\n\n"
+            "Голосуйте внимательно! В случае доказательства вины — мут на 1 час!\n"
+            f"Заседание завершится в {deadline}."
+        )
+        send_bot_message(vk, message, peer_id=peer_id)
+        return True
+
+    vote_match = re.fullmatch(r"/(виновен|оправдан)", stripped, re.IGNORECASE)
+    if vote_match:
+        vote = 1 if vote_match.group(1).casefold() == "виновен" else -1
+        db.cast_chat_trial_vote(conn, peer_id, from_id, vote, int(now))
+        return True
+    return False
+
+
+def finalize_due_chat_trials(vk, conn, now: int | None = None) -> int:
+    """Close expired trials and atomically queue their verdict and any mute."""
+    global ACTIVE_CONN
+    ACTIVE_CONN = conn
+    timestamp = int(time.time()) if now is None else int(now)
+    finalized = 0
+    for trial in db.due_chat_trials(conn, timestamp):
+        with db._lock:
+            vote_rows = conn.execute(
+                "SELECT user_id FROM chat_trial_votes WHERE trial_id = ? ORDER BY user_id",
+                (trial["trial_id"],),
+            ).fetchall()
+        voter_ids = [int(row["user_id"]) for row in vote_rows]
+        names = get_user_names(vk, [trial["target_id"], *voter_ids])
+
+        with db.atomic(conn):
+            changed = conn.execute(
+                "UPDATE chat_trials SET status = 'closed', finalized_at = ? "
+                "WHERE trial_id = ? AND status = 'active' AND expires_at <= ?",
+                (timestamp, trial["trial_id"], timestamp),
+            ).rowcount
+            if not changed:
+                continue
+            votes = conn.execute(
+                "SELECT user_id, vote FROM chat_trial_votes WHERE trial_id = ? "
+                "ORDER BY user_id",
+                (trial["trial_id"],),
+            ).fetchall()
+            guilty_ids = [int(row["user_id"]) for row in votes if int(row["vote"]) == 1]
+            acquitted_ids = [int(row["user_id"]) for row in votes if int(row["vote"]) == -1]
+            guilty = len(guilty_ids) > len(acquitted_ids)
+            target_id = int(trial["target_id"])
+            target_name = mention(target_id, names.get(target_id))
+            result_lines = [
+                "⚖️ СУД ЧАТА ЗАВЕРШЁН",
+                "",
+                f"Подсудимый: {target_name}",
+                "",
+                f"🔴 За обвинение: {len(guilty_ids)}",
+                format_court_voters(guilty_ids, names),
+                "",
+                f"🟢 За оправдание: {len(acquitted_ids)}",
+                format_court_voters(acquitted_ids, names),
+                "",
+                f"Вердикт: {'ВИНОВЕН' if guilty else 'ОПРАВДАН'}.",
+            ]
+            if guilty:
+                mute_queued = apply_mute(
+                    vk, int(trial["peer_id"]), target_id,
+                    reason="Решение Суда чата", duration_seconds=3600, now=timestamp,
+                )
+                if mute_queued:
+                    result_lines.append(
+                        f"{target_name} отправляется на час подумать о своём поведении. Мут выдан."
+                    )
+                else:
+                    result_lines.append(
+                        f"{target_name} уже находится под мутом, срок не продлён."
+                    )
+            else:
+                result_lines.append("Суд решил: состав преступления не доказан. Подсудимый свободен!")
+            send_bot_message(vk, "\n".join(result_lines),
+                             peer_id=int(trial["peer_id"]))
+            finalized += 1
+    return finalized
+
+
 def handle_blacklist_command(vk, conn, from_id: int, text: str, now: int) -> bool:
     match = re.fullmatch(r"/чс(?:\s+(.*))?", text.strip(), re.IGNORECASE)
     if not match:
@@ -2026,6 +2144,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
 
     if handle_manual_premium_command(vk, conn, from_id, stripped, now):
         return True
+    if handle_court_command(vk, conn, from_id, stripped, now, command_message):
+        return True
     if handle_admin_ban_command(vk, conn, from_id, stripped, now):
         return True
     if handle_blacklist_command(vk, conn, from_id, stripped, now):
@@ -2469,6 +2589,7 @@ def scheduler_tick(vk, conn, now=None):
     global ACTIVE_CONN
     ACTIVE_CONN = conn
     now = datetime.now(config.CHAT_TZ) if now is None else now.astimezone(config.CHAT_TZ)
+    finalize_due_chat_trials(vk, conn, int(now.timestamp()))
     today_midnight = datetime.combine(now.date(), datetime.min.time(), config.CHAT_TZ)
     morning_at = today_midnight.replace(hour=config.MORNING_POST_HOUR)
     morning_event_key = f"morning:{now.date().isoformat()}"
