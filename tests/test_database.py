@@ -381,6 +381,18 @@ class DatabaseTests(unittest.TestCase):
         self.assertFalse(db.try_consume_profile_view(self.conn, 7, "2026-10-31", "self", 2))
         self.assertTrue(db.try_consume_profile_view(self.conn, 7, "2026-11-01", "self", 2))
 
+    def test_daily_command_quota_resets_on_a_new_day(self):
+        for _ in range(3):
+            self.assertTrue(db.try_consume_daily_command(
+                self.conn, 7, "commands_link", "2026-11-21", 3
+            ))
+        self.assertFalse(db.try_consume_daily_command(
+            self.conn, 7, "commands_link", "2026-11-21", 3
+        ))
+        self.assertTrue(db.try_consume_daily_command(
+            self.conn, 7, "commands_link", "2026-11-22", 3
+        ))
+
     def test_characteristic_limits_and_signed_score(self):
         common = dict(regular_weekly_limit=1, premium_daily_limit=2, now=100)
         self.assertEqual(db.give_characteristic(
