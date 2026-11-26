@@ -25,15 +25,15 @@ class Player:
 @dataclass
 class Table:
     starting_stack: int = 10000
-    small_blind: int = 50
-    big_blind: int = 100
+    small_blind: int = 10
+    big_blind: int = 20
     players: dict = field(default_factory=dict)
     owner_id: int = 0
     stage: str = "waiting"
     dealer: int = 0
     turn: int = 0
     current_bet: int = 0
-    min_raise: int = 100
+    min_raise: int = 20
     deck: list = field(default_factory=list)
     board: list = field(default_factory=list)
     hand_number: int = 0
@@ -59,11 +59,15 @@ class Table:
     def actionable(self):
         return [p for p in self.live() if not p.all_in]
 
-    def join(self, user_id):
+    def join(self, user_id, stack=None):
         if self.stage != "waiting" or user_id in self.players or len(self.players) == 9:
             raise ValueError("Cannot join")
         seat = next(i for i in range(1, 10) if all(p.seat != i for p in self.players.values()))
-        self.players[user_id] = Player(user_id, seat, self.starting_stack)
+        if stack is None:
+            stack = self.starting_stack
+        if type(stack) is not int or stack < 0:
+            raise ValueError('Invalid chip balance')
+        self.players[user_id] = Player(user_id, seat, stack)
         if not self.owner_id:
             self.owner_id = user_id
         return seat
@@ -94,6 +98,8 @@ class Table:
         ps = self.seated()
         if len(ps) < 2 or any(not p.ready or p.stack <= 0 for p in ps):
             raise ValueError("Need at least two ready players")
+        self.small_blind = 10
+        self.big_blind = 20
         for p in ps:
             p.folded = p.all_in = p.acted = False
             p.can_raise = True
@@ -248,7 +254,6 @@ class Table:
         if self.stage not in ("waiting", "complete"):
             raise ValueError("Cannot reset chips during an active hand")
         for player in self.players.values():
-            player.stack = self.starting_stack
             player.ready = False
             player.folded = False
             player.all_in = False
@@ -262,6 +267,8 @@ class Table:
         self.turn = 0
         self.turn_started_at = 0.0
         self.current_bet = 0
+        self.small_blind = 10
+        self.big_blind = 20
         self.min_raise = self.big_blind
         self.deck = []
         self.board = []
@@ -281,6 +288,9 @@ class Table:
             p.hole = ()
             p.ready = False
         self.stage = "waiting"
+        self.small_blind = 10
+        self.big_blind = 20
+        self.min_raise = 20
         self.board = []
         self.deck = []
         self.turn = 0

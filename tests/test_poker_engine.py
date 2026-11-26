@@ -31,14 +31,14 @@ class TableTests(unittest.TestCase):
         table = self.make_table()
         self.assertEqual(table.stage, "preflop")
         self.assertEqual(table.turn, 1)
-        self.assertEqual(table.players[1].street_bet, 50)
-        self.assertEqual(table.players[2].street_bet, 100)
+        self.assertEqual(table.players[1].street_bet, 10)
+        self.assertEqual(table.players[2].street_bet, 20)
 
     def test_fold_awards_pot(self):
         table = self.make_table()
         table.act(1, "fold")
         self.assertEqual(table.stage, "complete")
-        self.assertEqual(table.players[2].stack, 10050)
+        self.assertEqual(table.players[2].stack, 10010)
         self.assertEqual(sum(p.stack for p in table.players.values()), 20000)
 
     def test_check_facing_bet_is_invalid(self):
@@ -96,21 +96,21 @@ class TableTests(unittest.TestCase):
         table = Table()
         table.join(1)
         table.join(2)
-        table.players[2].stack = 40
+        table.players[2].stack = 10
         table.ready(1)
         table.ready(2)
         table.start()
         self.assertEqual(table.stage, "complete")
         self.assertEqual(len(table.board), 5)
-        self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
+        self.assertEqual(sum(p.stack for p in table.players.values()), 10010)
 
-    def test_new_session_restores_all_stacks(self):
+    def test_new_session_preserves_all_stacks(self):
         table = self.make_table()
         table.act(1, "fold")
         table.new_session()
         self.assertEqual(table.stage, "waiting")
         self.assertEqual(table.hand_number, 1)  # Outbox IDs stay unique across sessions
-        self.assertEqual([p.stack for p in table.seated()], [10000, 10000])
+        self.assertEqual([p.stack for p in table.seated()], [9990, 10010])
         self.assertTrue(all(not p.ready and not p.hole for p in table.seated()))
 
     def test_new_session_cannot_interrupt_hand(self):
@@ -123,8 +123,8 @@ class TableTests(unittest.TestCase):
         for uid in (1, 2, 3):
             table.join(uid)
             table.ready(uid)
-        table.players[2].stack = 40
-        table.players[3].stack = 40
+        table.players[2].stack = 10
+        table.players[3].stack = 10
         table.start()
         self.assertEqual(table.turn, 1)
         before = table.players[1].stack
@@ -133,7 +133,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.players[1].stack, before)
         table.act(1, "call")
         self.assertEqual(table.stage, "complete")
-        self.assertEqual(sum(p.stack for p in table.players.values()), 10080)
+        self.assertEqual(sum(p.stack for p in table.players.values()), 10020)
 
     def test_timeout_folds_when_facing_bet(self):
         table = Table()
@@ -265,7 +265,7 @@ class TableTests(unittest.TestCase):
             self.assertEqual(table.stage, street)
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), starting_chips)
-        self.assertEqual(sum(table.payouts.values()), 900)
+        self.assertEqual(sum(table.payouts.values()), 180)
         self.assertEqual(len(set(table.board)), 5)
 
 

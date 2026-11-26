@@ -10,8 +10,10 @@ HELP = (
     "/poker — стол, /join — занять место, /leave — выйти, "
     "/ready — готов, /unready — отменить готовность, "
     "/start — начать раздачу, /table — состояние, "
-    "/next — следующая раздача, /newsession — новая сессия (10000 фишек), "
-    "/fold, /check, /call, /raise СУММА, /allin — действия."
+    "/next — следующая раздача, /newsession — новая сессия без сброса фишек, "
+    "/fold, /check, /call, /raise СУММА, /allin — действия. "
+    "Блайнды 10/20. Начальный баланс: 1000 фишек за очко репутации; "
+    "повторно не начисляется. /баланс @username фишкиN — администратор."
 )
 
 
@@ -80,10 +82,11 @@ def parse_command(text):
 
 
 class PokerCommands:
-    def __init__(self, store, room_id, private_delivery=None):
+    def __init__(self, store, room_id, private_delivery=None, initial_chips=None):
         self.store = store
         self.room_id = room_id
         self.private_delivery = private_delivery
+        self.initial_chips = initial_chips
         self.last_public_queued = False
 
     def _deliver_and_report(self, table):
@@ -184,7 +187,12 @@ class PokerCommands:
                     if not permitted:
                         return ("⚠️ Разрешите личные сообщения от сообщества Астра "
                                 "и повторите /join, иначе закрытые карты не придут.")
-                table.join(user_id)
+                balance = self.store.wallet(user_id)
+                if balance is None:
+                    balance = self.initial_chips(user_id) if self.initial_chips else table.starting_stack
+                if type(balance) is not int or balance < 0:
+                    raise ValueError("Некорректный начальный баланс")
+                table.join(user_id, stack=balance)
             elif cmd == "leave":
                 table.leave(user_id)
             elif cmd in ("ready", "unready"):
