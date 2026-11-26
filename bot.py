@@ -2735,7 +2735,7 @@ def cleanup_tick(conn, now=None):
         for row in conn.execute('SELECT * FROM cleanup_tasks WHERE delete_at <= ?', (timestamp,)).fetchall():
             params = ({'peer_id': row['peer_id'], 'cmids': str(row['cmid']), 'delete_for_all': 1}
                       if row['cmid'] > 0 else {'message_ids': str(row['message_id']), 'delete_for_all': 1})
-            db.enqueue(conn, 'delete', {'params': params, 'peer_id': row['peer_id']})
+            db.enqueue(conn, 'delete', {'params': params, 'peer_id': row['peer_id']}, next_attempt=timestamp)
             conn.execute('DELETE FROM cleanup_tasks WHERE id = ?', (row['id'],))
 
 
