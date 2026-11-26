@@ -1586,6 +1586,156 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
     return False
 
 
+
+def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
+                            command_message=None) -> bool:
+    """Two-player six-box roulette; shares duel records and penalties."""
+    stripped = text.strip()
+    peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
+    help_text = (
+        "🎲 РУССКАЯ РУЛЕТКА — 6 ЯЩИКОВ\n\n"
+        "Два игрока, ящики 1 2 3 4 5 6. Бот заранее тайно выбирает один "
+        "проигрышный ящик. Игроки по очереди открывают ещё не выбранный ящик "
+        "командой /число 1 (от 1 до 6). Безопасный ящик — ход соперника. "
+        "Открывший проигрышный ящик проигрывает; другой побеждает.\n"
+        "Вызов: /рулетка @username; принять: /принять за 5 минут. "
+        "На каждый ход 5 минут.\n"
+        "Победа: +1 ⭐ (+2 ⭐ за победу над админом), поражение: −1 ⭐, "
+        "звание «Неудачник» и мут 30 минут (админы без мута и звания).\n"
+        "Обычным игрокам: 5 вызовов в сутки, 1 игра по своему вызову; "
+        "принимать чужие вызовы можно без ограничений. У админов лимитов нет."
+    )
+    if re.fullmatch(r"/рулетка", stripped, re.IGNORECASE):
+        send_bot_message(vk, help_text, peer_id=peer_id)
+        return True
+
+    challenge = re.fullmatch(r"/рулетка(?:\s*\+\s*|\s+)(.+)", stripped, re.IGNORECASE)
+    if challenge:
+        target_id = resolve_target_user_id(vk, challenge.group(1))
+        if target_id <= 0 or target_id == int(from_id):
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        if db.is_chat_blacklisted(conn, target_id) or db.is_chat_blacklisted(conn, from_id):
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        members = _get_social_chat_member_ids(vk, (from_id, target_id))
+        if members is None:
+            send_bot_message(vk, "⚠️ Не удалось проверить участников чата.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        if from_id not in members or target_id not in members:
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        day_key = datetime.fromtimestamp(int(now), config.CHAT_TZ).date().isoformat()
+        status, game_id = db.create_chat_roulette(
+            conn, peer_id, from_id, target_id, int(now), int(now) + 300,
+            day_key, is_admin=from_id in config.ADMIN_IDS,
+        )
+        if status == "limit":
+            if command_message is not None:
+                delete_message(vk, command_message)
+            return True
+        if status == "participated":
+            send_bot_message(vk, "🎲 Ты уже начал рулетку по своему вызову сегодня. "
+                             "Можно принимать чужие вызовы.", peer_id=peer_id)
+            return True
+        if status == "busy":
+            send_bot_message(vk, "🎲 Один из игроков уже участвует в незавершённой игре.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        names = get_user_names(vk, [from_id, target_id])
+        deadline = datetime.fromtimestamp(int(now) + 300, config.CHAT_TZ).strftime("%H:%M")
+        send_bot_message(
+            vk, f"🎲 ВЫЗОВ НА РУССКУЮ РУЛЕТКУ!\n\n"
+            f"{mention(from_id, names.get(from_id))} вызывает "
+            f"{mention(target_id, names.get(target_id))}!\n\n"
+            + help_text + f"\n\nПринять вызов: /принять до {deadline}.",
+            peer_id=peer_id,
+        )
+        return True
+
+    if re.fullmatch(r"/принять", stripped, re.IGNORECASE):
+        day_key = datetime.fromtimestamp(int(now), config.CHAT_TZ).date().isoformat()
+        status, game_id = db.accept_chat_roulette(
+            conn, peer_id, from_id, int(now), int(now) + 300, day_key,
+        )
+        if status == "missing":
+            return False  # Delegate to the original duel handler.
+        if status == "limit":
+            send_bot_message(vk, "🎲 Автор уже сыграл по своему вызову сегодня.",
+                             temporary=True, peer_id=peer_id)
+            return True
+        game = db.get_chat_duel(conn, game_id)
+        names = get_user_names(vk, [game["challenger_id"], game["opponent_id"],
+                                    game["next_player_id"]])
+        send_bot_message(
+            vk, "🎲 РУЛЕТКА НАЧАЛАСЬ!\n"
+            "Шесть ящиков: 1 2 3 4 5 6. Проигрышный ящик уже выбран ботом.\n"
+            f"Первым ходит {mention(game['next_player_id'], names.get(game['next_player_id']))}. "
+            "Выбери /число N от 1 до 6. На ход 5 минут.",
+            peer_id=peer_id,
+        )
+        return True
+
+    match = re.fullmatch(r"/число\s+(\d{1,3})", stripped, re.IGNORECASE)
+    if not match:
+        return False
+    game = db.get_active_chat_roulette(conn, peer_id, from_id)
+    if game is None:
+        return False
+    if command_message is not None:
+        delete_message(vk, command_message)
+    number = int(match.group(1))
+    outcome, game = db.open_chat_roulette_box(conn, peer_id, from_id, number, int(now))
+    if outcome == "invalid":
+        send_bot_message(vk, "🎲 Выбери ящик от 1 до 6.", temporary=True, peer_id=peer_id)
+    elif outcome == "turn":
+        send_bot_message(vk, "🎲 Сейчас ход соперника.", temporary=True, peer_id=peer_id)
+    elif outcome == "occupied":
+        send_bot_message(vk, "🎲 Этот ящик уже открыт. Выбери другой.",
+                         temporary=True, peer_id=peer_id)
+    elif outcome == "safe":
+        names = get_user_names(vk, [from_id, game["next_player_id"]])
+        remaining = [str(i) for i in range(1, 7)
+                     if i not in json.loads(game["opened_boxes"])]
+        send_bot_message(
+            vk, f"📦 {mention(from_id, names.get(from_id))} открыл ящик №{number}. "
+            f"Безопасно!\nОстались: {', '.join(remaining)}.\n"
+            f"▶ Ход {mention(game['next_player_id'], names.get(game['next_player_id']))}: /число N",
+            peer_id=peer_id,
+        )
+    elif outcome == "lost":
+        loser_id, winner_id = game["loser_id"], game["winner_id"]
+        names = get_user_names(vk, [loser_id, winner_id])
+        loser, winner = mention(loser_id, names.get(loser_id)), mention(winner_id, names.get(winner_id))
+        lines = [
+            "🎲 РУССКАЯ РУЛЕТКА ЗАВЕРШЕНА!",
+            f"📦 Ящик №{number} — проигрышный!",
+            f"🥴 {loser} проиграл. −1 ⭐ репутации.",
+            f"🏆 {winner} победил! +{game['winner_bonus']} ⭐ репутации.",
+        ]
+        if loser_id not in config.ADMIN_IDS:
+            queued = apply_mute(
+                vk, peer_id, loser_id, reason="Поражение в рулетке",
+                duration_seconds=3600, now=int(now), allow_extend=True,
+            )
+            if queued:
+                lines.append("🔇 Проигравший получает звание «Неудачник» и мут на 30 минут.")
+                db.enqueue(conn, "unmute", {
+                    "peer_id": peer_id, "user_id": loser_id,
+                    "expected_until": int(now) + 3600,
+                }, next_attempt=int(now) + 1800)
+            else:
+                lines.append("🔇 Участник уже под мутом; дополнительное снятие не назначено.")
+        else:
+            lines.append("🛡️ Администратор освобождён от мута и звания.")
+        send_bot_message(vk, "\n".join(lines), peer_id=peer_id)
+    return True
+
+
 def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
                         command_message=None) -> bool:
     stripped = text.strip()
@@ -1603,8 +1753,8 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             "🏆 Победитель получает +1 ⭐ репутации (+2 ⭐ за победу над админом).\n"
             "🥴 Проигравший теряет 1 ⭐. Обычный участник получает звание «Неудачник» "
             "и мут на 30 минут. Админ теряет репутацию, но не получает мут и звание.\n\n"
-            "📅 Обычный участник может отправить до 10 вызовов и начать одну дуэль "
-            "за московские сутки. Принимать чужие вызовы можно без ограничений. Админы не ограничены. Одиннадцатый вызов удаляется молча.",
+            "📅 Обычный участник может отправить до 5 вызовов и начать одну дуэль "
+            "за московские сутки. Принимать чужие вызовы можно без ограничений. Админы не ограничены. Шестой вызов удаляется молча.",
             peer_id=peer_id,
         )
         return True
@@ -1663,7 +1813,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             f"Чтобы принять вызов, ответь командой /принять до {deadline}.\n"
             "После принятия оба участника отправляют число от 0 до 100 командой /число 50.\n"
             "Бот выберет случайное число. Победит тот, чьё число окажется ближе.\n"
-            "Можно отправить до 10 вызовов за московские сутки; начать свою дуэль — один раз.\n"
+            "Можно отправить до 5 вызовов за московские сутки; начать свою дуэль — один раз.\n"
             "Принимать вызовы других участников можно без ограничений.\n"
             "У администраторов ограничений нет.",
             peer_id=peer_id,
@@ -2673,6 +2823,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
         return False
 
     if handle_manual_premium_command(vk, conn, from_id, stripped, now):
+        return True
+    if handle_roulette_command(vk, conn, from_id, stripped, now, command_message):
         return True
     if handle_duel_command(vk, conn, from_id, stripped, now, command_message):
         return True

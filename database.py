@@ -11,7 +11,7 @@ from typing import Optional
 import config
 
 _lock = threading.RLock()
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 
 class Connection(sqlite3.Connection):
@@ -247,6 +247,12 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
             _migration_22(conn)
             conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                          (22, int(time.time())))
+            current = 22
+
+        if current < 23:
+            _migration_23(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                         (23, int(time.time())))
 
         conn.commit()
 
@@ -714,7 +720,7 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
         # Count challenge commands per Moscow day, including attempts made
         # while an invitation or another duel is already active.
         if not is_admin and not try_consume_daily_command(
-            conn, challenger_id, "duel_challenge", day_key, 10
+            conn, challenger_id, "duel_challenge", day_key, 5
         ):
             return "limit", None
         # An active duel takes precedence over the daily participation limit:
@@ -757,7 +763,7 @@ def accept_chat_duel(conn: sqlite3.Connection, peer_id: int, user_id: int,
     with atomic(conn):
         duel = conn.execute(
             "SELECT * FROM chat_duels WHERE peer_id = ? AND opponent_id = ? "
-            "AND status = 'pending' ORDER BY duel_id DESC LIMIT 1",
+            "AND game_type = 'duel' AND status = 'pending' ORDER BY duel_id DESC LIMIT 1",
             (int(peer_id), int(user_id)),
         ).fetchone()
         if not duel or int(duel["accept_until"]) <= int(now):
@@ -792,7 +798,7 @@ def submit_chat_duel_guess(conn: sqlite3.Connection, peer_id: int, user_id: int,
         return None
     with atomic(conn):
         duel = conn.execute(
-            "SELECT * FROM chat_duels WHERE peer_id = ? AND status = 'active' "
+            "SELECT * FROM chat_duels WHERE peer_id = ? AND status = 'active' AND game_type = 'duel' "
             "AND guess_until > ? AND (challenger_id = ? OR opponent_id = ?) "
             "ORDER BY duel_id DESC LIMIT 1",
             (int(peer_id), int(now), int(user_id), int(user_id)),
@@ -2551,3 +2557,140 @@ def _migration_22(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS chat_duels_participants "
                  "ON chat_duels(peer_id, status, challenger_id, opponent_id)")
+
+
+def _migration_23(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(chat_duels)")}
+    if "game_type" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN game_type TEXT NOT NULL DEFAULT 'duel'")
+    if "opened_boxes" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN opened_boxes TEXT NOT NULL DEFAULT '[]'")
+    if "next_player_id" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN next_player_id INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS chat_duels_game ON chat_duels(peer_id, game_type, status)")
+
+
+def create_chat_roulette(conn, peer_id, challenger_id, opponent_id, now, accept_until, day_key, *, is_admin):
+    with atomic(conn):
+        if not is_admin and not try_consume_daily_command(
+            conn, challenger_id, "roulette_challenge", day_key, 5
+        ):
+            return "limit", None
+        active = conn.execute(
+            "SELECT duel_id FROM chat_duels WHERE peer_id=? AND status IN ('pending','active') "
+            "AND (challenger_id IN (?,?) OR opponent_id IN (?,?)) LIMIT 1",
+            (peer_id, challenger_id, opponent_id, challenger_id, opponent_id),
+        ).fetchone()
+        if active:
+            return "busy", None
+        if not is_admin:
+            used = conn.execute(
+                "SELECT used FROM daily_command_usage WHERE user_id=? "
+                "AND command='roulette_started' AND day_key=?",
+                (challenger_id, day_key),
+            ).fetchone()
+            if used and used["used"] >= 1:
+                return "participated", challenger_id
+        cursor = conn.execute(
+            "INSERT INTO chat_duels(peer_id,challenger_id,opponent_id,status,created_at,"
+            "accept_until,game_type) VALUES (?,?,?,'pending',?,?,'roulette')",
+            (peer_id, challenger_id, opponent_id, now, accept_until),
+        )
+        return "created", cursor.lastrowid
+
+
+def accept_chat_roulette(conn, peer_id, user_id, now, turn_until, day_key):
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT * FROM chat_duels WHERE peer_id=? AND opponent_id=? "
+            "AND game_type='roulette' AND status='pending' ORDER BY duel_id DESC LIMIT 1",
+            (peer_id, user_id),
+        ).fetchone()
+        if row is None or row["accept_until"] <= now:
+            return "missing", None
+        challenger_id = row["challenger_id"]
+        if challenger_id not in config.ADMIN_IDS:
+            if not try_consume_daily_command(conn, challenger_id, "roulette_started", day_key, 1):
+                return "limit", None
+        from secrets import randbelow
+        fatal_box = randbelow(6) + 1
+        first = challenger_id if randbelow(2) == 0 else user_id
+        conn.execute(
+            "UPDATE chat_duels SET status='active',guess_until=?,target_number=?,"
+            "next_player_id=? WHERE duel_id=?",
+            (turn_until, fatal_box, first, row["duel_id"]),
+        )
+        return "accepted", row["duel_id"]
+
+
+def get_active_chat_roulette(conn, peer_id, user_id):
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM chat_duels WHERE peer_id=? AND game_type='roulette' "
+            "AND status='active' AND (challenger_id=? OR opponent_id=?) LIMIT 1",
+            (peer_id, user_id, user_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def open_chat_roulette_box(conn, peer_id, user_id, box, now):
+    if type(box) is not int or not 1 <= box <= 6:
+        return "invalid", None
+    with atomic(conn):
+        row = conn.execute(
+            "SELECT * FROM chat_duels WHERE peer_id=? AND game_type='roulette' "
+            "AND status='active' AND (challenger_id=? OR opponent_id=?) LIMIT 1",
+            (peer_id, user_id, user_id),
+        ).fetchone()
+        if row is None:
+            return "missing", None
+        duel = dict(row)
+        if duel["guess_until"] <= now:
+            return "expired", duel
+        if duel["next_player_id"] != user_id:
+            return "turn", duel
+        opened = json.loads(duel["opened_boxes"])
+        if box in opened:
+            return "occupied", duel
+        opened.append(box)
+        loser = user_id if box == duel["target_number"] else None
+        other = duel["opponent_id"] if user_id == duel["challenger_id"] else duel["challenger_id"]
+        if loser is not None:
+            winner_bonus = 2 if other not in config.ADMIN_IDS and user_id in config.ADMIN_IDS else 1
+            # Reuse the shared reputation and profile record system.
+            conn.execute(
+                "UPDATE chat_duels SET opened_boxes=?,status='completed',loser_id=?,"
+                "completed_at=? WHERE duel_id=?",
+                (json.dumps(opened), loser, now, duel["duel_id"]),
+            )
+            local_day = datetime.fromtimestamp(now, config.CHAT_TZ).date()
+            key = f"roulette:{duel['duel_id']}:{local_day.isoformat()}"
+            conn.execute(
+                "INSERT INTO reputation_votes(giver_id,receiver_id,week_key,value,created_at) "
+                "VALUES (?,?,?,?,?)",
+                (-duel["duel_id"], loser, key, -1, now),
+            )
+            conn.execute(
+                "INSERT INTO reputation_votes(giver_id,receiver_id,week_key,value,created_at) "
+                "VALUES (?,?,?,?,?)",
+                (-duel["duel_id"], other, key, 1, now),
+            )
+            if winner_bonus > 1:
+                conn.execute(
+                    "INSERT INTO reputation_votes(giver_id,receiver_id,week_key,value,created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (-duel["duel_id"], other, key + ":bonus", winner_bonus - 1, now),
+                )
+            duel.update(status="completed", loser_id=loser, winner_id=other,
+                        winner_bonus=winner_bonus)
+            outcome = "lost"
+        else:
+            conn.execute(
+                "UPDATE chat_duels SET opened_boxes=?,next_player_id=?,guess_until=? "
+                "WHERE duel_id=?",
+                (json.dumps(opened), other, now + 300, duel["duel_id"]),
+            )
+            duel["next_player_id"] = other
+            outcome = "safe"
+        duel["opened_boxes"] = json.dumps(opened)
+        return outcome, duel
