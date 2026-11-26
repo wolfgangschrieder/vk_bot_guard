@@ -81,6 +81,51 @@ class BotTests(unittest.TestCase):
         for _ in range(4):
             bot.deliver_outbox(self.vk, self.conn, self.now if now is None else now)
 
+    def test_poker_real_mute_and_premium_release(self):
+        from poker.storage import PokerStore
+        store = PokerStore(Path(self.tmp.name) / "poker.db")
+        try:
+            with patch.object(config, "POKER_CHAT_PEER_ID", 2000000404), \
+                 patch.object(bot, "POKER_COMMANDS", SimpleNamespace(store=store)):
+                self.assertTrue(bot.poker_restrict_member(self.vk, self.conn, 1, self.now))
+                self.vk.messages.changeConversationMemberRestrictions.assert_called_with(
+                    peer_id=2000000404, member_ids="1", action="ro", **{"for": 3600}
+                )
+                self.assertTrue(bot.poker_restrict_member(self.vk, self.conn, 1, self.now))
+                self.assertEqual(self.vk.messages.changeConversationMemberRestrictions.call_count, 1)
+                self.grant_donut(1)
+                self.assertTrue(bot.poker_is_allowed(self.conn, 1, self.now))
+                bot.poker_release_member(self.vk, 1)
+                self.vk.messages.changeConversationMemberRestrictions.assert_called_with(
+                    peer_id=2000000404, member_ids="1", action="rw"
+                )
+                self.assertEqual(store.conn.execute(
+                    "SELECT COUNT(*) FROM poker_room_restrictions"
+                ).fetchone()[0], 0)
+                self.assertFalse(bot.poker_restrict_member(self.vk, self.conn, 99, self.now))
+        finally:
+            store.close()
+
+    def test_poker_admin_balance_permissions(self):
+        from poker.storage import PokerStore
+        from poker.commands import PokerCommands
+        store = PokerStore(Path(self.tmp.name) / "poker.db")
+        try:
+            room = 2000000404
+            commands = PokerCommands(store, room, initial_chips=lambda uid: 0)
+            commands.handle(10, "/join", "first")
+            with patch.object(config, "POKER_CHAT_PEER_ID", room), \
+                 patch.object(bot, "POKER_COMMANDS", commands):
+                self.assertIn("только администраторам",
+                              bot.poker_handle_admin_balance(self.vk, 10, "/баланс @id10 фишки100"))
+                self.assertIn("пополнен",
+                              bot.poker_handle_admin_balance(self.vk, 99, "/баланс @id10 фишки100"))
+                self.assertEqual(store.wallet(10), 100)
+                self.assertIn("нулевом",
+                              bot.poker_handle_admin_balance(self.vk, 99, "/баланс @id10 фишки200"))
+        finally:
+            store.close()
+
     def test_lexicon_uses_whole_words_and_phrases(self):
         for word in ('компания', 'температура', 'олимпиада'):
             self.assertFalse(bot.contains_any_prohibited_term(word), word)
