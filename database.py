@@ -714,7 +714,7 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
         # Count challenge commands per Moscow day, including attempts made
         # while an invitation or another duel is already active.
         if not is_admin and not try_consume_daily_command(
-            conn, challenger_id, "duel_challenge", day_key, 3
+            conn, challenger_id, "duel_challenge", day_key, 10
         ):
             return "limit", None
         # An active duel takes precedence over the daily participation limit:
@@ -727,16 +727,14 @@ def create_chat_duel(conn: sqlite3.Connection, peer_id: int, challenger_id: int,
         ).fetchone()
         if active:
             return "busy", None
-        for participant_id in (int(challenger_id), int(opponent_id)):
-            if participant_id in config.ADMIN_IDS:
-                continue
+        if not is_admin:
             participation = conn.execute(
                 "SELECT used FROM daily_command_usage WHERE user_id = ? "
-                "AND command = 'duel_participation' AND day_key = ?",
-                (participant_id, str(day_key)),
+                "AND command = 'duel_started' AND day_key = ?",
+                (int(challenger_id), str(day_key)),
             ).fetchone()
             if participation and int(participation["used"]) >= 1:
-                return "participated", participant_id
+                return "participated", int(challenger_id)
         cursor = conn.execute(
             "INSERT INTO chat_duels(peer_id, challenger_id, opponent_id, status, created_at, accept_until) "
             "VALUES (?, ?, ?, 'pending', ?, ?)",
@@ -771,25 +769,16 @@ def accept_chat_duel(conn: sqlite3.Connection, peer_id: int, user_id: int,
         ).fetchone()
         if active:
             return "busy", None
-        participants = (
-            (int(duel["challenger_id"]), int(duel["challenger_id"]) in config.ADMIN_IDS),
-            (int(user_id), bool(is_admin)),
-        )
-        for participant_id, participant_is_admin in participants:
-            if participant_is_admin:
-                continue
+        challenger_id = int(duel["challenger_id"])
+        if challenger_id not in config.ADMIN_IDS:
             used = conn.execute(
                 "SELECT used FROM daily_command_usage WHERE user_id = ? "
-                "AND command = 'duel_participation' AND day_key = ?",
-                (participant_id, str(day_key)),
+                "AND command = 'duel_started' AND day_key = ?",
+                (challenger_id, str(day_key)),
             ).fetchone()
             if used and int(used["used"]) >= 1:
                 return "limit", None
-        for participant_id, participant_is_admin in participants:
-            if not participant_is_admin:
-                try_consume_daily_command(
-                    conn, participant_id, "duel_participation", day_key, 1
-                )
+            try_consume_daily_command(conn, challenger_id, "duel_started", day_key, 1)
         conn.execute(
             "UPDATE chat_duels SET status = 'active', guess_until = ? WHERE duel_id = ?",
             (int(guess_until), int(duel["duel_id"])),
@@ -2445,6 +2434,24 @@ def queue_cleanup(conn, peer_id, message_id, cmid, delete_at):
     with _lock:
         conn.execute('INSERT OR IGNORE INTO cleanup_tasks(peer_id, message_id, cmid, delete_at) '
                      'VALUES (?, ?, ?, ?)', (peer_id, message_id, cmid, delete_at))
+        conn.commit()
+
+
+def confirmed_mute_deadline(conn, peer_id, user_id):
+    with _lock:
+        row = conn.execute(
+            "SELECT mute_until FROM users WHERE peer_id = ? AND user_id = ?",
+            (int(peer_id), int(user_id)),
+        ).fetchone()
+        return int(row["mute_until"]) if row else 0
+
+
+def clear_confirmed_mute(conn, peer_id, user_id, expected_until):
+    with _lock:
+        conn.execute(
+            "UPDATE users SET mute_until = 0 WHERE peer_id = ? AND user_id = ? AND mute_until <= ?",
+            (int(peer_id), int(user_id), int(expected_until)),
+        )
         conn.commit()
 
 

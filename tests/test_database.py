@@ -399,8 +399,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_interval_cooldown(self.conn, 7, "audio_recording", 4600, 3600))
         self.assertTrue(db.claim_interval_cooldown(self.conn, 8, "audio_recording", 1001, 3600))
 
-    def test_duel_challenge_quota_is_three_and_play_quota_is_separate(self):
-        for attempt in range(3):
+    def test_duel_challenge_quota_ten_and_accept_unlimited(self):
+        for attempt in range(10):
             status, duel_id = db.create_chat_duel(
                 self.conn, 2000000002, 1, attempt + 2, 100 + attempt,
                 400 + attempt, "2026-11-21", is_admin=False,
@@ -410,24 +410,25 @@ class DatabaseTests(unittest.TestCase):
                 self.conn.execute(
                     "UPDATE chat_duels SET status = 'expired' WHERE duel_id = ?", (duel_id,)
                 )
-        status, _ = db.create_chat_duel(
+        self.assertEqual(db.create_chat_duel(
             self.conn, 2000000002, 1, 20, 200, 500, "2026-11-21", is_admin=False,
-        )
-        self.assertEqual(status, "limit")
+        )[0], "limit")
 
-        status, duel_id = db.create_chat_duel(
-            self.conn, 2000000002, 30, 1, 201, 501, "2026-11-21", is_admin=True,
-        )
-        self.assertEqual(status, "created")
-        status, _ = db.accept_chat_duel(
-            self.conn, 2000000002, 1, 202, 502, "2026-11-21", is_admin=False,
-        )
-        self.assertEqual(status, "accepted")
-        status, blocked_user_id = db.create_chat_duel(
-            self.conn, 2000000002, 31, 1, 203, 503, "2026-11-21", is_admin=False,
-        )
-        self.assertEqual(status, "participated")
-        self.assertEqual(blocked_user_id, 1)
+        # A user can accept repeatedly without spending their own challenge quota.
+        for attempt in range(2):
+            status, duel_id = db.create_chat_duel(
+                self.conn, 2000000002, next(iter(config.ADMIN_IDS), 30) + (attempt if not config.ADMIN_IDS else 0), 1,
+                201 + attempt, 501 + attempt, "2026-11-21", is_admin=True,
+            )
+            self.assertEqual(status, "created")
+            self.assertEqual(db.accept_chat_duel(
+                self.conn, 2000000002, 1, 202 + attempt,
+                502 + attempt, "2026-11-21", is_admin=False,
+            )[0], "accepted")
+            with db.atomic(self.conn):
+                self.conn.execute(
+                    "UPDATE chat_duels SET status = 'completed' WHERE duel_id = ?", (duel_id,)
+                )
 
     def test_admin_duel_challenge_quota_is_unlimited(self):
         for attempt in range(11):
@@ -461,14 +462,19 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(result["opponent_guess"], 51)
         db.finish_chat_duel(self.conn, duel_id, 47, 1, 112)
 
-        # Both players use their daily participation when a duel starts.
+        # Only the challenger spends their own daily duel-start quota.
         _, next_duel_id = db.create_chat_duel(
             self.conn, 2000000002, 99, 1, 113, 413, "2026-11-21", is_admin=True,
         )
         self.assertIsNotNone(next_duel_id)
         self.assertEqual(db.accept_chat_duel(
             self.conn, 2000000002, 1, 114, 414, "2026-11-21", is_admin=False,
-        )[0], "limit")
+        )[0], "accepted")
+
+        # An active accepted duel blocks concurrent invitations.
+        self.assertEqual(db.create_chat_duel(
+            self.conn, 2000000002, 1, 4, 115, 415, "2026-11-21", is_admin=False,
+        )[0], "busy")
 
     def test_characteristic_limits_and_signed_score(self):
         common = dict(regular_weekly_limit=1, premium_daily_limit=2, now=100)

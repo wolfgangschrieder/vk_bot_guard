@@ -99,7 +99,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(profile.splitlines()[0], '👤 [id10|Test User]')
         self.assertNotIn('🛡️ АДМИНИСТРАТОР ЧАТА', profile)
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
-        self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
+        self.assertIn('⚔️ Дуэли: 0/0', profile)
         self.assertNotIn('Герой дня:', profile)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM daily_user_stats').fetchone()[0], 0)
 
@@ -146,13 +146,13 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[0]['message']
         self.assertTrue(profile.startswith('👤 [id10|Test User]'))
         self.assertNotIn('ПРОФИЛЬ УЧАСТНИКА', profile)
-        self.assertIn('⚔️ ДУЭЛИ (победы/поражения): 0/0', profile)
+        self.assertIn('⚔️ Дуэли: 0/0', profile)
         self.assertIn('⭐ Репутация: +12', profile)
         self.assertIn('🥉 Ранг:  1 · Новичок', profile)
         self.assertIn('💬 Сообщений за всё время: 182', profile)
         self.assertIn('🏆 Герой дня: 3 раза (последний: 09.10.2026)', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
-        self.assertIn('За 7 дней: 182 сообщения', profile)
+        self.assertNotIn('За 7 дней:', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
 
     def test_marriage_proposal_requires_target_acceptance_and_appears_in_profile_and_pairs(self):
@@ -296,7 +296,8 @@ class BotTests(unittest.TestCase):
         self.assertIn('🥇 [id1|Test User] — 5', reports[0])
         self.assertIn('🥈 [id2|Test User] — 3', reports[0])
         self.assertIn('📊 ТОП-5 ЗА МЕСЯЦ', reports[1])
-        self.assertIn('🥇 [id3|Test User] — 7', reports[1])
+        self.assertIn('🥇 [id1|Test User] — 5', reports[1])
+        self.assertNotIn('[id3|', reports[1])
         self.assertIn('📊 ТОП-5 ЗА ГОД', reports[2])
         self.assertIn('🥇 [id4|Test User] — 9', reports[2])
 
@@ -331,7 +332,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('/принять', challenge)
         self.assertIn('командой /число 50', challenge)
         self.assertIn('Бот выберет случайное число.', challenge)
-        self.assertIn('до 3 вызовов участникам чата', challenge)
+        self.assertIn('до 10 вызовов', challenge)
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=49):
@@ -344,9 +345,9 @@ class BotTests(unittest.TestCase):
         self.assertIn('🎯 Загаданное ботом число: 49', result)
         self.assertIn('🏆 Победил ', result)
         self.assertIn('✨ Победителю начислено +1 ⭐ репутации.', result)
-        self.assertIn('−1 репутация ⭐, мут на 1 час.', result)
+        self.assertIn('−1 репутация ⭐, мут на 30 минут.', result)
         self.assertIn('Неудачник', result)
-        self.assertIn('мут на 1 час', result)
+        self.assertIn('мут на 30 минут', result)
         self.assertEqual(db.get_reputation(self.conn, 1), -1)
         self.assertEqual(db.get_reputation(self.conn, 2), 1)
         mute = self.queued('mute')[0]
@@ -356,14 +357,14 @@ class BotTests(unittest.TestCase):
         )]
         delayed_status = next(row for row in delayed
                               if 'снято звание' in json.loads(row['payload'])['message'])
-        self.assertEqual(delayed_status['next_attempt'], self.now + 3600)
+        self.assertEqual(delayed_status['next_attempt'], self.now + 1800)
 
     def test_duels_help_command_explains_rules_for_chat_users(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/дуэли', uid=1))
         payload = self.queued('send')[0]
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
         for expected in ('/дуэль @username', '/принять', '/число 42',
-                         'до 3 вызовов', 'Четвёртый вызов удаляется молча'):
+                         'до 10 вызовов', 'Одиннадцатый вызов удаляется молча'):
             self.assertIn(expected, payload['message'])
         self.assertIn('/дуэль + @username', payload['message'])
         self.assertIn('ничья', payload['message'].casefold())
@@ -371,7 +372,7 @@ class BotTests(unittest.TestCase):
     def test_challenge_notifies_when_target_already_played_today(self):
         day_key = datetime.fromtimestamp(self.now, config.CHAT_TZ).date().isoformat()
         self.assertTrue(db.try_consume_daily_command(
-            self.conn, 2, 'duel_participation', day_key, 1,
+            self.conn, 1, 'duel_started', day_key, 1,
         ))
         bot.handle_new_message(
             self.vk, self.conn,
@@ -384,7 +385,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM chat_duels').fetchone()[0], 0)
 
     def test_fourth_daily_duel_invitation_is_deleted_without_reply(self):
-        for attempt in range(3):
+        for attempt in range(10):
             target_id = attempt + 2
             bot.handle_new_message(
                 self.vk, self.conn,
@@ -400,11 +401,11 @@ class BotTests(unittest.TestCase):
 
         sent_before = len(self.queued('send'))
         bot.handle_new_message(
-            self.vk, self.conn, self.message('/дуэль + @id20', uid=1, mid=4)
+            self.vk, self.conn, self.message('/дуэль + @id20', uid=1, mid=11)
         )
         self.assertEqual(len(self.queued('send')), sent_before)
         deleted_ids = [item['params'].get('message_ids') for item in self.queued('delete')]
-        self.assertIn('4', deleted_ids)
+        self.assertIn('11', deleted_ids)
 
     def test_duel_rejects_a_number_already_chosen_by_the_opponent(self):
         bot.handle_new_message(self.vk, self.conn,
@@ -543,7 +544,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
         trial = db.get_active_chat_trial(self.conn, config.CHAT_PEER_ID)
         self.assertEqual(trial['target_id'], 2)
-        self.assertEqual(trial['expires_at'] - trial['started_at'], 600)
+        self.assertEqual(trial['expires_at'] - trial['started_at'], 300)
 
     def test_court_target_cannot_vote_and_tie_acquits(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99))
@@ -759,7 +760,7 @@ class BotTests(unittest.TestCase):
             self.vk, self.conn, self.message('/profile @id2', uid=99, mid=3)
         )
         profile = self.queued('send')[2]['message']
-        self.assertIn('🎁 Премиум от администрации: до ', profile)
+        self.assertIn('🎁 Премиум подписка на чат: до ', profile)
 
     def test_non_admin_cannot_grant_premium(self):
         bot.handle_new_message(
@@ -1506,15 +1507,15 @@ class BotTests(unittest.TestCase):
         with patch('time.time', return_value=self.now + 30):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('', uid=1, mid=2, attachments=track))
-        with patch('time.time', return_value=self.now + 3600):
+        with patch('time.time', return_value=self.now + 1800):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('', uid=1, mid=3, attachments=track))
 
-        self.assertEqual(len(self.queued('delete')), 1)
-        self.assertEqual(self.queued('delete')[0]['params']['message_ids'], '2')
+        self.assertEqual(len(self.queued('delete')), 2)
+        self.assertEqual([item['params']['message_ids'] for item in self.queued('delete')], ['2', '3'])
         self.assertEqual(self.queued('send'), [])
         stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
-        self.assertEqual((stats['messages'], stats['music']), (2, 2))
+        self.assertEqual((stats['messages'], stats['music']), (1, 1))
 
     def test_audio_track_limit_does_not_apply_to_voice_messages_premium_or_admins(self):
         db.grant_manual_premium_month(self.conn, 2, now=self.now)
@@ -2093,11 +2094,11 @@ class BotTests(unittest.TestCase):
         self.assertEqual((task['peer_id'], task['cmid']), (config.MODERATION_CHAT_PEER_ID, 77))
         self.assertEqual(self.vk.messages.send.call_args.kwargs['peer_ids'], str(config.MODERATION_CHAT_PEER_ID))
         self.assertEqual(self.vk.messages.send.call_count, 1)
-        bot.cleanup_tick(self.conn, self.now + 3600)
+        bot.cleanup_tick(self.conn, task['delete_at'])
         self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
             'conversation_message_id': 77, 'message_id': 0, 'response': 1}]
-        bot.deliver_outbox(self.vk, self.conn, self.now + 3600)
-        self.assertEqual(self.vk.messages.delete.call_args.kwargs['cmids'], '77')
+        bot.deliver_outbox(self.vk, self.conn, task['delete_at'])
+        self.assertTrue(any(call.kwargs.get('cmids') == '77' for call in self.vk.messages.delete.call_args_list))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0], 0)
 
     def test_zero_send_is_quarantined_without_resend(self):
