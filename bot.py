@@ -560,14 +560,19 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 
 def publish_king(vk, conn, stat_date: date) -> bool:
-    stats = db.get_daily_stats(conn, stat_date)
-    if not stats["top_users"]:
+    existing = db.get_king_publication(conn, stat_date)
+    stats = db.get_daily_stats(conn, stat_date) if existing is None else None
+    if existing is None and not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
 
-    user_id, messages = stats["top_users"][0]
     if db.get_king(conn, stat_date):
         return True
+    if existing is not None:
+        user_id, messages, random_id = int(existing["user_id"]), int(existing["messages"]), int(existing["random_id"])
+    else:
+        user_id, messages = stats["top_users"][0]
+        random_id = db.prepare_king_publication(conn, stat_date, user_id, messages)
 
     names = get_user_names(vk, [user_id])
     text = (
@@ -576,11 +581,15 @@ def publish_king(vk, conn, stat_date: date) -> bool:
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
-    sent = send_bot_message(vk, text)
-    if sent <= 0:
+    try:
+        sent = vk.messages.send(peer_id=config.CHAT_PEER_ID, message=text, random_id=random_id)
+    except ApiError as err:
+        log.warning("Не удалось опубликовать Героя %s: %s", stat_date, err)
         return False
-    if not db.save_king(conn, stat_date, user_id, messages):
-        log.warning("Герой опубликован, но запись уже существует: %s", stat_date)
+    if not sent:
+        return False
+    if not db.finalize_king_publication(conn, stat_date):
+        return False
     log.info(
         "Герой чата: date=%s user=%s messages=%s",
         stat_date,
@@ -937,9 +946,8 @@ def _handle_new_message(vk, conn, message) -> None:
 
     # Statistics and bot commands belong only to the feature chat (2000000002).
     if is_bot_feature_chat(peer_id):
-        db.record_message(
-            conn,
-            from_id,
+        db.record_message_once(
+            conn, peer_id, message_id, from_id,
             message_field(message, "date", now) or now,
             classify_media(message),
         )
@@ -1014,6 +1022,8 @@ def handle_new_message(vk, conn, message) -> None:
     message_id = message_field(message, "id")
     try:
         _handle_new_message(vk, conn, message)
+        if message_id > 0 and is_target_chat(peer_id):
+            db.complete_processed_message(conn, peer_id, message_id)
     except Exception:
         if message_id > 0 and is_target_chat(peer_id):
             db.release_processed_message(conn, peer_id, message_id)
