@@ -26,7 +26,7 @@ class RouletteTests(unittest.TestCase):
     def test_six_box_game_turns_and_shared_profile(self):
         status, game_id = self.create()
         self.assertEqual(status, "created")
-        with patch("secrets.randbelow", side_effect=[3, 0]):
+        with patch("secrets.randbelow", return_value=3):
             status, _ = db.accept_chat_roulette(
                 self.conn, self.peer, 2, 1001, 1301, self.day,
             )
@@ -43,6 +43,20 @@ class RouletteTests(unittest.TestCase):
         self.assertEqual(db.get_reputation(self.conn, 1), 1)
         self.assertEqual(db.get_reputation(self.conn, 2), -1)
         self.assertEqual(db.open_chat_roulette_box(self.conn, self.peer, 1, 5, 1004)[0], "missing")
+
+    def test_challenger_always_starts(self):
+        for challenger, opponent in ((1, 2), (3, 4), (5, 6)):
+            status, game_id = self.create(challenger=challenger, opponent=opponent)
+            self.assertEqual(status, "created")
+            with patch("secrets.randbelow", return_value=5):
+                status, _ = db.accept_chat_roulette(
+                    self.conn, self.peer, opponent, 1001, 1301, self.day,
+                )
+            self.assertEqual(status, "accepted")
+            game = db.get_chat_duel(self.conn, game_id)
+            self.assertEqual(game["next_player_id"], challenger)
+            with db.atomic(self.conn):
+                self.conn.execute("UPDATE chat_duels SET status='expired' WHERE duel_id=?", (game_id,))
 
     def test_five_invitations_and_one_started_game(self):
         for i in range(5):
