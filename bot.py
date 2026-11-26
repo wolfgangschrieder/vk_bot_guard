@@ -35,6 +35,8 @@ logging.basicConfig(
 log = logging.getLogger("vk_bot_guard")
 POKER_COMMANDS = None
 POKER_LOCK = threading.RLock()
+POKER_RESTRICTION_SECONDS = 3600
+POKER_RESTRICTION_REFRESH_SECONDS = 900
 
 CHAT_PEER_START = 2_000_000_000
 CHAT_NOMINATION_TITLE = "👑 Народная номинация"
@@ -3044,6 +3046,111 @@ def pending_rank_mute(conn, user_id, rank_title):
     return False
 
 
+def poker_is_allowed(conn, user_id, now=None):
+    return user_id in config.ADMIN_IDS or db.is_premium_user(conn, user_id, now)
+
+
+def poker_restrict_member(vk, conn, user_id, now=None):
+    """Enforce VK read-only restriction for a non-premium room member."""
+    now = int(time.time()) if now is None else int(now)
+    if poker_is_allowed(conn, user_id, now):
+        return False
+    store = POKER_COMMANDS.store
+    row = store.conn.execute(
+        "SELECT expires_at FROM poker_room_restrictions WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if row and int(row[0]) > now + POKER_RESTRICTION_REFRESH_SECONDS:
+        return True
+    result = vk.messages.changeConversationMemberRestrictions(
+        peer_id=config.POKER_CHAT_PEER_ID, member_ids=str(user_id),
+        action="ro", **{"for": POKER_RESTRICTION_SECONDS}
+    )
+    if not result:
+        raise RuntimeError("VK did not confirm poker room restriction")
+    with store.conn:
+        store.conn.execute(
+            "INSERT INTO poker_room_restrictions(user_id,expires_at) VALUES (?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at",
+            (user_id, now + POKER_RESTRICTION_SECONDS),
+        )
+    return True
+
+
+def poker_release_member(vk, user_id):
+    """Only release restrictions recorded by this poker module."""
+    store = POKER_COMMANDS.store
+    row = store.conn.execute(
+        "SELECT 1 FROM poker_room_restrictions WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if not row:
+        return
+    result = vk.messages.changeConversationMemberRestrictions(
+        peer_id=config.POKER_CHAT_PEER_ID, member_ids=str(user_id), action="rw"
+    )
+    if not result:
+        raise RuntimeError("VK did not confirm poker room unmute")
+    with store.conn:
+        store.conn.execute(
+            "DELETE FROM poker_room_restrictions WHERE user_id=?", (user_id,)
+        )
+
+
+def poker_reconcile_members(vk, conn):
+    """Periodically restrict non-premiums and release premium/admin users."""
+    offset = 0
+    while True:
+        response = vk.messages.getConversationMembers(
+            peer_id=config.POKER_CHAT_PEER_ID, offset=offset, count=200
+        )
+        items = response.get("items", []) if isinstance(response, dict) else []
+        for member in items:
+            user_id = int(member.get("member_id", 0) or 0)
+            if user_id <= 0:
+                continue
+            try:
+                if poker_is_allowed(conn, user_id):
+                    poker_release_member(vk, user_id)
+                else:
+                    poker_restrict_member(vk, conn, user_id)
+            except Exception:
+                log.exception("Poker room member restriction failed: user=%s", user_id)
+        offset += len(items)
+        if not items or len(items) < 200:
+            break
+
+
+def poker_membership_watchdog(vk, conn):
+    while True:
+        try:
+            with POKER_LOCK:
+                poker_reconcile_members(vk, conn)
+        except Exception:
+            log.exception("Poker room membership scan failed")
+        time.sleep(60)
+
+
+def poker_handle_admin_balance(vk, from_id, text):
+    """Only admins can refill an existing wallet at zero chips."""
+    if not text.strip().lower().startswith("/баланс"):
+        return None
+    if from_id not in config.ADMIN_IDS:
+        return "⛔ Команда /баланс доступна только администраторам."
+    match = re.fullmatch(r"/баланс\\s+(@[A-Za-z0-9_.]+|@id\\d+|\\[id\\d+\\|[^\\]]+\\])\\s+фишки(\\d+)", text.strip(), re.I)
+    if not match:
+        return "Использование: /баланс @username фишкиN"
+    user_id = resolve_target_user_id(vk, match.group(1))
+    if user_id <= 0:
+        return "⚠️ Пользователь не найден."
+    try:
+        amount = int(match.group(2))
+        POKER_COMMANDS.store.admin_top_up(
+            config.POKER_CHAT_PEER_ID, user_id, amount, from_id, time.time()
+        )
+    except ValueError as exc:
+        return f"⚠️ {exc}"
+    return f"💰 [id{user_id}|Игрок]: баланс пополнен на {amount} фишек."
+
+
 def handle_new_message(vk, conn, message) -> None:
     # Dedicated poker room is intentionally isolated from moderation/inbox.
     peer_id = message_field(message, "peer_id")
@@ -3058,9 +3165,16 @@ def handle_new_message(vk, conn, message) -> None:
             return
         identity = f"id:{message_id}" if message_id else f"cmid:{cmid}"
         with POKER_LOCK:
-            response = POKER_COMMANDS.handle(
-                from_id, message_text(message), f"{peer_id}:{identity}"
-            )
+            if not poker_is_allowed(conn, from_id):
+                poker_restrict_member(vk, conn, from_id)
+                return
+            poker_release_member(vk, from_id)
+            text = message_text(message)
+            response = poker_handle_admin_balance(vk, from_id, text)
+            if response is None:
+                response = POKER_COMMANDS.handle(
+                    from_id, text, f"{peer_id}:{identity}"
+                )
             if response and not POKER_COMMANDS.last_public_queued:
                 poker_queue_public(vk, response)
             else:
@@ -3562,7 +3676,10 @@ def run_forever() -> None:
     conn = db.connect()
     if config.POKER_CHAT_PEER_ID:
         poker_store = PokerStore(config.BASE_DIR / "poker.db")
-        POKER_COMMANDS = PokerCommands(poker_store, config.POKER_CHAT_PEER_ID)
+        POKER_COMMANDS = PokerCommands(
+            poker_store, config.POKER_CHAT_PEER_ID,
+            initial_chips=lambda user_id: min(1_000_000_000, max(0, db.get_reputation(conn, user_id)) * 1000),
+        )
         log.info("Poker room enabled: peer_id=%s", config.POKER_CHAT_PEER_ID)
     ACTIVE_CONN = conn
 
@@ -3591,6 +3708,10 @@ def run_forever() -> None:
         threading.Thread(
             target=poker_turn_watchdog, args=(vk,),
             name="poker-turn-watchdog", daemon=True,
+        ).start()
+        threading.Thread(
+            target=poker_membership_watchdog, args=(vk, conn),
+            name="poker-membership-watchdog", daemon=True,
         ).start()
 
     threading.Thread(
