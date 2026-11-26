@@ -1674,7 +1674,7 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
         send_bot_message(
             vk, "🎲 РУЛЕТКА НАЧАЛАСЬ!\n"
             "Шесть ящиков: 1 2 3 4 5 6. Проигрышный ящик уже выбран ботом.\n"
-            f"Первым ходит {mention(game['next_player_id'], names.get(game['next_player_id']))}. "
+            f"Первым ходит автор вызова: {mention(game['next_player_id'], names.get(game['next_player_id']))}. "
             "Выбери /число N от 1 до 6. На ход 5 минут.",
             peer_id=peer_id,
         )
