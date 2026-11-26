@@ -198,6 +198,7 @@ class PokerStore:
                 "revision=excluded.revision,snapshot=excluded.snapshot",
                 (room_id, revision + 1, serialize(table)),
             )
+            self._sync_wallets(table)
             if event_id is not None:
                 self.conn.execute(
                     "INSERT INTO poker_processed_events(room_id,event_id) VALUES (?,?)",
