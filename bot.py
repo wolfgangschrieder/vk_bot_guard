@@ -3139,7 +3139,7 @@ def poker_handle_admin_balance(vk, from_id, text):
         return None
     if from_id not in config.ADMIN_IDS:
         return "⛔ Команда /баланс доступна только администраторам."
-    match = re.fullmatch(r"/баланс\\s+(@[A-Za-z0-9_.]+|@id\\d+|\\[id\\d+\\|[^\\]]+\\])\\s+фишки(\\d+)", text.strip(), re.I)
+    match = re.fullmatch(r"/баланс\s+(@[A-Za-z0-9_.]+|@id\d+|\[id\d+\|[^\]]+\])\s+фишки(\d+)", text.strip(), re.I)
     if not match:
         return "Использование: /баланс @username фишкиN"
     user_id = resolve_target_user_id(vk, match.group(1))
