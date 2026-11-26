@@ -152,7 +152,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('💬 Сообщений за всё время: 182', profile)
         self.assertIn('🏆 Герой дня: 3 раза (последний: 09.10.2026)', profile)
         self.assertIn('Сегодня: 34 сообщения', profile)
-        self.assertIn('За 7 дней: 182 сообщения', profile)
+        self.assertNotIn('За 7 дней:', profile)
         self.assertIn('8 октября — 61 сообщение', profile)
 
     def test_marriage_proposal_requires_target_acceptance_and_appears_in_profile_and_pairs(self):
@@ -540,7 +540,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('Обвиняется во всех грехах мира!', payload['message'])
         self.assertIn('/виновен — поддержать обвинение', payload['message'])
         self.assertIn('/оправдан — поддержать защиту', payload['message'])
-        self.assertIn('мут на 30 минут', payload['message'])
+        self.assertIn('мут на 1 час', payload['message'])
         self.assertEqual(payload['peer_id'], config.CHAT_PEER_ID)
         trial = db.get_active_chat_trial(self.conn, config.CHAT_PEER_ID)
         self.assertEqual(trial['target_id'], 2)
@@ -1621,7 +1621,7 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message(mid=3, peer=peer))
         self.assertEqual(len(self.queued('mute')), 1)
         bot.deliver_outbox(self.vk, self.conn, self.now + 5)
-        self.assertEqual(self.conn.execute('SELECT mute_until FROM users').fetchone()[0], self.now + 1800)
+        self.assertEqual(self.conn.execute('SELECT mute_until FROM users').fetchone()[0], self.now + 3600)
         self.assertEqual(self.vk.messages.changeConversationMemberRestrictions.call_args.kwargs['for'], 3595)
         self.assertEqual(self.conn.execute('SELECT SUM(mutes) FROM chat_mute_stats').fetchone()[0], 1)
 
