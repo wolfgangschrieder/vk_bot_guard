@@ -126,7 +126,7 @@ def apply_mute(vk, peer_id: int, user_id: int) -> bool:
         return False
 
 
-def lift_mute(vk, peer_id: int, user_id: int) -> None:
+def lift_mute(vk, peer_id: int, user_id: int) -> bool:
     try:
         vk.messages.changeConversationMemberRestrictions(
             peer_id=peer_id,
@@ -134,6 +134,7 @@ def lift_mute(vk, peer_id: int, user_id: int) -> None:
             action="rw",
         )
         log.info("Мут снят: user=%s peer=%s", user_id, peer_id)
+        return True
     except ApiError as err:
         log.warning(
             "Не удалось снять мут user=%s peer=%s: %s",
@@ -141,6 +142,7 @@ def lift_mute(vk, peer_id: int, user_id: int) -> None:
             peer_id,
             err,
         )
+        return False
 
 
 def remove_user_from_chat(vk, peer_id: int, user_id: int) -> bool:
@@ -442,8 +444,9 @@ def send_mute_reason(vk, user_id: int, reason: str, peer_id: int) -> None:
     )
 
 
-def record_successful_mute(conn, user_id: int) -> None:
-    db.record_mute(conn, user_id)
+def record_successful_mute(conn, user_id: int, peer_id: int) -> None:
+    if peer_id == config.CHAT_PEER_ID:
+        db.record_mute(conn, user_id)
 
 
 def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> bool:
@@ -473,7 +476,7 @@ def handle_content_violation(vk, conn, message, from_id: int, peer_id: int) -> b
     deleted = delete_message(vk, message)
     muted = apply_mute(vk, peer_id, from_id)
     if muted:
-        record_successful_mute(conn, from_id)
+        record_successful_mute(conn, from_id, peer_id)
         send_mute_reason(vk, from_id, reason, peer_id)
 
     log.warning(
@@ -557,14 +560,19 @@ def publish_weekly_stats(vk, conn, start_date: date, end_date: date) -> bool:
 
 
 def publish_king(vk, conn, stat_date: date) -> bool:
-    stats = db.get_daily_stats(conn, stat_date)
-    if not stats["top_users"]:
+    existing = db.get_king_publication(conn, stat_date)
+    stats = db.get_daily_stats(conn, stat_date) if existing is None else None
+    if existing is None and not stats["top_users"]:
         log.info("Герой не назначен: %s — нет сообщений", stat_date)
         return True
 
-    user_id, messages = stats["top_users"][0]
     if db.get_king(conn, stat_date):
         return True
+    if existing is not None:
+        user_id, messages, random_id = int(existing["user_id"]), int(existing["messages"]), int(existing["random_id"])
+    else:
+        user_id, messages = stats["top_users"][0]
+        random_id = db.prepare_king_publication(conn, stat_date, user_id, messages)
 
     names = get_user_names(vk, [user_id])
     text = (
@@ -573,10 +581,15 @@ def publish_king(vk, conn, stat_date: date) -> bool:
         f"Сообщений за день: {messages}\n\n"
         f"Сегодня у Героя есть право выдать один мут через команду /мут @username."
     )
-    sent = send_bot_message(vk, text)
-    if sent <= 0:
+    try:
+        sent = vk.messages.send(peer_id=config.CHAT_PEER_ID, message=text, random_id=random_id)
+    except ApiError as err:
+        log.warning("Не удалось опубликовать Героя %s: %s", stat_date, err)
         return False
-    db.save_king(conn, stat_date, user_id, messages)
+    if not sent:
+        return False
+    if not db.finalize_king_publication(conn, stat_date):
+        return False
     log.info(
         "Герой чата: date=%s user=%s messages=%s",
         stat_date,
@@ -800,7 +813,7 @@ def handle_king_mute_command(vk, conn, from_id: int, text: str, now: int) -> boo
             return True
 
     if apply_mute(vk, config.CHAT_PEER_ID, target_id):
-        record_successful_mute(conn, target_id)
+        record_successful_mute(conn, target_id, config.CHAT_PEER_ID)
         db.set_command_cooldown(conn, from_id, "king_mute", 0, now)
         names = get_user_names(vk, [target_id])
         send_bot_message(
@@ -912,7 +925,7 @@ def scheduler_watchdog(vk, conn) -> None:
         time.sleep(config.SCHEDULER_INTERVAL_SECONDS)
 
 
-def handle_new_message(vk, conn, message) -> None:
+def _handle_new_message(vk, conn, message) -> None:
     from_id = message_field(message, "from_id")
     peer_id = message_field(message, "peer_id")
     text = message_text(message)
@@ -933,9 +946,8 @@ def handle_new_message(vk, conn, message) -> None:
 
     # Statistics and bot commands belong only to the feature chat (2000000002).
     if is_bot_feature_chat(peer_id):
-        db.record_message(
-            conn,
-            from_id,
+        db.record_message_once(
+            conn, peer_id, message_id, from_id,
             message_field(message, "date", now) or now,
             classify_media(message),
         )
@@ -955,7 +967,7 @@ def handle_new_message(vk, conn, message) -> None:
         deleted = delete_message(vk, message)
         muted = apply_mute(vk, peer_id, from_id)
         if muted:
-            record_successful_mute(conn, from_id)
+            record_successful_mute(conn, from_id, peer_id)
             send_bot_message(
                 vk,
                 config.ALL_COMMAND_MUTE_REASON,
@@ -978,9 +990,6 @@ def handle_new_message(vk, conn, message) -> None:
     if not is_moderation_chat(peer_id):
         return
 
-    for expired_user, expired_peer in db.clear_expired_mutes(conn, now):
-        lift_mute(vk, expired_peer, expired_user)
-
     result = db.register_message(conn, from_id, peer_id, now)
 
     if result["already_muted"]:
@@ -995,7 +1004,7 @@ def handle_new_message(vk, conn, message) -> None:
     muted = apply_mute(vk, peer_id, from_id)
 
     if muted:
-        record_successful_mute(conn, from_id)
+        record_successful_mute(conn, from_id, peer_id)
         send_mute_reason(vk, from_id, config.LIMIT_MUTE_REASON, peer_id)
 
     log.warning(
@@ -1005,6 +1014,32 @@ def handle_new_message(vk, conn, message) -> None:
         deleted,
         muted,
     )
+
+
+def handle_new_message(vk, conn, message) -> None:
+    """Release the deduplication claim when processing fails so moderation can retry."""
+    peer_id = message_field(message, "peer_id")
+    message_id = message_field(message, "id")
+    try:
+        _handle_new_message(vk, conn, message)
+        if message_id > 0 and is_target_chat(peer_id):
+            db.complete_processed_message(conn, peer_id, message_id)
+    except Exception:
+        if message_id > 0 and is_target_chat(peer_id):
+            db.release_processed_message(conn, peer_id, message_id)
+        raise
+
+
+def mute_expiry_watchdog(vk, conn) -> None:
+    """Retry failed unmute operations independently of incoming messages."""
+    while True:
+        try:
+            for user_id, peer_id in db.get_expired_mutes(conn):
+                if lift_mute(vk, peer_id, user_id):
+                    db.mark_mute_lifted(conn, user_id, peer_id)
+        except Exception:
+            log.error("Ошибка снятия истёкших мутов:\n%s", traceback.format_exc())
+        time.sleep(10)
 
 
 def run_forever() -> None:
@@ -1042,6 +1077,13 @@ def run_forever() -> None:
         target=bot_message_cleanup_watchdog,
         args=(vk, conn),
         name="bot-message-cleanup",
+        daemon=True,
+    ).start()
+
+    threading.Thread(
+        target=mute_expiry_watchdog,
+        args=(vk, conn),
+        name="mute-expiry-watchdog",
         daemon=True,
     ).start()
 

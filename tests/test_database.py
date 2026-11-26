@@ -144,6 +144,48 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
 
+    def test_expired_mute_is_retained_until_confirmed(self):
+        now = 10_000
+        self.conn.execute(
+            "INSERT INTO users(user_id, peer_id, mute_until) VALUES (?, ?, ?)",
+            (44, 2000000001, now - 1),
+        )
+        self.conn.commit()
+        self.assertIn((44, 2000000001), db.get_expired_mutes(self.conn, now))
+        self.assertIn((44, 2000000001), db.get_expired_mutes(self.conn, now))
+        db.mark_mute_lifted(self.conn, 44, 2000000001, now)
+        self.assertEqual(db.get_expired_mutes(self.conn, now), [])
+
+    def test_failed_processing_claim_can_be_retried(self):
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 55, 100))
+        db.release_processed_message(self.conn, 2000000002, 55)
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 55, 101))
+
+    def test_message_stats_are_idempotent_across_retry(self):
+        timestamp = 1_760_000_000
+        self.assertTrue(db.record_message_once(self.conn, 2000000002, 123, 10, timestamp, {"image": 2}))
+        self.assertFalse(db.record_message_once(self.conn, 2000000002, 123, 10, timestamp, {"image": 2}))
+        day = __import__("datetime").datetime.fromtimestamp(timestamp, __import__("config").CHAT_TZ).date()
+        stats = db.get_daily_stats(self.conn, day)
+        self.assertEqual(stats["messages"], 1)
+        self.assertEqual(stats["photos"], 2)
+
+    def test_king_publication_reuses_stable_id(self):
+        day = date(2026, 11, 25)
+        first = db.prepare_king_publication(self.conn, day, 10, 20)
+        self.assertEqual(first, db.prepare_king_publication(self.conn, day, 11, 30))
+        row = db.get_king_publication(self.conn, day)
+        self.assertEqual(row["user_id"], 10)
+        self.assertTrue(db.finalize_king_publication(self.conn, day))
+        self.assertEqual(db.get_king(self.conn, day), (10, 20))
+
+    def test_stale_claim_can_be_reclaimed(self):
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 900, 100))
+        self.assertFalse(db.claim_processed_message(self.conn, 2000000002, 900, 101))
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 900, 161))
+        db.complete_processed_message(self.conn, 2000000002, 900)
+        self.assertFalse(db.claim_processed_message(self.conn, 2000000002, 900, 1000))
+
     def test_legacy_database_survives_migration(self):
         self.conn.close()
         path = Path(self.tmp.name) / "legacy.db"
@@ -179,7 +221,7 @@ class DatabaseTests(unittest.TestCase):
             migrated.execute(
                 "SELECT MAX(version) FROM schema_migrations"
             ).fetchone()[0],
-            4,
+            5,
         )
         self.assertTrue((Path(self.tmp.name) / "backups").exists())
 
