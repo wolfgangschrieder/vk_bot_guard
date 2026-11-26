@@ -292,7 +292,7 @@ def register_message(
         }
 
 
-def clear_expired_mutes(
+def get_expired_mutes(
     conn: sqlite3.Connection,
     now: Optional[int] = None,
 ) -> list[tuple[int, int]]:
@@ -310,18 +310,16 @@ def clear_expired_mutes(
 
         expired = [(int(row["user_id"]), int(row["peer_id"])) for row in rows]
 
-        if expired:
-            conn.execute(
-                """
-                UPDATE users
-                SET mute_until = 0
-                WHERE mute_until > 0 AND mute_until <= ?
-                """,
-                (now,),
-            )
-            conn.commit()
-
         return expired
+
+
+def mark_mute_lifted(conn: sqlite3.Connection, user_id: int, peer_id: int) -> None:
+    with _lock:
+        conn.execute(
+            "UPDATE users SET mute_until = 0 WHERE user_id = ? AND peer_id = ? AND mute_until > 0 AND mute_until <= ?",
+            (user_id, peer_id, int(time.time())),
+        )
+        conn.commit()
 
 
 def record_message(
@@ -649,6 +647,12 @@ def claim_processed_message(
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def release_processed_message(conn: sqlite3.Connection, peer_id: int, message_id: int) -> None:
+    with _lock:
+        conn.execute("DELETE FROM processed_messages WHERE peer_id = ? AND message_id = ?", (peer_id, message_id))
+        conn.commit()
 
 
 def get_command_cooldown(
