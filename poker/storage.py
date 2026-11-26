@@ -60,7 +60,67 @@ class PokerStore:
             "random_id INTEGER NOT NULL UNIQUE, message TEXT NOT NULL, "
             "delivered INTEGER NOT NULL DEFAULT 0)"
         )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_wallets ("
+            "user_id INTEGER PRIMARY KEY, chips INTEGER NOT NULL CHECK(chips >= 0))"
+        )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_wallet_audit ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, "
+            "admin_id INTEGER NOT NULL, chips INTEGER NOT NULL, created_at INTEGER NOT NULL)"
+        )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_room_restrictions ("
+            "user_id INTEGER PRIMARY KEY, expires_at INTEGER NOT NULL)"
+        )
         self.conn.commit()
+
+    def wallet(self, user_id):
+        row = self.conn.execute(
+            "SELECT chips FROM poker_wallets WHERE user_id=?", (user_id,)
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def _sync_wallets(self, table):
+        # A live hand has outstanding bets; only settle wallet values at safe stages.
+        if table.stage not in ("waiting", "complete"):
+            return
+        for player in table.players.values():
+            self.conn.execute(
+                "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET chips=excluded.chips",
+                (player.user_id, player.stack),
+            )
+
+    def admin_top_up(self, room_id, user_id, chips, admin_id, now):
+        """Only replenish an existing zero-chip account; update table atomically."""
+        if type(chips) is not int or chips <= 0 or chips > 1_000_000_000:
+            raise ValueError("Количество фишек должно быть от 1 до 1000000000")
+        with self.conn:
+            revision, table = self.load(room_id)
+            if table and table.stage not in ("waiting", "complete"):
+                raise ValueError("Дождитесь окончания текущей раздачи")
+            balance = self.wallet(user_id)
+            if balance is None:
+                raise ValueError("Игрок ещё не создавал покерный баланс")
+            if balance != 0:
+                raise ValueError("Пополнение доступно только при нулевом балансе")
+            self.conn.execute(
+                "UPDATE poker_wallets SET chips=? WHERE user_id=? AND chips=0",
+                (chips, user_id),
+            )
+            if table and user_id in table.players:
+                table.players[user_id].stack = chips
+                self.conn.execute(
+                    "UPDATE poker_state SET snapshot=?, revision=? "
+                    "WHERE room_id=? AND revision=?",
+                    (serialize(table), revision + 1, room_id, revision),
+                )
+            self.conn.execute(
+                "INSERT INTO poker_wallet_audit(user_id,admin_id,chips,created_at) "
+                "VALUES (?,?,?,?)", (user_id, admin_id, chips, int(now)),
+            )
+        return chips
 
     def is_processed(self, room_id, event_id):
         """Return whether an incoming VK event was already committed."""
@@ -102,6 +162,7 @@ class PokerStore:
                 "revision=excluded.revision, snapshot=excluded.snapshot",
                 (room_id, revision + 1, serialize(table)),
             )
+            self._sync_wallets(table)
             if event_id is not None:
                 self.conn.execute(
                     "INSERT INTO poker_processed_events(room_id,event_id) VALUES (?,?)",
