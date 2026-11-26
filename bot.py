@@ -3065,6 +3065,8 @@ def poker_restrict_member(vk, conn, user_id, now=None):
         peer_id=config.POKER_CHAT_PEER_ID, member_ids=str(user_id),
         action="ro", **{"for": POKER_RESTRICTION_SECONDS}
     )
+    if isinstance(result, dict):
+        check_embedded_error(result)
     if not result:
         raise RuntimeError("VK did not confirm poker room restriction")
     with store.conn:
@@ -3087,6 +3089,8 @@ def poker_release_member(vk, user_id):
     result = vk.messages.changeConversationMemberRestrictions(
         peer_id=config.POKER_CHAT_PEER_ID, member_ids=str(user_id), action="rw"
     )
+    if isinstance(result, dict):
+        check_embedded_error(result)
     if not result:
         raise RuntimeError("VK did not confirm poker room unmute")
     with store.conn:
@@ -3166,6 +3170,19 @@ def handle_new_message(vk, conn, message) -> None:
         identity = f"id:{message_id}" if message_id else f"cmid:{cmid}"
         with POKER_LOCK:
             if not poker_is_allowed(conn, from_id):
+                # A message may reach Long Poll before VK applies read-only mode.
+                # Remove it immediately and enforce the actual VK restriction.
+                try:
+                    if cmid:
+                        vk.messages.delete(
+                            peer_id=peer_id, cmids=str(cmid), delete_for_all=1
+                        )
+                    else:
+                        vk.messages.delete(
+                            peer_id=peer_id, message_ids=str(message_id), delete_for_all=1
+                        )
+                except Exception:
+                    log.exception("Could not remove non-premium poker message")
                 poker_restrict_member(vk, conn, from_id)
                 return
             poker_release_member(vk, from_id)
