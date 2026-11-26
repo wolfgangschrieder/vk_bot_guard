@@ -98,6 +98,8 @@ class Table:
         ps = self.seated()
         if len(ps) < 2 or any(not p.ready or p.stack <= 0 for p in ps):
             raise ValueError("Need at least two ready players")
+        self.small_blind = 10
+        self.big_blind = 20
         for p in ps:
             p.folded = p.all_in = p.acted = False
             p.can_raise = True
