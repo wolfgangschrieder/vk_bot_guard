@@ -178,3 +178,17 @@ cd /opt/vk_bot_guard
 ```
 
 Команда читает базу без изменений, показывает состояния, номера заданий, адресатов и ошибки. Токен и тексты сообщений не выводятся. `done` означает подтверждённую доставку; `pending` — ожидание; `failed` — нужна проверка; `cancelled` — доставка отменена. Новая попытка старого сообщения не создаётся автоматически после смены `.env`. Для проверки актуального доступа отправьте новую `/stat`; не переотправляйте неоднозначные старые уведомления без проверки чата.
+
+## ♠ ASTRA Poker Room (Texas Hold'em)
+
+Poker is **disabled by default** and runs only in a separate VK conversation, never in the social or strict-moderation chats. Set `POKER_CHAT_PEER_ID=2000000404` (replace with the real peer ID) in `.env`, add the community bot to that conversation, and restart `vk-bot-guard`. The room needs permission to receive messages and send replies; each player must also allow private messages from the community so hole cards can be delivered. Never expose `poker.db` publicly; it contains private cards for active and historical hands.
+
+- `/poker` or `/table`: table and turn state; `/pokerhelp`: command reference
+- `/join`, `/leave`: join/leave while waiting (2–9 players)
+- `/ready`, `/unready`, `/start`: confirm and deal a hand
+- `/fold`, `/check`, `/call`, `/raise 500`, `/allin`: betting actions
+- `/next`: prepare the next hand; `/newsession`: reset virtual stacks (table owner only)
+
+Each player starts with 10,000 **virtual chips**, blinds are 50/100, and each turn has a 90-second deadline (automatic check if free, otherwise fold). The game includes 5-card ranking, split pots, side pots, all-in and a dealer button. Private cards are sent via VK direct messages; the game pauses if card delivery fails. Game state and message-delivery jobs are stored in `poker.db` independently of `moderator.db`.
+
+**Deploy safely:** back up `moderator.db` and `poker.db` with the service stopped, `git pull --ff-only origin feature/donut-premium`, set `POKER_CHAT_PEER_ID`, restart, inspect `journalctl -u vk-bot-guard -n 100`. First run a two-player smoke test with test accounts: `/join`, `/ready`, `/start`, verify both private hands, `/call`, `/check`, `/fold`, `/next`, and restart recovery. Poker has no real-money wagering, cash-out, or purchases.

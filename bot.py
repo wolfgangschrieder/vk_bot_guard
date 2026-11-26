@@ -20,6 +20,9 @@ import config
 import database as db
 import morning_content
 import chat_stats_export
+from poker.commands import PokerCommands
+from poker.storage import PokerStore
+from poker.private_cards import VkPrivateCards
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +33,8 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("vk_bot_guard")
+POKER_COMMANDS = None
+POKER_LOCK = threading.RLock()
 
 CHAT_PEER_START = 2_000_000_000
 CHAT_NOMINATION_TITLE = "👑 Народная номинация"
@@ -3040,6 +3045,27 @@ def pending_rank_mute(conn, user_id, rank_title):
 
 
 def handle_new_message(vk, conn, message) -> None:
+    # Dedicated poker room is intentionally isolated from moderation/inbox.
+    peer_id = message_field(message, "peer_id")
+    from_id = message_field(message, "from_id")
+    if config.POKER_CHAT_PEER_ID and peer_id == config.POKER_CHAT_PEER_ID:
+        if POKER_COMMANDS is None or from_id <= 0:
+            return
+        message_id = message_field(message, "id")
+        cmid = message_field(message, "conversation_message_id")
+        if not message_id and not cmid:
+            log.error("Poker event without stable ID; ignored: peer=%s", peer_id)
+            return
+        identity = f"id:{message_id}" if message_id else f"cmid:{cmid}"
+        with POKER_LOCK:
+            response = POKER_COMMANDS.handle(
+                from_id, message_text(message), f"{peer_id}:{identity}"
+            )
+            if response and not POKER_COMMANDS.last_public_queued:
+                poker_queue_public(vk, response)
+            else:
+                poker_flush_public(vk)
+        return
     global ACTIVE_CONN
     ACTIVE_CONN = conn
     peer_id = message_field(message, "peer_id")
@@ -3485,10 +3511,59 @@ def acquire_instance_lock():
         raise SystemExit("Другой экземпляр бота уже запущен в этой папке.")
     return handle
 
+
+def poker_queue_public(vk, message):
+    """Persist chat response before attempting VK delivery."""
+    from secrets import randbelow
+    if POKER_COMMANDS is None:
+        return
+    POKER_COMMANDS.store.enqueue_public(
+        config.POKER_CHAT_PEER_ID, randbelow(2147483647) + 1, message
+    )
+    poker_flush_public(vk)
+
+
+def poker_flush_public(vk):
+    if POKER_COMMANDS is None:
+        return
+    store = POKER_COMMANDS.store
+    for job_id, random_id, message in store.pending_public(config.POKER_CHAT_PEER_ID):
+        try:
+            vk.messages.send(
+                peer_id=config.POKER_CHAT_PEER_ID,
+                random_id=random_id,
+                message=message,
+            )
+        except Exception:
+            log.exception("Poker public message delivery failed; will retry")
+            break
+        store.mark_public_delivered(job_id)
+
+
+def poker_turn_watchdog(vk):
+    while True:
+        time.sleep(2)
+        if POKER_COMMANDS is None:
+            continue
+        try:
+            with POKER_LOCK:
+                response = POKER_COMMANDS.process_expired_turn()
+                if response and not POKER_COMMANDS.last_public_queued:
+                    poker_queue_public(vk, response)
+                else:
+                    poker_flush_public(vk)
+        except Exception:
+            log.exception("Poker turn watchdog failed")
+
+
 def run_forever() -> None:
-    global ACTIVE_CONN
+    global ACTIVE_CONN, POKER_COMMANDS
     instance_lock = acquire_instance_lock()
     conn = db.connect()
+    if config.POKER_CHAT_PEER_ID:
+        poker_store = PokerStore(config.BASE_DIR / "poker.db")
+        POKER_COMMANDS = PokerCommands(poker_store, config.POKER_CHAT_PEER_ID)
+        log.info("Poker room enabled: peer_id=%s", config.POKER_CHAT_PEER_ID)
     ACTIVE_CONN = conn
 
     log.info("База готова: %s", config.DB_PATH)
@@ -3505,6 +3580,18 @@ def run_forever() -> None:
         session=TimeoutSession(),
     )
     vk = session.get_api()
+    if POKER_COMMANDS is not None:
+        POKER_COMMANDS.private_delivery = VkPrivateCards(vk, config.GROUP_ID)
+        try:
+            _, table = POKER_COMMANDS.store.load(config.POKER_CHAT_PEER_ID)
+            if table is not None and table.stage in ("preflop", "flop", "turn", "river"):
+                POKER_COMMANDS._deliver_and_report(table)
+        except Exception:
+            log.exception("Poker recovery: private cards remain pending")
+        threading.Thread(
+            target=poker_turn_watchdog, args=(vk,),
+            name="poker-turn-watchdog", daemon=True,
+        ).start()
 
     threading.Thread(
         target=chat_blacklist_watchdog,
