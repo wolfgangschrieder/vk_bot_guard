@@ -9,7 +9,7 @@ from typing import Optional
 import config
 
 _lock = threading.Lock()
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def connect(db_path: str | None = None) -> sqlite3.Connection:
@@ -99,6 +99,11 @@ def _ensure_schema(conn: sqlite3.Connection, db_path: str | None = None) -> None
                 (4, int(time.time())),
             )
             current = 4
+
+        if current < 5:
+            _migration_5(conn)
+            conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", (5, int(time.time())))
+            current = 5
 
         # Repair databases created by the previous migration path: schema
         # version 4 could exist even though migration 3 was skipped.
@@ -197,6 +202,108 @@ def _migration_4(conn: sqlite3.Connection) -> None:
         conn.execute(
             f"ALTER TABLE daily_stats ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migration_5(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS counted_messages (
+            peer_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            PRIMARY KEY (peer_id, message_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS king_publications (
+            stat_date TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            messages INTEGER NOT NULL,
+            random_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        )
+    """)
+
+
+def prepare_king_publication(conn: sqlite3.Connection, stat_date: date, user_id: int, messages: int) -> int:
+    """Persist the announcement identity before contacting VK."""
+    key = stat_date.isoformat()
+    # Stable, nonzero VK random_id per day. VK deduplicates repeated sends.
+    random_id = int(stat_date.strftime("%Y%m%d")) + 700_000_000
+    with _lock:
+        conn.execute(
+            "INSERT OR IGNORE INTO king_publications(stat_date, user_id, messages, random_id) VALUES (?, ?, ?, ?)",
+            (key, user_id, messages, random_id),
+        )
+        row = conn.execute("SELECT random_id FROM king_publications WHERE stat_date = ?", (key,)).fetchone()
+        conn.commit()
+        return int(row["random_id"])
+
+
+def finalize_king_publication(conn: sqlite3.Connection, stat_date: date) -> bool:
+    key = stat_date.isoformat()
+    with _lock:
+        row = conn.execute("SELECT user_id, messages FROM king_publications WHERE stat_date = ?", (key,)).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            "INSERT OR IGNORE INTO king_history(stat_date, user_id, messages) VALUES (?, ?, ?)",
+            (key, int(row["user_id"]), int(row["messages"])),
+        )
+        conn.execute("UPDATE king_publications SET status = 'sent' WHERE stat_date = ?", (key,))
+        conn.commit()
+        return True
+
+
+def get_king_publication(conn: sqlite3.Connection, stat_date: date):
+    with _lock:
+        return conn.execute(
+            "SELECT user_id, messages, random_id, status FROM king_publications WHERE stat_date = ?",
+            (stat_date.isoformat(),),
+        ).fetchone()
+
+
+def record_message_once(
+    conn: sqlite3.Connection, peer_id: int, message_id: int, user_id: int,
+    message_time: Optional[int] = None, media_counts: Optional[dict[str, int]] = None,
+) -> bool:
+    """One database transaction for deduplication and all message counters."""
+    if message_id <= 0:
+        record_message(conn, user_id, message_time, media_counts)
+        return True
+    timestamp = int(time.time()) if message_time is None else int(message_time)
+    stat_date = datetime.fromtimestamp(timestamp, config.CHAT_TZ).date().isoformat()
+    media_counts = media_counts or {}
+    photos, videos, music, voices = (
+        max(0, int(media_counts.get(k, 0))) for k in ("image", "video", "audio", "voice")
+    )
+    with _lock:
+        try:
+            conn.execute(
+                "INSERT INTO counted_messages(peer_id, message_id) VALUES (?, ?)",
+                (peer_id, message_id),
+            )
+        except sqlite3.IntegrityError:
+            return False
+        try:
+            conn.execute("""
+                INSERT INTO daily_user_stats(stat_date, user_id, messages, mutes)
+                VALUES (?, ?, 1, 0)
+                ON CONFLICT(stat_date, user_id) DO UPDATE SET messages = messages + 1
+            """, (stat_date, user_id))
+            conn.execute("""
+                INSERT INTO daily_stats(stat_date, messages, mutes, photos, videos, music, voices)
+                VALUES (?, 1, 0, ?, ?, ?, ?)
+                ON CONFLICT(stat_date) DO UPDATE SET
+                    messages = messages + 1,
+                    photos = photos + excluded.photos,
+                    videos = videos + excluded.videos,
+                    music = music + excluded.music,
+                    voices = voices + excluded.voices
+            """, (stat_date, photos, videos, music, voices))
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def _get_or_create(
@@ -313,11 +420,12 @@ def get_expired_mutes(
         return expired
 
 
-def mark_mute_lifted(conn: sqlite3.Connection, user_id: int, peer_id: int) -> None:
+def mark_mute_lifted(conn: sqlite3.Connection, user_id: int, peer_id: int, now: Optional[int] = None) -> None:
+    now = int(time.time()) if now is None else int(now)
     with _lock:
         conn.execute(
             "UPDATE users SET mute_until = 0 WHERE user_id = ? AND peer_id = ? AND mute_until > 0 AND mute_until <= ?",
-            (user_id, peer_id, int(time.time())),
+            (user_id, peer_id, now),
         )
         conn.commit()
 
@@ -641,12 +749,26 @@ def claim_processed_message(
                 INSERT INTO processed_messages(peer_id, message_id, processed_at)
                 VALUES (?, ?, ?)
                 """,
-                (peer_id, message_id, timestamp),
+                (peer_id, message_id, -max(1, timestamp)),
             )
             conn.commit()
             return True
         except sqlite3.IntegrityError:
+            row = conn.execute("SELECT processed_at FROM processed_messages WHERE peer_id = ? AND message_id = ?", (peer_id, message_id)).fetchone()
+            if row and int(row["processed_at"]) < 0 and -int(row["processed_at"]) <= timestamp - 60:
+                conn.execute("UPDATE processed_messages SET processed_at = ? WHERE peer_id = ? AND message_id = ?", (-max(1, timestamp), peer_id, message_id))
+                conn.commit()
+                return True
             return False
+
+
+def complete_processed_message(conn: sqlite3.Connection, peer_id: int, message_id: int) -> None:
+    with _lock:
+        conn.execute(
+            "UPDATE processed_messages SET processed_at = ABS(processed_at) WHERE peer_id = ? AND message_id = ?",
+            (peer_id, message_id),
+        )
+        conn.commit()
 
 
 def release_processed_message(conn: sqlite3.Connection, peer_id: int, message_id: int) -> None:
