@@ -1593,15 +1593,15 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
     stripped = text.strip()
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
     help_text = (
-        "🎲 РУССКАЯ РУЛЕТКА — 6 ЯЩИКОВ\\n\\n"
+        "🎲 РУССКАЯ РУЛЕТКА — 6 ЯЩИКОВ\n\n"
         "Два игрока, ящики 1 2 3 4 5 6. Бот заранее тайно выбирает один "
         "проигрышный ящик. Игроки по очереди открывают ещё не выбранный ящик "
         "командой /число 1 (от 1 до 6). Безопасный ящик — ход соперника. "
-        "Открывший проигрышный ящик проигрывает; другой побеждает.\\n"
+        "Открывший проигрышный ящик проигрывает; другой побеждает.\n"
         "Вызов: /рулетка @username; принять: /принять за 5 минут. "
-        "На каждый ход 5 минут.\\n"
+        "На каждый ход 5 минут.\n"
         "Победа: +1 ⭐ (+2 ⭐ за победу над админом), поражение: −1 ⭐, "
-        "звание «Неудачник» и мут 30 минут (админы без мута и звания).\\n"
+        "звание «Неудачник» и мут 30 минут (админы без мута и звания).\n"
         "Обычным игрокам: 5 вызовов в сутки, 1 игра по своему вызову; "
         "принимать чужие вызовы можно без ограничений. У админов лимитов нет."
     )
@@ -1609,7 +1609,7 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
         send_bot_message(vk, help_text, peer_id=peer_id)
         return True
 
-    challenge = re.fullmatch(r"/рулетка(?:\\s*\\+\\s*|\\s+)(.+)", stripped, re.IGNORECASE)
+    challenge = re.fullmatch(r"/рулетка(?:\s*\+\s*|\s+)(.+)", stripped, re.IGNORECASE)
     if challenge:
         target_id = resolve_target_user_id(vk, challenge.group(1))
         if target_id <= 0 or target_id == int(from_id):
@@ -1649,10 +1649,10 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
         names = get_user_names(vk, [from_id, target_id])
         deadline = datetime.fromtimestamp(int(now) + 300, config.CHAT_TZ).strftime("%H:%M")
         send_bot_message(
-            vk, f"🎲 ВЫЗОВ НА РУССКУЮ РУЛЕТКУ!\\n\\n"
+            vk, f"🎲 ВЫЗОВ НА РУССКУЮ РУЛЕТКУ!\n\n"
             f"{mention(from_id, names.get(from_id))} вызывает "
-            f"{mention(target_id, names.get(target_id))}!\\n\\n"
-            + help_text + f"\\n\\nПринять вызов: /принять до {deadline}.",
+            f"{mention(target_id, names.get(target_id))}!\n\n"
+            + help_text + f"\n\nПринять вызов: /принять до {deadline}.",
             peer_id=peer_id,
         )
         return True
@@ -1672,15 +1672,15 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
         names = get_user_names(vk, [game["challenger_id"], game["opponent_id"],
                                     game["next_player_id"]])
         send_bot_message(
-            vk, "🎲 РУЛЕТКА НАЧАЛАСЬ!\\n"
-            "Шесть ящиков: 1 2 3 4 5 6. Проигрышный ящик уже выбран ботом.\\n"
+            vk, "🎲 РУЛЕТКА НАЧАЛАСЬ!\n"
+            "Шесть ящиков: 1 2 3 4 5 6. Проигрышный ящик уже выбран ботом.\n"
             f"Первым ходит {mention(game['next_player_id'], names.get(game['next_player_id']))}. "
             "Выбери /число N от 1 до 6. На ход 5 минут.",
             peer_id=peer_id,
         )
         return True
 
-    match = re.fullmatch(r"/число\\s+(\\d{1,3})", stripped, re.IGNORECASE)
+    match = re.fullmatch(r"/число\s+(\d{1,3})", stripped, re.IGNORECASE)
     if not match:
         return False
     game = db.get_active_chat_roulette(conn, peer_id, from_id)
@@ -1703,7 +1703,7 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
                      if i not in json.loads(game["opened_boxes"])]
         send_bot_message(
             vk, f"📦 {mention(from_id, names.get(from_id))} открыл ящик №{number}. "
-            f"Безопасно!\\nОстались: {', '.join(remaining)}.\\n"
+            f"Безопасно!\nОстались: {', '.join(remaining)}.\n"
             f"▶ Ход {mention(game['next_player_id'], names.get(game['next_player_id']))}: /число N",
             peer_id=peer_id,
         )
@@ -1732,7 +1732,7 @@ def handle_roulette_command(vk, conn, from_id: int, text: str, now: int,
                 lines.append("🔇 Участник уже под мутом; дополнительное снятие не назначено.")
         else:
             lines.append("🛡️ Администратор освобождён от мута и звания.")
-        send_bot_message(vk, "\\n".join(lines), peer_id=peer_id)
+        send_bot_message(vk, "\n".join(lines), peer_id=peer_id)
     return True
 
 
