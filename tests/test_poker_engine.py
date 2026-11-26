@@ -31,14 +31,14 @@ class TableTests(unittest.TestCase):
         table = self.make_table()
         self.assertEqual(table.stage, "preflop")
         self.assertEqual(table.turn, 1)
-        self.assertEqual(table.players[1].street_bet, 50)
-        self.assertEqual(table.players[2].street_bet, 100)
+        self.assertEqual(table.players[1].street_bet, 10)
+        self.assertEqual(table.players[2].street_bet, 20)
 
     def test_fold_awards_pot(self):
         table = self.make_table()
         table.act(1, "fold")
         self.assertEqual(table.stage, "complete")
-        self.assertEqual(table.players[2].stack, 10050)
+        self.assertEqual(table.players[2].stack, 10010)
         self.assertEqual(sum(p.stack for p in table.players.values()), 20000)
 
     def test_check_facing_bet_is_invalid(self):
@@ -104,7 +104,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
 
-    def test_new_session_restores_all_stacks(self):
+    def test_new_session_preserves_all_stacks(self):
         table = self.make_table()
         table.act(1, "fold")
         table.new_session()
