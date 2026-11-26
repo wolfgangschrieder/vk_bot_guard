@@ -2614,7 +2614,7 @@ def accept_chat_roulette(conn, peer_id, user_id, now, turn_until, day_key):
                 return "limit", None
         from secrets import randbelow
         fatal_box = randbelow(6) + 1
-        first = challenger_id if randbelow(2) == 0 else user_id
+        first = challenger_id  # The challenger always opens the first box.
         conn.execute(
             "UPDATE chat_duels SET status='active',guess_until=?,target_number=?,"
             "next_player_id=? WHERE duel_id=?",
