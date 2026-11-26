@@ -144,6 +144,23 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
         self.assertFalse(db.claim_scheduler_event(self.conn, "daily:2026-10-05-12"))
 
+    def test_expired_mute_is_retained_until_confirmed(self):
+        now = 10_000
+        self.conn.execute(
+            "INSERT INTO users(user_id, peer_id, mute_until) VALUES (?, ?, ?)",
+            (44, 2000000001, now - 1),
+        )
+        self.conn.commit()
+        self.assertIn((44, 2000000001), db.get_expired_mutes(self.conn, now))
+        self.assertIn((44, 2000000001), db.get_expired_mutes(self.conn, now))
+        db.mark_mute_lifted(self.conn, 44, 2000000001)
+        self.assertEqual(db.get_expired_mutes(self.conn), [])
+
+    def test_failed_processing_claim_can_be_retried(self):
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 55, 100))
+        db.release_processed_message(self.conn, 2000000002, 55)
+        self.assertTrue(db.claim_processed_message(self.conn, 2000000002, 55, 101))
+
     def test_legacy_database_survives_migration(self):
         self.conn.close()
         path = Path(self.tmp.name) / "legacy.db"
