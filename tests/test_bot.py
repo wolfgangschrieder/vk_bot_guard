@@ -2094,10 +2094,10 @@ class BotTests(unittest.TestCase):
         self.assertEqual((task['peer_id'], task['cmid']), (config.MODERATION_CHAT_PEER_ID, 77))
         self.assertEqual(self.vk.messages.send.call_args.kwargs['peer_ids'], str(config.MODERATION_CHAT_PEER_ID))
         self.assertEqual(self.vk.messages.send.call_count, 1)
-        bot.cleanup_tick(self.conn, self.now + 1800)
+        bot.cleanup_tick(self.conn, task['delete_at'])
         self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
             'conversation_message_id': 77, 'message_id': 0, 'response': 1}]
-        bot.deliver_outbox(self.vk, self.conn, self.now + 1800)
+        bot.deliver_outbox(self.vk, self.conn, task['delete_at'])
         self.assertTrue(any(call.kwargs.get('cmids') == '77' for call in self.vk.messages.delete.call_args_list))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0], 0)
 
