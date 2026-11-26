@@ -2560,9 +2560,13 @@ def _migration_22(conn: sqlite3.Connection) -> None:
 
 
 def _migration_23(conn: sqlite3.Connection) -> None:
-    conn.execute("ALTER TABLE chat_duels ADD COLUMN game_type TEXT NOT NULL DEFAULT 'duel'")
-    conn.execute("ALTER TABLE chat_duels ADD COLUMN opened_boxes TEXT NOT NULL DEFAULT '[]'")
-    conn.execute("ALTER TABLE chat_duels ADD COLUMN next_player_id INTEGER NOT NULL DEFAULT 0")
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(chat_duels)")}
+    if "game_type" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN game_type TEXT NOT NULL DEFAULT 'duel'")
+    if "opened_boxes" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN opened_boxes TEXT NOT NULL DEFAULT '[]'")
+    if "next_player_id" not in existing:
+        conn.execute("ALTER TABLE chat_duels ADD COLUMN next_player_id INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS chat_duels_game ON chat_duels(peer_id, game_type, status)")
 
 
