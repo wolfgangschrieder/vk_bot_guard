@@ -417,7 +417,7 @@ class DatabaseTests(unittest.TestCase):
         # A user can accept repeatedly without spending their own challenge quota.
         for attempt in range(2):
             status, duel_id = db.create_chat_duel(
-                self.conn, 2000000002, 30 + attempt, 1,
+                self.conn, 2000000002, next(iter(config.ADMIN_IDS), 30) + (attempt if not config.ADMIN_IDS else 0), 1,
                 201 + attempt, 501 + attempt, "2026-11-21", is_admin=True,
             )
             self.assertEqual(status, "created")
@@ -471,7 +471,7 @@ class DatabaseTests(unittest.TestCase):
             self.conn, 2000000002, 1, 114, 414, "2026-11-21", is_admin=False,
         )[0], "accepted")
 
-        # The original challenger cannot initiate another duel today.
+        # An active accepted duel blocks concurrent invitations.
         self.assertEqual(db.create_chat_duel(
             self.conn, 2000000002, 1, 4, 115, 415, "2026-11-21", is_admin=False,
         )[0], "busy")
