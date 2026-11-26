@@ -399,8 +399,8 @@ class DatabaseTests(unittest.TestCase):
         self.assertTrue(db.claim_interval_cooldown(self.conn, 7, "audio_recording", 4600, 3600))
         self.assertTrue(db.claim_interval_cooldown(self.conn, 8, "audio_recording", 1001, 3600))
 
-    def test_duel_challenge_quota_ten_and_accept_unlimited(self):
-        for attempt in range(10):
+    def test_duel_challenge_quota_five_and_accept_unlimited(self):
+        for attempt in range(5):
             status, duel_id = db.create_chat_duel(
                 self.conn, 2000000002, 1, attempt + 2, 100 + attempt,
                 400 + attempt, "2026-11-21", is_admin=False,
