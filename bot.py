@@ -1225,7 +1225,7 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
     command = text.strip().casefold()
     periods = {
         "/неделя": ("НЕДЕЛЯ", 7),
-        "/месяц": ("МЕСЯЦ", 30),
+        "/месяц": ("МЕСЯЦ", 0),
         "/год": ("ГОД", 365),
     }
     if command not in periods:
@@ -1236,7 +1236,11 @@ def handle_period_top_command(vk, conn, from_id: int, text: str, now: int,
         return True
     label, days = periods[command]
     today = datetime.fromtimestamp(now, config.CHAT_TZ).date()
-    if command == "/неделя":
+    if command == "/месяц":
+        start_date = today.replace(day=1)
+        end_date = today + timedelta(days=1)
+        display_end = today
+    elif command == "/неделя":
         start_date = today - timedelta(days=today.weekday())
         end_date = start_date + timedelta(days=7)
         display_end = end_date - timedelta(days=1)
@@ -1553,7 +1557,7 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
         if db.get_active_chat_nomination(conn, peer_id):
             return True
         started_at = int(now)
-        expires_at = started_at + 10 * 60
+        expires_at = started_at + 5 * 60
         trial_id = db.create_chat_trial(
             conn, peer_id, target_id, from_id, started_at, expires_at,
         )
@@ -1565,7 +1569,7 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
             "⚖️ СУД ЧАТА ОТКРЫТ\n\n"
             f"На скамье подсудимых — {mention(target_id, name)}\n"
             "Обвиняется во всех грехах мира!\n\n"
-            "🗳 У вас есть 10 минут, чтобы вынести вердикт:\n\n"
+            "🗳 У вас есть 5 минут, чтобы вынести вердикт:\n\n"
             "/виновен — поддержать обвинение\n"
             "/оправдан — поддержать защиту\n\n"
             "Голосуйте внимательно! В случае доказательства вины — мут на 1 час!\n"
@@ -1598,9 +1602,9 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             "при равной дистанции — ничья без изменения репутации. Команды с числами удаляются.\n\n"
             "🏆 Победитель получает +1 ⭐ репутации (+2 ⭐ за победу над админом).\n"
             "🥴 Проигравший теряет 1 ⭐. Обычный участник получает звание «Неудачник» "
-            "и мут на 1 час. Админ теряет репутацию, но не получает мут и звание.\n\n"
-            "📅 Обычный участник может отправить до 3 вызовов и сыграть один раз "
-            "за московские сутки. Админы не ограничены. Четвёртый вызов удаляется молча.",
+            "и мут на 30 минут. Админ теряет репутацию, но не получает мут и звание.\n\n"
+            "📅 Обычный участник может отправить до 10 вызовов и начать одну дуэль "
+            "за московские сутки. Принимать чужие вызовы можно без ограничений. Админы не ограничены. Одиннадцатый вызов удаляется молча.",
             peer_id=peer_id,
         )
         return True
@@ -1659,7 +1663,8 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
             f"Чтобы принять вызов, ответь командой /принять до {deadline}.\n"
             "После принятия оба участника отправляют число от 0 до 100 командой /число 50.\n"
             "Бот выберет случайное число. Победит тот, чьё число окажется ближе.\n"
-            "Можно отправить до 3 вызовов участникам чата за московские сутки; сыграть — один раз в сутки.\n"
+            "Можно отправить до 10 вызовов за московские сутки; начать свою дуэль — один раз.\n"
+            "Принимать вызовы других участников можно без ограничений.\n"
             "У администраторов ограничений нет.",
             peer_id=peer_id,
         )
@@ -1770,10 +1775,14 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
                     duration_seconds=60 * 60, now=int(now), allow_extend=True,
                 )
                 lines.append(
-                    f"🥴 {loser} — {DUEL_TITLE}: −1 репутация ⭐, мут на 1 час."
+                    f"🥴 {loser} — {DUEL_TITLE}: −1 репутация ⭐, мут на 30 минут."
                     if mute_queued else
                     f"🥴 {loser} — {DUEL_TITLE}: −1 репутация ⭐. Участник уже под мутом."
                 )
+                db.enqueue(conn, "unmute", {
+                    "peer_id": peer_id, "user_id": loser_id,
+                    "expected_until": int(now) + 60 * 60,
+                }, next_attempt=int(now) + 30 * 60)
                 status_message = (
                     f"⏰ С {loser} снято звание «{DUEL_TITLE}». Мут за дуэль завершён."
                 )
@@ -1781,7 +1790,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
                     "peer_id": peer_id, "message": status_message,
                     "temporary": True, "delay": 300, "depends_on": None,
                     "keyboard": None,
-                }, next_attempt=int(now) + 60 * 60)
+                }, next_attempt=int(now) + 30 * 60)
         send_bot_message(vk, "\n".join(lines), peer_id=peer_id)
         return True
     return False
@@ -2364,7 +2373,7 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         expires_label = datetime.fromtimestamp(
             manual_premium_until, config.CHAT_TZ
         ).strftime("%d.%m.%Y")
-        lines.append(f"🎁 Премиум от администрации: до {expires_label}")
+        lines.append(f"🎁 Премиум подписка на чат: до {expires_label}")
     hero_labels = {
         "day": "🏆 Герой дня",
         "week": "👑 Герой недели",
@@ -2387,11 +2396,11 @@ def handle_profile_command(vk, conn, from_id: int, text: str, now: int,
         )
     lines.extend([
         "",
-        f"⚔️ ДУЭЛИ (победы/поражения): {duel_record[0]}/{duel_record[1]}",
+        f"⚔️ Дуэли: {duel_record[0]}/{duel_record[1]}",
         "",
         "📊 АКТИВНОСТЬ",
         f"Сегодня: {count_label(stats['today'], 'сообщение', 'сообщения', 'сообщений')}",
-        f"За 7 дней: {count_label(stats['last_7_days'], 'сообщение', 'сообщения', 'сообщений')}",
+        *([f"За 7 дней: {count_label(stats['last_7_days'], 'сообщение', 'сообщения', 'сообщений')}"] if target_id in config.ADMIN_IDS else []),
         "",
         "🔥 Самый активный день",
     ])
@@ -3006,6 +3015,22 @@ def execute_operation(vk, conn, row, now):
             params['cmids'] = params.pop('conversation_message_ids')
         response = vk.messages.delete(**params)
         validate_deleted_messages(response, params)
+        db.finish_operation(conn, row["id"], now)
+    elif row["kind"] == "unmute":
+        # Never cancel a newer, longer mute that superseded the duel penalty.
+        expected = int(payload["expected_until"])
+        deadline = db.confirmed_mute_deadline(conn, payload["peer_id"], payload["user_id"])
+        if deadline > expected:
+            db.finish_operation(conn, row["id"], now)
+            return
+        result = vk.messages.changeConversationMemberRestrictions(
+            peer_id=payload["peer_id"], member_ids=str(payload["user_id"]), action="rw"
+        )
+        if isinstance(result, dict):
+            check_embedded_error(result)
+        if not result:
+            raise RuntimeError("VK не подтвердил снятие мута")
+        db.clear_confirmed_mute(conn, payload["peer_id"], payload["user_id"], expected)
         db.finish_operation(conn, row["id"], now)
     elif row["kind"] == "mute":
         previous_segment_id = payload.get("previous_segment_id")
