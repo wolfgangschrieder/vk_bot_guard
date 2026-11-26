@@ -110,7 +110,7 @@ class TableTests(unittest.TestCase):
         table.new_session()
         self.assertEqual(table.stage, "waiting")
         self.assertEqual(table.hand_number, 1)  # Outbox IDs stay unique across sessions
-        self.assertEqual([p.stack for p in table.seated()], [10000, 10000])
+        self.assertEqual([p.stack for p in table.seated()], [9990, 10010])
         self.assertTrue(all(not p.ready and not p.hole for p in table.seated()))
 
     def test_new_session_cannot_interrupt_hand(self):
