@@ -332,7 +332,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('/принять', challenge)
         self.assertIn('командой /число 50', challenge)
         self.assertIn('Бот выберет случайное число.', challenge)
-        self.assertIn('до 10 вызовов', challenge)
+        self.assertIn('до 5 вызовов', challenge)
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=49):
