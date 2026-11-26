@@ -265,6 +265,8 @@ class Table:
         self.turn = 0
         self.turn_started_at = 0.0
         self.current_bet = 0
+        self.small_blind = 10
+        self.big_blind = 20
         self.min_raise = self.big_blind
         self.deck = []
         self.board = []
@@ -284,6 +286,9 @@ class Table:
             p.hole = ()
             p.ready = False
         self.stage = "waiting"
+        self.small_blind = 10
+        self.big_blind = 20
+        self.min_raise = 20
         self.board = []
         self.deck = []
         self.turn = 0
