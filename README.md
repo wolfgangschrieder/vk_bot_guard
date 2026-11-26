@@ -179,16 +179,15 @@ cd /opt/vk_bot_guard
 
 Команда читает базу без изменений, показывает состояния, номера заданий, адресатов и ошибки. Токен и тексты сообщений не выводятся. `done` означает подтверждённую доставку; `pending` — ожидание; `failed` — нужна проверка; `cancelled` — доставка отменена. Новая попытка старого сообщения не создаётся автоматически после смены `.env`. Для проверки актуального доступа отправьте новую `/stat`; не переотправляйте неоднозначные старые уведомления без проверки чата.
 
-## ♠ ASTRA Poker Room (Texas Hold'em)
+## ♠ ASTRA Poker Room
 
-Poker is **disabled by default** and runs only in a separate VK conversation, never in the social or strict-moderation chats. Set `POKER_CHAT_PEER_ID=2000000404` (replace with the real peer ID) in `.env`, add the community bot to that conversation, and restart `vk-bot-guard`. The room needs permission to receive messages and send replies; each player must also allow private messages from the community so hole cards can be delivered. Never expose `poker.db` publicly; it contains private cards for active and historical hands.
+Poker runs in a separate VK conversation when `POKER_CHAT_PEER_ID` is set. Access is **premium-only**: members with an active social-chat premium subscription (Donut or manual grant) and configured `ADMIN_IDS` may write messages and play. All other participants receive a real VK read-only restriction; the bot refreshes these restrictions and releases them when premium becomes active. The community must have permission to manage conversation restrictions.
 
-- `/poker` or `/table`: table and turn state; `/pokerhelp`: command reference
-- `/join`, `/leave`: join/leave while waiting (2–9 players)
-- `/ready`, `/unready`, `/start`: confirm and deal a hand
-- `/fold`, `/check`, `/call`, `/raise 500`, `/allin`: betting actions
-- `/next`: prepare the next hand; `/newsession`: reset virtual stacks (table owner only)
+- **Blinds:** 10/20 virtual chips. 2–9 players.
+- **Initial bankroll:** at the first `/join`, the bot reads the player's current social-chat reputation and allocates `max(0, reputation) × 1000` chips (maximum 1,000,000,000). A zero/negative reputation produces zero chips and cannot start a hand without an admin top-up.
+- **Permanent wallet:** stored in `poker.db`, never recalculated from reputation. Wins/losses carry across `/leave`, `/next`, `/newsession` and service restarts. Existing saved stacks are retained on upgrade.
+- **Admin refill:** `/баланс @username фишкиN` in the poker room; only a configured admin may refill a player whose wallet already exists and is exactly zero, for 1–1,000,000,000 chips. Refills are audited and rejected during active hands. This is a refill **to** N chips, not an addition to a nonzero wallet.
+- **Commands:** `/poker`, `/pokerhelp`, `/join`, `/leave`, `/ready`, `/unready`, `/start`, `/table`, `/next`, `/newsession`, `/fold`, `/check`, `/call`, `/raise N`, `/allin`.
+- Private hole cards are sent to players via VK DMs; everyone must permit messages from the community. Turn timeout is 90 seconds. Game state and durable message outboxes remain in `poker.db`.
 
-Each player starts with 10,000 **virtual chips**, blinds are 50/100, and each turn has a 90-second deadline (automatic check if free, otherwise fold). The game includes 5-card ranking, split pots, side pots, all-in and a dealer button. Private cards are sent via VK direct messages; the game pauses if card delivery fails. Game state and message-delivery jobs are stored in `poker.db` independently of `moderator.db`.
-
-**Deploy safely:** back up `moderator.db` and `poker.db` with the service stopped, `git pull --ff-only origin feature/donut-premium`, set `POKER_CHAT_PEER_ID`, restart, inspect `journalctl -u vk-bot-guard -n 100`. First run a two-player smoke test with test accounts: `/join`, `/ready`, `/start`, verify both private hands, `/call`, `/check`, `/fold`, `/next`, and restart recovery. Poker has no real-money wagering, cash-out, or purchases.
+**Deployment:** stop the service, back up both `moderator.db` and `poker.db` (including any SQLite WAL files), pull `feature/donut-premium`, set `POKER_CHAT_PEER_ID` in `.env`, restart and check `journalctl -u vk-bot-guard -n 100 --no-pager`. Verify premium and non-premium accounts in a real VK room, including a premium expiration/unmute, an admin refill, a two-player hand, and a restart. No real-money wagering or cash-out is supported.
