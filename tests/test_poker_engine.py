@@ -96,13 +96,13 @@ class TableTests(unittest.TestCase):
         table = Table()
         table.join(1)
         table.join(2)
-        table.players[2].stack = 40
+        table.players[2].stack = 10
         table.ready(1)
         table.ready(2)
         table.start()
         self.assertEqual(table.stage, "complete")
         self.assertEqual(len(table.board), 5)
-        self.assertEqual(sum(p.stack for p in table.players.values()), 10040)
+        self.assertEqual(sum(p.stack for p in table.players.values()), 10010)
 
     def test_new_session_preserves_all_stacks(self):
         table = self.make_table()
@@ -123,8 +123,8 @@ class TableTests(unittest.TestCase):
         for uid in (1, 2, 3):
             table.join(uid)
             table.ready(uid)
-        table.players[2].stack = 40
-        table.players[3].stack = 40
+        table.players[2].stack = 10
+        table.players[3].stack = 10
         table.start()
         self.assertEqual(table.turn, 1)
         before = table.players[1].stack
@@ -133,7 +133,7 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.players[1].stack, before)
         table.act(1, "call")
         self.assertEqual(table.stage, "complete")
-        self.assertEqual(sum(p.stack for p in table.players.values()), 10080)
+        self.assertEqual(sum(p.stack for p in table.players.values()), 10020)
 
     def test_timeout_folds_when_facing_bet(self):
         table = Table()
@@ -265,7 +265,7 @@ class TableTests(unittest.TestCase):
             self.assertEqual(table.stage, street)
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), starting_chips)
-        self.assertEqual(sum(table.payouts.values()), 900)
+        self.assertEqual(sum(table.payouts.values()), 180)
         self.assertEqual(len(set(table.board)), 5)
 
 
