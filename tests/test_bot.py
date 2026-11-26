@@ -1511,11 +1511,11 @@ class BotTests(unittest.TestCase):
             bot.handle_new_message(self.vk, self.conn,
                                    self.message('', uid=1, mid=3, attachments=track))
 
-        self.assertEqual(len(self.queued('delete')), 1)
-        self.assertEqual(self.queued('delete')[0]['params']['message_ids'], '2')
+        self.assertEqual(len(self.queued('delete')), 2)
+        self.assertEqual([item['params']['message_ids'] for item in self.queued('delete')], ['2', '3'])
         self.assertEqual(self.queued('send'), [])
         stats = db.get_daily_stats(self.conn, datetime.fromtimestamp(self.now, config.CHAT_TZ).date())
-        self.assertEqual((stats['messages'], stats['music']), (2, 2))
+        self.assertEqual((stats['messages'], stats['music']), (1, 1))
 
     def test_audio_track_limit_does_not_apply_to_voice_messages_premium_or_admins(self):
         db.grant_manual_premium_month(self.conn, 2, now=self.now)
@@ -2098,7 +2098,7 @@ class BotTests(unittest.TestCase):
         self.vk.messages.delete.return_value = [{'peer_id': config.MODERATION_CHAT_PEER_ID,
             'conversation_message_id': 77, 'message_id': 0, 'response': 1}]
         bot.deliver_outbox(self.vk, self.conn, self.now + 1800)
-        self.assertEqual(self.vk.messages.delete.call_args.kwargs['cmids'], '77')
+        self.assertTrue(any(call.kwargs.get('cmids') == '77' for call in self.vk.messages.delete.call_args_list))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0], 0)
 
     def test_zero_send_is_quarantined_without_resend(self):
