@@ -29,6 +29,30 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Побочный банк #1: 200", message)
         self.assertIn("Итоговые выплаты", message)
 
+    def test_lobby_watchdog_persists_ejections_and_announcement(self):
+        from poker.engine import Table
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999)
+            table = Table()
+            table.join(101, stack=0)
+            table.join(202, stack=2000)
+            table.ready(202)
+            table.players[101].joined_at = 100
+            table.players[202].joined_at = 100
+            store.save(2000000999, table, 0)
+            self.assertIsNone(bot.process_expired_lobby(now=399))
+            result = bot.process_expired_lobby(now=400)
+            self.assertIn("Прошло 5 минут", result)
+            self.assertTrue(bot.last_public_queued)
+            _, saved = store.load(2000000999)
+            self.assertEqual(list(saved.players), [202])
+            self.assertEqual(saved.owner_id, 202)
+            self.assertEqual(saved.players[202].stack, 2000)
+            self.assertIsNone(bot.process_expired_lobby(now=401))
+            self.assertEqual(len(store.pending_public(2000000999)), 1)
+            store.close()
+
     def test_ui_dealer_blinds_timer_and_showdown_hand(self):
         from poker.commands import format_table
         from poker.engine import Table
