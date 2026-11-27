@@ -140,8 +140,8 @@ def format_table(table, names=None, now=None):
         total = sum(p.committed for p in table.players.values())
         lines.append(f"💰 Банк: {total} фишек")
         pots = _pot_breakdown(table)
-        if len(pots) > 1:
-            lines.append(f"Основной банк: {pots[0]} | Побочные: " + ", ".join(str(p) for p in pots[1:]))
+        if len(pots) > 1 and any(p.all_in for p in table.players.values()):
+            lines.append(f"Предварительные банки: основной {pots[0]} | дополнительные: " + ", ".join(str(p) for p in pots[1:]))
         if table.board:
             lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
         if active:
