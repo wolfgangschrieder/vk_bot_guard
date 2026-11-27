@@ -82,6 +82,18 @@ class Table:
             remaining = self.seated()
             self.owner_id = remaining[0].user_id if remaining else 0
 
+    def kick(self, owner_id, target_id):
+        if owner_id != self.owner_id or owner_id not in self.players:
+            raise ValueError("Only the table owner may kick players")
+        if self.stage not in ("waiting", "complete"):
+            raise ValueError("Cannot kick during a hand")
+        if target_id == owner_id:
+            raise ValueError("Owner cannot kick themselves")
+        if target_id not in self.players:
+            raise ValueError("Player is not seated")
+        removed = self.players.pop(target_id)
+        return removed.stack
+
     def ready(self, user_id, value=True):
         if self.stage != "waiting":
             raise ValueError("Hand in progress")
