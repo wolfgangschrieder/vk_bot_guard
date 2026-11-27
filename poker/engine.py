@@ -337,6 +337,7 @@ class Table:
         self.board = []
         self.deck = []
         self.payouts = {}
+        self.showdown_report = {}
         self.pending_ejections.clear()
         self.delivery_failures = 0
         self.delivery_retry_at = 0.0
@@ -384,9 +385,9 @@ class Table:
             p.hole = ()
             p.ready = False
         self.stage = "waiting"
+        self.showdown_report = {}
         self.small_blind = 10
         self.big_blind = 20
-        self.min_raise = 20
         self.board = []
         self.deck = []
         self.turn = 0
