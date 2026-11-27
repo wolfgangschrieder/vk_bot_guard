@@ -283,7 +283,12 @@ class PokerStore:
         if previous_table.stage not in ("preflop", "flop", "turn", "river"):
             return
         before = sum(p.stack + p.committed for p in previous_table.players.values())
-        after = sum(p.stack + p.committed for p in table.players.values())
+        # Settled pots have already been credited to stacks, while committed
+        # remains as historical hand metadata until /next.
+        if table.stage == "complete":
+            after = sum(p.stack for p in table.players.values())
+        else:
+            after = sum(p.stack + p.committed for p in table.players.values())
         after += sum(table.ejected_balances.values())
         if before != after:
             raise ValueError("Poker chip conservation violated")
