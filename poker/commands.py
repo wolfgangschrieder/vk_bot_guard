@@ -228,7 +228,7 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик", "/клуб", "/фишки",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/рейз", "/allin", "/кик", "/клуб", "/фишки",
     }
     if cmd not in supported:
         return None
@@ -241,9 +241,9 @@ def parse_command(text):
         if not match:
             raise ValueError("Используйте /кик @username или /кик [id123|Имя]")
         return ("kick", match.group(1))
-    if cmd == "/raise":
+    if cmd in ("/raise", "/рейз"):
         if len(parts) != 2 or not parts[1].isdecimal():
-            raise ValueError("Используйте /raise СУММА, например /raise 500")
+            raise ValueError("Используйте /рейз СУММА, например /рейз 500")
         return ("raise", int(parts[1]))
     if len(parts) != 1:
         raise ValueError("Лишние аргументы команды")
