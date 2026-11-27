@@ -3680,10 +3680,12 @@ def poker_inline_keyboard():
         rows.append([btn("➕ Сесть", "/join", "positive"),
                      btn("✅ Готов", "/ready", "primary"),
                      btn("↩️ Не готов", "/unready")])
-        rows.append([btn("▶️ Начать", "/start", "positive"),
-                     btn("🔄 Следующая", "/next"), btn("🚪 Выйти", "/leave", "negative")])
-    rows.append([btn("♠ Стол", "/table"), btn("🪙 Фишки", "/фишки"),
-                 btn("🏆 Клуб", "/клуб")])
+        if stage == "waiting" and not (table and table.next_hand_deadline):
+            rows.append([btn("▶️ Начать", "/start", "positive"),
+                         btn("🚪 Выйти", "/leave", "negative")])
+        else:
+            rows.append([btn("🚪 Выйти", "/leave", "negative")])
+    rows.append([btn("♠ Стол", "/table")])
     return json.dumps({"inline": True, "buttons": rows}, ensure_ascii=False)
 
 
@@ -3700,9 +3702,8 @@ def poker_handle_button(vk, conn, event):
         if isinstance(payload, str):
             payload = json.loads(payload)
         command = payload.get("astra_poker") if isinstance(payload, dict) else None
-        allowed = {"/join", "/ready", "/unready", "/start", "/next",
-                   "/leave", "/fold", "/check", "/call", "/allin",
-                   "/table", "/фишки", "/клуб"}
+        allowed = {"/join", "/ready", "/unready", "/start",
+                   "/leave", "/fold", "/check", "/call", "/allin", "/table"}
         is_raise = (isinstance(command, str) and
                     re.fullmatch(r"/raise [1-9][0-9]{0,11}", command) is not None)
         if not isinstance(user_id, int) or user_id <= 0 or (command not in allowed and not is_raise):
@@ -3726,7 +3727,7 @@ def poker_handle_button(vk, conn, event):
                         poker_queue_public(vk, response)
                         notice = "Готово"
                     else:
-                        notice = "Уже обработано"
+                        notice = "Принято. Ожидайте следующую раздачу."
     except Exception:
         log.exception("Poker callback failed")
         notice = "Ошибка обработки кнопки"
