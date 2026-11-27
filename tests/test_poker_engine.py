@@ -12,6 +12,33 @@ class TableTests(unittest.TestCase):
         table.start()
         return table
 
+    def test_showdown_report_pot_awards_match_settlement(self):
+        table = self.make_table(3)
+        table.board = ["Ah", "Kd", "Qc", "Js", "2h"]
+        table.players[1].hole = ("Tc", "3d")
+        table.players[2].hole = ("Td", "4c")
+        table.players[3].hole = ("9c", "9d")
+        for uid, chips in ((1, 101), (2, 201), (3, 201)):
+            table.players[uid].committed = chips
+        table.showdown()
+        report = table.showdown_report
+        self.assertEqual(len(report["hands"]), 3)
+        self.assertEqual([pot["amount"] for pot in report["pots"]], [303, 200])
+        combined = {}
+        for pot in report["pots"]:
+            self.assertEqual(sum(pot["awards"].values()), pot["amount"])
+            for uid, chips in pot["awards"].items():
+                combined[uid] = combined.get(uid, 0) + chips
+        self.assertEqual({uid: chips for uid, chips in table.payouts.items() if chips}, combined)
+        self.assertEqual(sum(combined.values()), 503)
+        table.reset()
+        self.assertEqual(table.showdown_report, {})
+
+    def test_fold_win_does_not_reveal_hole_cards(self):
+        table = self.make_table()
+        table.act(1, "fold")
+        self.assertEqual(table.showdown_report, {})
+
     def test_ready_gate(self):
         table = Table()
         table.join(1)
