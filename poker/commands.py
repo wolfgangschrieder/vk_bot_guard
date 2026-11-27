@@ -284,7 +284,7 @@ class PokerCommands:
         if before_delivered < total:
             revision, persisted = self.store.load(self.room_id)
             if persisted is not None and persisted.hand_number == table.hand_number:
-                if not persisted.turn:
+                if len(persisted.actionable()) <= 1 and (not persisted.actionable() or persisted.actionable()[0].street_bet >= persisted.current_bet):
                     persisted.next_street()
                 persisted.turn_started_at = time() if persisted.turn else 0.0
                 self.store.save(self.room_id, persisted, revision)
@@ -313,7 +313,7 @@ class PokerCommands:
             if delivered == total:
                 table.delivery_failures = 0
                 table.delivery_retry_at = 0.0
-                if not table.turn:
+                if len(table.actionable()) <= 1 and (not table.actionable() or table.actionable()[0].street_bet >= table.current_bet):
                     table.next_street()
                 table.turn_started_at = now if table.turn else 0.0
                 self.store.save(self.room_id, table, revision)
