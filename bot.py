@@ -3712,6 +3712,7 @@ def poker_handle_button(vk, conn, event):
                 if not poker_is_allowed(conn, user_id):
                     notice = "Доступ к покеру ограничен"
                 else:
+                    POKER_COMMANDS.last_public_queued = False
                     response = POKER_COMMANDS.handle(
                         user_id, command, f"callback:{peer_id}:{event_id}"
                     )
@@ -3893,7 +3894,7 @@ def run_forever() -> None:
                         handle_new_message(vk, conn, message)
 
                 elif (getattr(event, "type", None) == VkBotEventType.MESSAGE_EVENT or
-                      str(getattr(event, "type", "")).lower() in ("message_event", "vkbot eventtype.message_event")):
+                      str(getattr(event, "type", "")).lower().endswith("message_event")):
                     poker_handle_button(vk, conn, event)
                 elif str(getattr(event, "type", "")) == "chat_update":
                     handle_chat_update(vk, event, conn)
