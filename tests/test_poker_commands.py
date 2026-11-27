@@ -301,7 +301,8 @@ class CommandTests(unittest.TestCase):
             for job_id, _, _ in store.pending_public(2000000999):
                 store.mark_public_delivered(job_id)
             self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
-            self.assertIsNotNone(bot.process_expired_turn(now=2000000120.0))
+            self.assertIsNone(bot.process_expired_turn(now=2000000238.0))
+            self.assertIsNotNone(bot.process_expired_turn(now=2000000239.0))
             store.close()
 
 
