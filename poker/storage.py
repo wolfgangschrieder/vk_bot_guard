@@ -84,6 +84,16 @@ class PokerStore:
         )
         self.conn.commit()
 
+    def top_wallets(self, limit=10):
+        """Return persistent club balances, including players not currently seated."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("Leaderboard limit must be between 1 and 100")
+        rows = self.conn.execute(
+            "SELECT user_id, chips FROM poker_wallets "
+            "ORDER BY chips DESC, user_id ASC LIMIT ?", (limit,)
+        ).fetchall()
+        return [(int(uid), int(chips)) for uid, chips in rows]
+
     def wallet(self, user_id):
         row = self.conn.execute(
             "SELECT chips FROM poker_wallets WHERE user_id=?", (user_id,)
