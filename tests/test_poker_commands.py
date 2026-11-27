@@ -7,6 +7,35 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_chips_command_shows_only_requesting_players_wallet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            with store.conn:
+                store.conn.executemany(
+                    "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?)",
+                    [(101, 16000), (202, 50000)],
+                )
+            bot = PokerCommands(store, 2000000999, get_names=lambda ids: {101: "Джони", 202: "Блондин"})
+            message = bot.handle(101, "/фишки", "chips-101")
+            self.assertIn("[id101|Джони]", message)
+            self.assertIn("16 000 фишек", message)
+            self.assertNotIn("50 000", message)
+            self.assertEqual(store.load(2000000999), (0, None))
+            self.assertEqual(parse_command("/фишки"), ("фишки", None))
+            self.assertIn("Лишние аргументы", bot.handle(101, "/фишки 202", "chips-invalid"))
+            store.close()
+
+    def test_chips_command_handles_no_wallet_and_zero_balance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999)
+            self.assertIn("Баланс пока не открыт", bot.handle(101, "/фишки", "chips-empty"))
+            with store.conn:
+                store.conn.execute("INSERT INTO poker_wallets(user_id,chips) VALUES (?,?)", (101, 0))
+            self.assertIn("Баланс: 0 фишек", bot.handle(101, "/фишки", "chips-zero"))
+            store.close()
+
+
     def test_club_leaderboard_top_ten_sorted_and_persistent(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "poker.db"
