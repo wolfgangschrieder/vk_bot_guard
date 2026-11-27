@@ -193,7 +193,7 @@ class Table:
             return None
         user_id = self.turn
         player = self.players[user_id]
-        action = "fold" if self.current_bet > player.street_bet else "check"
+        action = "fold"
         self.act(user_id, action)
         if user_id not in self.pending_ejections:
             self.pending_ejections.append(user_id)
