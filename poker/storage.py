@@ -85,6 +85,12 @@ class PokerStore:
         # A live hand has outstanding bets; only settle wallet values at safe stages.
         if table.stage not in ("waiting", "complete"):
             return
+        for uid, chips in table.ejected_balances.items():
+            self.conn.execute(
+                "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET chips=excluded.chips",
+                (uid, chips),
+            )
         for player in table.players.values():
             self.conn.execute(
                 "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?) "
