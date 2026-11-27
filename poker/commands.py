@@ -145,7 +145,11 @@ def format_table(table, names=None, now=None):
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
             lines.append("🏆 Итоговые выплаты:")
             for uid, chips in winners:
-                lines.append(f"• {player_link(uid)} получил {chips} фишек")
+                detail = ""
+                player = table.players.get(uid)
+                if not report.get("hands") and player and len(table.board) == 5 and len(player.hole) == 2:
+                    detail = f" — {HAND_NAMES[evaluate_seven(tuple(player.hole) + tuple(table.board))[0]]}"
+                lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
         lines.append("Следующая раздача: /next → /ready → /start")
     else:
         total = sum(p.committed for p in table.players.values()) if active else 0
