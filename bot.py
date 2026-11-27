@@ -3716,6 +3716,7 @@ def run_forever() -> None:
     vk = session.get_api()
     if POKER_COMMANDS is not None:
         POKER_COMMANDS.private_delivery = VkPrivateCards(vk, config.GROUP_ID)
+        POKER_COMMANDS.get_names = lambda user_ids: get_user_names(vk, user_ids)
         try:
             _, table = POKER_COMMANDS.store.load(config.POKER_CHAT_PEER_ID)
             if table is not None and table.stage in ("preflop", "flop", "turn", "river"):
