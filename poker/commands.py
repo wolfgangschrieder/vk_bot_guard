@@ -278,7 +278,7 @@ class PokerCommands:
                     self.room_id, table, revision, messages, event_id=event_id,
                     public_message=(
                         f"🃏 Раздача #{table.hand_number} началась! "
-                        "Закрытые карты отправляются игрокам в личные сообщения.\\n\\n"
+                        "Закрытые карты отправляются игрокам в личные сообщения.\n\n"
                         + self._format_table(table)
                     ),
                 )
