@@ -3665,8 +3665,8 @@ def poker_inline_keyboard():
         rows.append([btn("❌ Фолд", "/fold", "negative"),
                      btn("✅ Чек", "/check", "positive"),
                      btn("💰 Колл", "/call", "primary")])
-        rows.append([btn("📈 +20", "/raise 20"), btn("📈 +100", "/raise 100"),
-                     btn("📈 +500", "/raise 500"), btn("🔥 Олл-ин", "/allin", "negative")])
+        rows.append([btn("📈 Рейз 20", "/raise 20"), btn("📈 Рейз 100", "/raise 100"),
+                     btn("📈 Рейз 500", "/raise 500"), btn("🔥 Олл-ин", "/allin", "negative")])
     else:
         rows.append([btn("➕ Сесть", "/join", "positive"),
                      btn("✅ Готов", "/ready", "primary"),
