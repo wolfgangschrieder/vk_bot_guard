@@ -156,15 +156,26 @@ class PokerCommands:
         return format_table(table, names)
 
     def _deliver_and_report(self, table):
+        before_total, before_delivered = self.store.private_delivery_status(
+            self.room_id, table.hand_number
+        )
         try:
             self.private_delivery.deliver_pending(
                 self.store, self.room_id, table.hand_number
             )
         except Exception:
             return "⏳ Раздача сохранена, доставка карт не завершена. Игра приостановлена."
-        total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
+        total, delivered = self.store.private_delivery_status(
+            self.room_id, table.hand_number
+        )
         if total != len(table.players) or delivered != total:
             return "⏳ Ожидаем доставки карт."
+        if before_delivered < total and table.turn:
+            revision, persisted = self.store.load(self.room_id)
+            if persisted is not None and persisted.hand_number == table.hand_number:
+                persisted.turn_started_at = time()
+                self.store.save(self.room_id, persisted, revision)
+                table.turn_started_at = persisted.turn_started_at
         return self._format_table(table)
 
     def recover_delivery(self, now=None):
@@ -268,7 +279,7 @@ class PokerCommands:
                     self.room_id, table.hand_number
                 )
                 if total == len(table.players) and delivered < total:
-                    return "⏳ Доставка карт выполняется автоматически. Игра приостановлена."
+                    return self._deliver_and_report(table)
                 if total != len(table.players):
                     return "⚠️ Неполная очередь карт. Игра приостановлена."
             return self._format_table(table)
