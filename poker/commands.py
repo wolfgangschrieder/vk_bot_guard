@@ -1,3 +1,4 @@
+import re
 """VK-neutral command dispatcher for ASTRA Poker Room."""
 from copy import deepcopy
 from secrets import randbelow
@@ -230,9 +231,14 @@ def parse_command(text):
     if cmd not in supported:
         return None
     if cmd == "/кик":
-        if len(parts) != 2 or not parts[1].startswith("@"):
-            raise ValueError("Используйте /кик @username")
-        return ("kick", parts[1])
+        # VK native mentions may contain spaces: [id123|Имя Фамилия].
+        match = re.fullmatch(
+            r"/кик\s+(@[A-Za-z0-9_.]+|\[id\d+\|[^\]\r\n]+\])",
+            text.strip(), flags=re.IGNORECASE,
+        )
+        if not match:
+            raise ValueError("Используйте /кик @username или /кик [id123|Имя]")
+        return ("kick", match.group(1))
     if cmd == "/raise":
         if len(parts) != 2 or not parts[1].isdecimal():
             raise ValueError("Используйте /raise СУММА, например /raise 500")
