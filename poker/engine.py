@@ -235,6 +235,7 @@ class Table:
             self.stage = "complete"
             self.turn = 0
             self.turn_started_at = 0.0
+            self._finalize_ejections()
             return
         actionable = self.actionable()
         pending = [p for p in actionable if not p.acted or p.street_bet != self.current_bet]
@@ -280,6 +281,7 @@ class Table:
         self.stage = "complete"
         self.turn = 0
         self.turn_started_at = 0.0
+        self._finalize_ejections()
 
     def new_session(self):
         """Start a new match with fresh virtual stacks, never during a hand."""
@@ -314,6 +316,7 @@ class Table:
     def reset(self):
         if self.stage != "complete":
             raise ValueError("Hand not complete")
+        self._finalize_ejections()
         self.players = {uid: p for uid, p in self.players.items() if p.stack > 0}
         if self.owner_id not in self.players:
             remaining = self.seated()

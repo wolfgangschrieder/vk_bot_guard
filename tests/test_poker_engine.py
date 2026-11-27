@@ -289,5 +289,59 @@ class TableTests(unittest.TestCase):
         self.assertEqual(len(set(table.board)), 5)
 
 
+    def test_timeout_then_normal_fold_finalizes_ejection_and_preserves_chips(self):
+        table = self.make_table(3)
+        initial = sum(p.stack + p.committed for p in table.players.values())
+        timed_out = table.turn
+        table.expire_turn(table.turn_started_at + 120)
+        self.assertIn(timed_out, table.pending_ejections)
+        while table.stage != "complete":
+            table.act(table.turn, "fold")
+        self.assertNotIn(timed_out, table.players)
+        self.assertIn(timed_out, table.ejected_balances)
+        self.assertEqual(table.pending_ejections, [])
+        self.assertEqual(
+            sum(p.stack for p in table.players.values()) + sum(table.ejected_balances.values()),
+            initial,
+        )
+
+    def test_timeout_then_normal_showdown_finalizes_ejection(self):
+        table = self.make_table(3)
+        initial = sum(p.stack + p.committed for p in table.players.values())
+        # Complete preflop; then time out one player on the flop.
+        while table.stage == "preflop":
+            uid = table.turn
+            owed = table.current_bet - table.players[uid].street_bet
+            table.act(uid, "call" if owed else "check")
+        timed_out = table.turn
+        table.expire_turn(table.turn_started_at + 120)
+        self.assertEqual(table.stage, "flop")
+        while table.stage != "complete":
+            uid = table.turn
+            owed = table.current_bet - table.players[uid].street_bet
+            table.act(uid, "call" if owed else "check")
+        self.assertNotIn(timed_out, table.players)
+        self.assertIn(timed_out, table.ejected_balances)
+        self.assertEqual(table.pending_ejections, [])
+        self.assertEqual(
+            sum(p.stack for p in table.players.values()) + sum(table.ejected_balances.values()),
+            initial,
+        )
+
+    def test_owner_timeout_transfers_ownership_after_normal_completion(self):
+        table = self.make_table(3)
+        owner = table.owner_id
+        while table.turn != owner and table.stage == "preflop":
+            uid = table.turn
+            owed = table.current_bet - table.players[uid].street_bet
+            table.act(uid, "call" if owed else "check")
+        self.assertEqual(table.turn, owner)
+        table.expire_turn(table.turn_started_at + 120)
+        while table.stage != "complete":
+            table.act(table.turn, "fold")
+        self.assertNotIn(owner, table.players)
+        self.assertIn(table.owner_id, table.players)
+        self.assertNotEqual(table.owner_id, owner)
+
 if __name__ == "__main__":
     unittest.main()
