@@ -343,5 +343,24 @@ class TableTests(unittest.TestCase):
         self.assertIn(table.owner_id, table.players)
         self.assertNotEqual(table.owner_id, owner)
 
+    def test_cancel_undelivered_hand_refunds_blinds_and_preserves_hand_id(self):
+        table = self.make_table(3)
+        before = sum(p.stack + p.committed for p in table.players.values())
+        number = table.hand_number
+        table.cancel_undelivered_hand()
+        self.assertEqual(table.stage, "waiting")
+        self.assertEqual(table.hand_number, number)
+        self.assertEqual(sum(p.stack for p in table.players.values()), before)
+        self.assertTrue(all(p.committed == 0 and not p.hole for p in table.players.values()))
+
+    def test_side_pot_ties_and_odd_chip_conservation(self):
+        from poker.evaluator import settle_pots
+        board = ("Ah", "Kd", "Qc", "Js", "2h")
+        hands = {1: ("Tc", "3d"), 2: ("Td", "4c"), 3: ("9c", "9d")}
+        contributions = {1: 101, 2: 201, 3: 201}
+        payouts = settle_pots(contributions, hands, board, [2, 1, 3])
+        self.assertEqual(payouts, {1: 151, 2: 352, 3: 0})
+        self.assertEqual(sum(payouts.values()), sum(contributions.values()))
+
 if __name__ == "__main__":
     unittest.main()

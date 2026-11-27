@@ -110,6 +110,37 @@ class CommandTests(unittest.TestCase):
             self.assertIn("Место 3", bot.handle(303, "/join", "rejoin"))
             store.close()
 
+    def test_automatic_delivery_retries_then_refunds_and_recovers_after_restart(self):
+        class BrokenDelivery:
+            def can_message(self, uid):
+                return True
+            def deliver_pending(self, store, room, hand):
+                raise RuntimeError("VK unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "poker.db"
+            store = PokerStore(db)
+            bot = PokerCommands(store, 2000000999, private_delivery=BrokenDelivery())
+            for uid in (101, 202):
+                bot.handle(uid, "/join", f"join-{uid}")
+                bot.handle(uid, "/ready", f"ready-{uid}")
+            self.assertIn("приостановлена", bot.handle(101, "/start", "start"))
+            table = store.load(2000000999)[1]
+            self.assertEqual(table.stage, "preflop")
+            store.close()
+            reopened = PokerStore(db)
+            recovered = PokerCommands(reopened, 2000000999, private_delivery=BrokenDelivery())
+            self.assertIsNone(recovered.recover_delivery(now=100))
+            self.assertIsNone(recovered.recover_delivery(now=131))
+            message = recovered.recover_delivery(now=162)
+            self.assertIn("Раздача отменена", message)
+            table = reopened.load(2000000999)[1]
+            self.assertEqual(table.stage, "waiting")
+            self.assertEqual(sum(p.stack for p in table.players.values()), 20000)
+            self.assertEqual(reopened.pending_private_cards(2000000999, 1), [])
+            self.assertTrue(reopened.pending_public(2000000999))
+            self.assertIsNone(recovered.recover_delivery(now=200))
+            reopened.close()
+
     def test_lobby_and_deduplication(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = PokerStore(Path(tmp) / "poker.db")
@@ -267,7 +298,11 @@ class CommandTests(unittest.TestCase):
             table = store.load(2000000999)[1]
             self.assertEqual(table.turn_started_at, 2000000000.0)
             self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
-            self.assertIsNotNone(bot.process_expired_turn(now=2000000120.0))
+            for job_id, _, _ in store.pending_public(2000000999):
+                store.mark_public_delivered(job_id)
+            self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
+            self.assertIsNone(bot.process_expired_turn(now=2000000238.0))
+            self.assertIsNotNone(bot.process_expired_turn(now=2000000239.0))
             store.close()
 
 
