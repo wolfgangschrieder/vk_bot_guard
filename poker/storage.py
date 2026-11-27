@@ -24,6 +24,7 @@ def deserialize(payload):
         for uid, data in players.items()
     }
     table.payouts = {int(uid): amount for uid, amount in table.payouts.items()}
+    table.ejected_balances = {int(uid): amount for uid, amount in table.ejected_balances.items()}
     if table.players and table.owner_id not in table.players:
         table.owner_id = table.seated()[0].user_id
     return table
@@ -185,6 +186,8 @@ class PokerStore:
             revision = current[0] if current else 0
             if revision != expected_revision:
                 raise ValueError("Stale poker state revision")
+            previous_table = self.load(room_id)[1]
+            self.check_chip_conservation(table, previous_table)
             self.conn.execute(
                 "INSERT INTO poker_state(room_id, revision, snapshot) VALUES (?, ?, ?) "
                 "ON CONFLICT(room_id) DO UPDATE SET "
