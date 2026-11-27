@@ -10,12 +10,12 @@ from .private_cards import format_hole_cards, display_card
 
 HELP = (
     "♠ ASTRA POKER ROOM\n"
-    "/poker — стол, /клуб — TOP 10 по фишкам, /фишки — мой баланс, /join — занять место, /leave — выйти, "
+    "/poker — стол, /клуб — TOP 10 по фишкам, /фишки — мой баланс. Кнопки «Сесть», «Выйти» и «Готов» — под сообщением бота. "
     "/кик @username — владелец может исключить игрока между раздачами, "
-    "/ready — готов, /unready — отменить готовность, "
-    "/start — начать раздачу, /table — состояние, "
-    "/next — следующая раздача, /newsession — новая сессия без сброса фишек, "
-    "/fold, /check, /call, /raise СУММА, /allin — действия. "
+    "/ready и /unready — текстовые альтернативы кнопкам готовности, "
+    "/start — ручной запуск первой раздачи, /table — состояние, "
+    "следующая раздача запускается автоматически после готовности игроков. /newsession — новая сессия без сброса фишек, "
+    "/fold, /check, /call, /рейз СУММА (или /raise СУММА), /allin — действия. "
     "Блайнды 10/20. Начальный баланс: 1000 фишек за очко репутации; "
     "повторно не начисляется. /баланс @username фишкиN — администратор."
 )
@@ -24,8 +24,8 @@ HELP = (
 ERROR_MESSAGES = {
     "Need at least two ready players": (
         "Для начала игры необходимо минимум 2 участника с положительным балансом фишек.\n"
-        "Каждый игрок должен занять место командой /join и подтвердить готовность командой /ready.\n"
-        "Когда все будут готовы, используйте /start.\n"
+        "Займите места кнопкой «Сесть» и подтвердите участие кнопкой «✅ Готов».\n"
+        "Следующая раздача начнётся автоматически, когда все будут готовы.\n"
         "Если за столом больше двух игроков, готовность требуется от каждого."
     ),
     "Not your turn": "Сейчас ход другого игрока.",
@@ -342,7 +342,7 @@ class PokerCommands:
                 return "✅ Все закрытые карты доставлены. Игра продолжается.\n" + self._format_table(table)
             table.delivery_failures += 1
         if table.delivery_failures >= 3:
-            message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Используйте /ready и /start."
+            message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Нажмите «✅ Готов» и затем «▶️ Начать»."
             self.store.cancel_undelivered_hand(self.room_id, table, revision, message)
             self.last_public_queued = True
             return message
@@ -430,7 +430,7 @@ class PokerCommands:
         if expired:
             users = ", ".join(self._player_name(uid) for uid in expired)
             message = (
-                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\n\n"
+                f"⏳ За 5 минут игроки не подтвердили готовность кнопкой «✅ Готов» и удалены из-за стола: {users}.\n\n"
                 + self._format_table(table)
             )
             saved = self.store.save(self.room_id, table, revision, public_message=message)
@@ -511,7 +511,7 @@ class PokerCommands:
                     "🪙 МОИ ФИШКИ\n\n"
                     f"👤 {self._player_name(user_id)}\n"
                     "Баланс пока не открыт.\n"
-                    "Займи место за столом: /join"
+                    "Нажми кнопку «Сесть» под сообщением бота"
                 )
             return (
                 "♠ ASTRA POKER ROOM\n"
@@ -527,7 +527,7 @@ class PokerCommands:
                     "♠ ASTRA POKER ROOM\n"
                     "🏆 КЛУБ ПОКЕРА · TOP 10\n\n"
                     "Пока нет игроков с зарегистрированными фишками.\n"
-                    "Займи место за столом: /join"
+                    "Нажми кнопку «Сесть» под сообщением бота"
                 )
             ids = [uid for uid, _ in ranking]
             try:
