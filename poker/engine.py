@@ -166,7 +166,7 @@ class Table:
         self.stage = "preflop"
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
         # Delivery gate: no action or automatic showdown before all hole cards arrive.
-        self.turn_started_at = 0.0
+        self.turn_started_at = time() if self.turn else 0.0
 
     def act(self, user_id, action, amount=None):
         if self.stage not in ("preflop", "flop", "turn", "river") or self.turn != user_id:
