@@ -3650,7 +3650,7 @@ def acquire_instance_lock():
 
 
 def poker_inline_keyboard():
-    """Shared chat controls; the engine validates player, turn and amount."""
+    """Inline controls in the public poker chat, based on current table state."""
     def btn(label, command, color="secondary"):
         return {
             "action": {"type": "callback", "label": label,
@@ -3665,8 +3665,17 @@ def poker_inline_keyboard():
         rows.append([btn("❌ Фолд", "/fold", "negative"),
                      btn("✅ Чек", "/check", "positive"),
                      btn("💰 Колл", "/call", "primary")])
-        rows.append([btn("📈 Рейз 20", "/raise 20"), btn("📈 Рейз 100", "/raise 100"),
-                     btn("📈 Рейз 500", "/raise 500"), btn("🔥 Олл-ин", "/allin", "negative")])
+        if table.turn in table.players:
+            actor = table.players[table.turn]
+            minimum = table.current_bet + table.min_raise
+            maximum = actor.street_bet + actor.stack
+            targets = [minimum, minimum + table.min_raise, minimum + 3 * table.min_raise]
+            valid = sorted(set(value for value in targets if value <= maximum))
+            raise_buttons = [btn(f"📈 {value}", f"/raise {value}") for value in valid[:3]]
+            raise_buttons.append(btn("🔥 Олл-ин", "/allin", "negative"))
+            rows.append(raise_buttons)
+        else:
+            rows.append([btn("🔥 Олл-ин", "/allin", "negative")])
     else:
         rows.append([btn("➕ Сесть", "/join", "positive"),
                      btn("✅ Готов", "/ready", "primary"),
@@ -3693,9 +3702,10 @@ def poker_handle_button(vk, conn, event):
         command = payload.get("astra_poker") if isinstance(payload, dict) else None
         allowed = {"/join", "/ready", "/unready", "/start", "/next",
                    "/leave", "/fold", "/check", "/call", "/allin",
-                   "/table", "/фишки", "/клуб", "/raise 20",
-                   "/raise 100", "/raise 500"}
-        if not isinstance(user_id, int) or user_id <= 0 or command not in allowed:
+                   "/table", "/фишки", "/клуб"}
+        is_raise = (isinstance(command, str) and
+                    re.fullmatch(r"/raise [1-9][0-9]{0,11}", command) is not None)
+        if not isinstance(user_id, int) or user_id <= 0 or (command not in allowed and not is_raise):
             notice = "Недопустимое действие"
         else:
             with POKER_LOCK:
