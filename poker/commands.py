@@ -64,6 +64,8 @@ def format_table(table, names=None):
             flags.append("👑 владелец")
         if table.stage == "waiting":
             flags.append("готов" if p.ready else "ожидает")
+        elif p.user_id in table.pending_ejections:
+            flags.append("⏱ исключён после тайм-аута")
         elif p.folded:
             flags.append("пас")
         elif p.all_in:
@@ -194,7 +196,7 @@ class PokerCommands:
         user_id, action = result
         response = (
             f"⏱ {self._player_name(user_id)} не сделал ход за "
-            f"{table.turn_timeout_seconds} секунд: {action.upper()}.\\n"
+            f"{table.turn_timeout_seconds} секунд. Карты сброшены, игрок исключён из-за стола.\\n"
             + self._format_table(table)
         )
         self.store.save(self.room_id, table, revision, public_message=response)

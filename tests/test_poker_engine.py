@@ -143,11 +143,31 @@ class TableTests(unittest.TestCase):
         table.start()
         current = table.turn
         started = table.turn_started_at
-        self.assertIsNone(table.expire_turn(started + 89))
+        self.assertIsNone(table.expire_turn(started + 119))
         self.assertEqual(table.turn, current)
-        self.assertEqual(table.expire_turn(started + 90), (current, "fold"))
+        self.assertEqual(table.expire_turn(started + 120), (current, "fold"))
         self.assertEqual(table.stage, "complete")
+        self.assertNotIn(current, table.players)
+        self.assertIn(current, table.ejected_balances)
         self.assertEqual(table.turn_started_at, 0.0)
+
+    def test_timeout_folds_even_when_check_is_free_and_ejects_at_completion(self):
+        table = self.make_table(3)
+        for _ in range(3):
+            owed = table.current_bet - table.players[table.turn].street_bet
+            table.act(table.turn, "call" if owed else "check")
+        self.assertEqual(table.stage, "flop")
+        first = table.turn
+        table.expire_turn(table.turn_started_at + 120)
+        self.assertIn(first, table.pending_ejections)
+        self.assertTrue(table.players[first].folded)
+        self.assertIn(first, table.players)
+        second = table.turn
+        table.expire_turn(table.turn_started_at + 120)
+        self.assertEqual(table.stage, "complete")
+        self.assertNotIn(first, table.players)
+        self.assertNotIn(second, table.players)
+        self.assertEqual(len(table.ejected_balances), 2)
 
     def test_timeout_checks_when_no_call_required(self):
         table = Table()
@@ -160,8 +180,8 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.stage, "flop")
         current = table.turn
         started = table.turn_started_at
-        self.assertEqual(table.expire_turn(started + 90), (current, "check"))
-        self.assertEqual(table.stage, "flop")
+        self.assertEqual(table.expire_turn(started + 120), (current, "fold"))
+        self.assertEqual(table.stage, "complete")
 
     def test_three_way_unequal_allins_conserve_chips(self):
         table = Table()

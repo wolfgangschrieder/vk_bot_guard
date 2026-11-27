@@ -219,8 +219,8 @@ class CommandTests(unittest.TestCase):
                 bot.handle(101, "/start", "start-delayed")
             table = store.load(2000000999)[1]
             self.assertEqual(table.turn_started_at, 2000000000.0)
-            self.assertIsNone(bot.process_expired_turn(now=2000000089.0))
-            self.assertIsNotNone(bot.process_expired_turn(now=2000000090.0))
+            self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
+            self.assertIsNotNone(bot.process_expired_turn(now=2000000120.0))
             store.close()
 
 

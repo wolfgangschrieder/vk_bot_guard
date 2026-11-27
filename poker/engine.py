@@ -40,7 +40,9 @@ class Table:
     payouts: dict = field(default_factory=dict)
     last_dealer: int = 0
     turn_started_at: float = 0.0
-    turn_timeout_seconds: int = 90
+    turn_timeout_seconds: int = 120
+    pending_ejections: list = field(default_factory=list)
+    ejected_balances: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -110,6 +112,8 @@ class Table:
         SystemRandom().shuffle(self.deck)
         self.board = []
         self.payouts = {}
+        self.pending_ejections.clear()
+        self.ejected_balances.clear()
         self.hand_number += 1
         self.dealer = self.next_after(self.last_dealer, ps).seat
         self.last_dealer = self.dealer
@@ -189,9 +193,25 @@ class Table:
             return None
         user_id = self.turn
         player = self.players[user_id]
-        action = "fold" if self.current_bet > player.street_bet else "check"
+        action = "fold"
         self.act(user_id, action)
+        if user_id not in self.pending_ejections:
+            self.pending_ejections.append(user_id)
+        self._finalize_ejections()
         return user_id, action
+
+    def _finalize_ejections(self):
+        """Remove timed-out players only after settling the hand and its pots."""
+        if self.stage != "complete":
+            return
+        for uid in self.pending_ejections:
+            player = self.players.pop(uid, None)
+            if player is not None:
+                self.ejected_balances[uid] = player.stack
+        self.pending_ejections.clear()
+        if self.owner_id not in self.players:
+            remaining = self.seated()
+            self.owner_id = remaining[0].user_id if remaining else 0
 
     def progress(self, last_actor):
         live = self.live()
@@ -273,6 +293,8 @@ class Table:
         self.deck = []
         self.board = []
         self.payouts = {}
+        self.pending_ejections.clear()
+        self.ejected_balances.clear()
         # Keep hand numbers monotonic: private-card outbox keys must never repeat.
         self.dealer = 0
         self.last_dealer = 0
