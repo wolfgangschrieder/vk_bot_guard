@@ -277,8 +277,9 @@ class PokerCommands:
                 saved = self.store.save_hand_with_private_cards(
                     self.room_id, table, revision, messages, event_id=event_id,
                     public_message=(
-                        f"♠ Раздача #{table.hand_number} началась. "
-                        "Закрытые карты отправляются в личные сообщения."
+                        f"🃏 Раздача #{table.hand_number} началась! "
+                        "Закрытые карты отправляются игрокам в личные сообщения.\n\n"
+                        + self._format_table(table)
                     ),
                 )
                 if saved is None:

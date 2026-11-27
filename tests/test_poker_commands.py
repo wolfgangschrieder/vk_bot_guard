@@ -154,6 +154,17 @@ class CommandTests(unittest.TestCase):
                 bot.handle(uid, "/join", "join" + str(uid))
                 bot.handle(uid, "/ready", "ready" + str(uid))
             self.assertIn("PREFLOP", bot.handle(101, "/start", "start1"))
+            queued = store.pending_public(2000000999)
+            announcements = [row[2] for row in queued if "Раздача #1 началась!" in row[2]]
+            self.assertEqual(len(announcements), 1)
+            announcement = announcements[0]
+            self.assertIn("Раздача #1 началась!", announcement)
+            self.assertIn("ASTRA POKER | PREFLOP", announcement)
+            self.assertIn("Место 1:", announcement)
+            self.assertIn("Место 2:", announcement)
+            self.assertIn("к уравниванию:", announcement)
+            self.assertNotIn("Ваши закрытые карты:", announcement)
+            self.assertEqual(announcement.count("ASTRA POKER | PREFLOP"), 1)
             first = store.load(2000000999)[1]
             self.assertEqual(first.hand_number, 1)
             self.assertIn("COMPLETE", bot.handle(first.turn, "/fold", "fold1"))
