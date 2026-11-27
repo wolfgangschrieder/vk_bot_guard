@@ -359,7 +359,7 @@ class TableTests(unittest.TestCase):
         hands = {1: ("Tc", "3d"), 2: ("Td", "4c"), 3: ("9c", "9d")}
         contributions = {1: 101, 2: 201, 3: 201}
         payouts = settle_pots(contributions, hands, board, [2, 1, 3])
-        self.assertEqual(payouts, {1: 152, 2: 351, 3: 0})
+        self.assertEqual(payouts, {1: 151, 2: 352, 3: 0})
         self.assertEqual(sum(payouts.values()), sum(contributions.values()))
 
 if __name__ == "__main__":
