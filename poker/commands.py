@@ -148,7 +148,7 @@ def format_table(table, names=None, now=None):
             for uid, chips in winners:
                 detail = ""
                 player = table.players.get(uid)
-                if not report.get("hands") and player and len(table.board) == 5 and len(player.hole) == 2:
+                if not report.get("hands") and len(table.live()) > 1 and player and len(table.board) == 5 and len(player.hole) == 2:
                     detail = f" — {HAND_NAMES[evaluate_seven(tuple(player.hole) + tuple(table.board))[0]]}"
                 lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
         lines.append("Следующая раздача: /next → /ready → /start")
