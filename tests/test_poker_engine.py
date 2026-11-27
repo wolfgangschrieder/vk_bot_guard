@@ -191,6 +191,37 @@ class TableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Folded player"):
             table._refund_uncalled_bet()
 
+    def test_randomized_side_pot_conservation_and_report(self):
+        from random import Random
+        from poker.evaluator import DECK
+        rng = Random(20261127)
+        for _ in range(60):
+            count = rng.randint(2, 9)
+            table = Table()
+            for uid in range(1, count + 1):
+                table.join(uid)
+            cards = rng.sample(DECK, count * 2 + 5)
+            table.board = list(cards[:5])
+            levels = sorted(rng.sample(range(1, 900), count))
+            for index, player in enumerate(table.seated()):
+                player.hole = tuple(cards[5 + 2 * index:7 + 2 * index])
+                contribution = levels[index]
+                player.committed = contribution
+                player.stack -= contribution
+            # The top contributor must remain eligible for a legal showdown.
+            for player in table.seated()[:-1]:
+                player.folded = rng.choice([False, False, True])
+            before = sum(p.stack + p.committed for p in table.players.values())
+            table.showdown()
+            self.assertEqual(sum(p.stack for p in table.players.values()), before)
+            self.assertEqual(sum(table.payouts.values()),
+                             sum(p.committed for p in table.players.values()))
+            self.assertEqual(sum(pot["amount"] for pot in table.showdown_report["pots"]),
+                             sum(p.committed for p in table.players.values()))
+            self.assertEqual(sum(sum(pot["awards"].values())
+                                 for pot in table.showdown_report["pots"]),
+                             sum(table.payouts.values()))
+
     def test_new_session_preserves_all_stacks(self):
         table = self.make_table()
         table.act(1, "fold")
