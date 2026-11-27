@@ -26,6 +26,28 @@ class CommandTests(unittest.TestCase):
         self.assertIn("/next → /ready → /start", finished)
         self.assertNotIn("Закрытые карты", finished)
 
+    def test_readable_cards_and_real_vk_names(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+        table = Table()
+        table.join(101)
+        table.join(202)
+        table.stage = "river"
+        table.turn = 101
+        table.board = ["7c", "Kc", "Js", "Kd", "As"]
+        text = format_table(table, {101: "Артём Иванов", 202: "Мария Петрова"})
+        self.assertIn("[id101|Артём Иванов]", text)
+        self.assertIn("[id202|Мария Петрова]", text)
+        self.assertIn("Карты стола: 7♣ K♣ J♠ K♦ A♠", text)
+        self.assertNotIn("Общие карты:", text)
+        self.assertNotIn("|Игрок]", text)
+        self.assertIn("▶ [id101|Артём Иванов]", text)
+        self.assertIn("[id101|ID 101]", format_table(table))
+        table.stage = "complete"
+        table.turn = 0
+        table.payouts = {202: 40}
+        self.assertIn("[id202|Мария Петрова] получил 40 фишек", format_table(table, {202: "Мария Петрова"}))
+
     def test_start_requires_every_seated_player_ready(self):
         class Delivery:
             def can_message(self, uid):
