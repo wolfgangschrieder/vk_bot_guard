@@ -699,18 +699,17 @@ def publish_commands_link(vk, peer_id: int | None = None) -> int:
 
 def publish_donut_promo(vk, peer_id: int | None = None) -> int:
     message = (
-        "💎 Хочешь больше возможностей в @vlgchat? Поддержи чат подпиской Don-премиум!\\n\\n"
-        "✨ Тебе откроются расширенные возможности:\\n"
-        "• 👤 Профиль — 5 просмотров своего и 5 чужих профилей в день.\\n"
-        "• 🎭 Характеристики — до 5 разных участников в день.\\n"
-        "• ⭐ Репутация — до 3 разных участников в день.\\n"
-        "• 💍 Свадьба — можешь предложить её любому участнику; принять приглашение может каждый.\\n"
-        "• 💔 Развод — расторгнуть свой брак без согласия партнёра.\\n\\n"
-        "Подписка — 100 ₽ в месяц. Твоя поддержка помогает развивать чат и добавлять новые функции. "
-        "Нажми кнопку ниже, чтобы оформить Don-подписку. Спасибо, что ты с нами!"
+        "💎 Стань Don-премиум в @vlgchat!\n\n"
+        "🌙 Общайся ночью без ограничений по типам сообщений.\n"
+        "🎵 Отправляй сколько угодно аудиозаписей.\n"
+        "👤 Просматривай профили: 5 своих и 5 чужих в день.\n"
+        "🎭 Оценивай характеристики 5 участников в день.\n"
+        "⭐ Меняй репутацию 3 участникам в день.\n"
+        "💍 Предлагай свадьбу кому угодно.\n\n"
+        "Всего 100 ₽/месяц.\n"
+        "Оформляй подписку кнопкой ниже!"
     )
     return send_bot_message(vk, message, peer_id=peer_id, keyboard=donut_subscription_keyboard())
-
 
 def publish_chat_ad(vk, peer_id: int | None = None) -> int:
     message = (
@@ -3680,10 +3679,12 @@ def poker_inline_keyboard():
         rows.append([btn("➕ Сесть", "/join", "positive"),
                      btn("✅ Готов", "/ready", "primary"),
                      btn("↩️ Не готов", "/unready")])
-        rows.append([btn("▶️ Начать", "/start", "positive"),
-                     btn("🔄 Следующая", "/next"), btn("🚪 Выйти", "/leave", "negative")])
-    rows.append([btn("♠ Стол", "/table"), btn("🪙 Фишки", "/фишки"),
-                 btn("🏆 Клуб", "/клуб")])
+        if stage == "waiting" and not (table and table.next_hand_deadline):
+            rows.append([btn("▶️ Начать", "/start", "positive"),
+                         btn("🚪 Выйти", "/leave", "negative")])
+        else:
+            rows.append([btn("🚪 Выйти", "/leave", "negative")])
+    rows.append([btn("♠ Стол", "/table")])
     return json.dumps({"inline": True, "buttons": rows}, ensure_ascii=False)
 
 
@@ -3700,9 +3701,8 @@ def poker_handle_button(vk, conn, event):
         if isinstance(payload, str):
             payload = json.loads(payload)
         command = payload.get("astra_poker") if isinstance(payload, dict) else None
-        allowed = {"/join", "/ready", "/unready", "/start", "/next",
-                   "/leave", "/fold", "/check", "/call", "/allin",
-                   "/table", "/фишки", "/клуб"}
+        allowed = {"/join", "/ready", "/unready", "/start",
+                   "/leave", "/fold", "/check", "/call", "/allin", "/table"}
         is_raise = (isinstance(command, str) and
                     re.fullmatch(r"/raise [1-9][0-9]{0,11}", command) is not None)
         if not isinstance(user_id, int) or user_id <= 0 or (command not in allowed and not is_raise):
@@ -3712,6 +3712,7 @@ def poker_handle_button(vk, conn, event):
                 if not poker_is_allowed(conn, user_id):
                     notice = "Доступ к покеру ограничен"
                 else:
+                    POKER_COMMANDS.last_public_queued = False
                     response = POKER_COMMANDS.handle(
                         user_id, command, f"callback:{peer_id}:{event_id}"
                     )
@@ -3725,7 +3726,7 @@ def poker_handle_button(vk, conn, event):
                         poker_queue_public(vk, response)
                         notice = "Готово"
                     else:
-                        notice = "Уже обработано"
+                        notice = "Принято. Ожидайте следующую раздачу."
     except Exception:
         log.exception("Poker callback failed")
         notice = "Ошибка обработки кнопки"
@@ -3778,6 +3779,9 @@ def poker_turn_watchdog(vk):
                 recovery = POKER_COMMANDS.recover_delivery()
                 if recovery and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, recovery)
+                next_response = POKER_COMMANDS.process_next_hand()
+                if next_response and not POKER_COMMANDS.last_public_queued:
+                    poker_queue_public(vk, next_response)
                 lobby_response = POKER_COMMANDS.process_expired_lobby()
                 if lobby_response and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, lobby_response)
@@ -3889,7 +3893,8 @@ def run_forever() -> None:
                     if message is not None:
                         handle_new_message(vk, conn, message)
 
-                elif str(getattr(event, "type", "")).lower() == "message_event":
+                elif (getattr(event, "type", None) == VkBotEventType.MESSAGE_EVENT or
+                      str(getattr(event, "type", "")).lower().endswith("message_event")):
                     poker_handle_button(vk, conn, event)
                 elif str(getattr(event, "type", "")) == "chat_update":
                     handle_chat_update(vk, event, conn)

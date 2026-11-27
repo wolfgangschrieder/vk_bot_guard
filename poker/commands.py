@@ -10,12 +10,12 @@ from .private_cards import format_hole_cards, display_card
 
 HELP = (
     "♠ ASTRA POKER ROOM\n"
-    "/poker — стол, /клуб — TOP 10 по фишкам, /фишки — мой баланс, /join — занять место, /leave — выйти, "
+    "/poker — стол, /клуб — TOP 10 по фишкам, /фишки — мой баланс. Кнопки «Сесть», «Выйти» и «Готов» — под сообщением бота. "
     "/кик @username — владелец может исключить игрока между раздачами, "
-    "/ready — готов, /unready — отменить готовность, "
-    "/start — начать раздачу, /table — состояние, "
-    "/next — следующая раздача, /newsession — новая сессия без сброса фишек, "
-    "/fold, /check, /call, /raise СУММА, /allin — действия. "
+    "/ready и /unready — текстовые альтернативы кнопкам готовности, "
+    "/start — ручной запуск первой раздачи, /table — состояние, "
+    "следующая раздача запускается автоматически после готовности игроков. /newsession — новая сессия без сброса фишек, "
+    "/fold, /check, /call, /рейз СУММА (или /raise СУММА), /allin — действия. "
     "Блайнды 10/20. Начальный баланс: 1000 фишек за очко репутации; "
     "повторно не начисляется. /баланс @username фишкиN — администратор."
 )
@@ -24,8 +24,8 @@ HELP = (
 ERROR_MESSAGES = {
     "Need at least two ready players": (
         "Для начала игры необходимо минимум 2 участника с положительным балансом фишек.\n"
-        "Каждый игрок должен занять место командой /join и подтвердить готовность командой /ready.\n"
-        "Когда все будут готовы, используйте /start.\n"
+        "Займите места кнопкой «Сесть» и подтвердите участие кнопкой «✅ Готов».\n"
+        "Следующая раздача начнётся автоматически, когда все будут готовы.\n"
         "Если за столом больше двух игроков, готовность требуется от каждого."
     ),
     "Not your turn": "Сейчас ход другого игрока.",
@@ -96,7 +96,7 @@ def format_table(table, names=None, now=None):
              else [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"])
     seated = table.seated()
     active = table.stage in ("preflop", "flop", "turn", "river")
-    if active or table.stage == "complete":
+    if active:
         dealer = next((p for p in seated if p.seat == table.dealer), None)
         if dealer:
             sb = dealer if len(seated) == 2 else table.next_after(dealer.seat, seated)
@@ -106,8 +106,9 @@ def format_table(table, names=None, now=None):
                 f"SB: {player_link(sb.user_id)} ({table.small_blind}) | "
                 f"BB: {player_link(bb.user_id)} ({table.big_blind})"
             )
-    lines.append("👥 Игроки:")
-    for p in seated:
+    if table.stage != "complete":
+        lines.append("👥 Игроки:")
+    for p in ([] if table.stage == "complete" else seated):
         flags = []
         if p.user_id == table.owner_id:
             flags.append("👑 владелец")
@@ -131,17 +132,18 @@ def format_table(table, names=None, now=None):
             lines.append("🃏 Карты стола: " + " ".join(display_card(card) for card in table.board))
         if report.get("hands"):
             lines.append("🎭 SHOWDOWN")
-            for uid, hole in report["hands"].items():
+            for raw_uid, hole in report["hands"].items():
+                uid = int(raw_uid)
                 if len(hole) == 2 and len(table.board) == 5:
                     category = evaluate_seven(tuple(hole) + tuple(table.board))[0]
                     cards = " ".join(display_card(card) for card in hole)
                     lines.append(f"• {player_link(uid)}: {cards} — {HAND_NAMES[category]}")
             if report.get("pots"):
-                lines.append("💰 POTS")
+                lines.append("💰 Банк")
                 for index, pot in enumerate(report["pots"]):
                     label = "MAIN POT" if index == 0 else f"SIDE POT #{index}"
                     awards = ", ".join(
-                        f"{player_link(uid)} +{chips}" for uid, chips in pot["awards"].items()
+                        f"{player_link(int(uid))} +{chips}" for uid, chips in pot["awards"].items()
                     )
                     lines.append(f"• {label} {pot['amount']}: {awards}")
         elif table.payouts and not table.board:
@@ -149,14 +151,14 @@ def format_table(table, names=None, now=None):
         if table.payouts:
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
-            lines.append("🏆 RESULTS")
+            lines.append("🏆 Результаты")
             for uid, chips in winners:
                 detail = ""
                 player = table.players.get(uid)
                 if not report.get("hands") and len(table.live()) > 1 and player and len(table.board) == 5 and len(player.hole) == 2:
                     detail = f" — {HAND_NAMES[evaluate_seven(tuple(player.hole) + tuple(table.board))[0]]}"
                 lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
-        lines.append("Следующая раздача: /next → /ready → /start")
+
     elif active:
         total = sum(p.committed for p in table.players.values())
         lines.append(f"💰 Банк: {total} фишек")
@@ -226,7 +228,7 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик", "/клуб", "/фишки",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/рейз", "/allin", "/кик", "/клуб", "/фишки",
     }
     if cmd not in supported:
         return None
@@ -239,9 +241,9 @@ def parse_command(text):
         if not match:
             raise ValueError("Используйте /кик @username или /кик [id123|Имя]")
         return ("kick", match.group(1))
-    if cmd == "/raise":
+    if cmd in ("/raise", "/рейз"):
         if len(parts) != 2 or not parts[1].isdecimal():
-            raise ValueError("Используйте /raise СУММА, например /raise 500")
+            raise ValueError("Используйте /рейз СУММА, например /рейз 500")
         return ("raise", int(parts[1]))
     if len(parts) != 1:
         raise ValueError("Лишние аргументы команды")
@@ -315,7 +317,8 @@ class PokerCommands:
                     table.next_street()
                     table.turn_started_at = now if table.turn else 0.0
                     self.store.save(self.room_id, table, revision,
-                                    public_message="🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
+                                    public_message=None if table.stage == "complete" else
+                                    "🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
                     self.last_public_queued = True
                     return None
             return None
@@ -339,7 +342,7 @@ class PokerCommands:
                 return "✅ Все закрытые карты доставлены. Игра продолжается.\n" + self._format_table(table)
             table.delivery_failures += 1
         if table.delivery_failures >= 3:
-            message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Используйте /ready и /start."
+            message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Нажмите «✅ Готов» и затем «▶️ Начать»."
             self.store.cancel_undelivered_hand(self.room_id, table, revision, message)
             self.last_public_queued = True
             return message
@@ -347,11 +350,77 @@ class PokerCommands:
         self.store.save(self.room_id, table, revision)
         return None
 
+    def process_next_hand(self, now=None):
+        """Persist completed results, collect readiness for 180s, and auto-deal."""
+        now = time() if now is None else now
+        self.last_public_queued = False
+        revision, table = self.store.load(self.room_id)
+        if table is None:
+            return None
+        if table.stage == "complete":
+            result = self._format_table(table)
+            table.reset()
+            message = (result + "\n\n♠ НОВАЯ РАЗДАЧА\n"
+                       "Все участники нажмите «✅ Готов». Время: 3 минуты.\n"
+                       "Неготовые игроки будут исключены из-за стола.")
+            if self.store.save(self.room_id, table, revision, public_message=message) is None:
+                return None
+            self.last_public_queued = True
+            return message
+        if table.stage != "waiting" or not table.next_hand_deadline:
+            return None
+        if self.store.has_pending_public(self.room_id):
+            return None
+        ready = [p for p in table.seated() if p.ready and p.stack > 0]
+        all_ready = len(ready) >= 2 and len(ready) == len(table.players)
+        expired = now >= table.next_hand_deadline
+        if not all_ready and not expired:
+            return None
+        if expired:
+            removed = [p.user_id for p in table.seated() if not p.ready or p.stack <= 0]
+            for uid in removed:
+                table.leave(uid)
+        if len(table.players) < 2:
+            table.next_hand_deadline = 0.0
+            message = ("⏳ Время готовности истекло. Ожидаем минимум двух игроков.\n\n"
+                       + self._format_table(table))
+            if self.store.save(self.room_id, table, revision, public_message=message) is None:
+                return None
+            self.last_public_queued = True
+            return message
+        if self.private_delivery is None:
+            return None
+        for player in table.seated():
+            try:
+                if not self.private_delivery.can_message(player.user_id):
+                    # Do not silently start a hand if any player cannot receive cards.
+                    return None
+            except Exception:
+                return None
+        table.start()
+        messages = {
+            p.user_id: (randbelow(2147483647) + 1,
+                        format_hole_cards(p.hole, table.hand_number))
+            for p in table.seated()
+        }
+        message = (f"🃏 Раздача #{table.hand_number} начинается автоматически!\n"
+                   "Закрытые карты отправляются в личные сообщения.\n\n"
+                   + self._format_table(table))
+        saved = self.store.save_hand_with_private_cards(
+            self.room_id, table, revision, messages, public_message=message)
+        if saved is None:
+            return None
+        self.last_public_queued = True
+        self._deliver_and_report(table)
+        return message
+
     def process_expired_lobby(self, now=None):
         """Remove five-minute unready seats, including the owner if inactive."""
         self.last_public_queued = False
         revision, table = self.store.load(self.room_id)
         if table is None or table.stage != "waiting":
+            return None
+        if table.next_hand_deadline:
             return None
         before = [(p.user_id, p.joined_at) for p in table.seated()]
         expired = table.expire_unready(now)
@@ -361,7 +430,7 @@ class PokerCommands:
         if expired:
             users = ", ".join(self._player_name(uid) for uid in expired)
             message = (
-                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\n\n"
+                f"⏳ За 5 минут игроки не подтвердили готовность кнопкой «✅ Готов» и удалены из-за стола: {users}.\n\n"
                 + self._format_table(table)
             )
             saved = self.store.save(self.room_id, table, revision, public_message=message)
@@ -410,9 +479,11 @@ class PokerCommands:
             f"{table.turn_timeout_seconds} секунд. FOLD; исключение после раздачи.\n"
             + format_action_update(before_timeout, table, user_id, action, names=names, now=now)
         )
-        self.store.save(self.room_id, table, revision, public_message=response)
-        self.last_public_queued = True
-        return response
+        completed = table.stage == "complete"
+        self.store.save(self.room_id, table, revision,
+                        public_message=None if completed else response)
+        self.last_public_queued = not completed
+        return None if completed else response
 
     def handle(self, user_id, text, event_id, target_user_id=None):
         """Return a chat reply, or None for a non-poker message.
@@ -440,7 +511,7 @@ class PokerCommands:
                     "🪙 МОИ ФИШКИ\n\n"
                     f"👤 {self._player_name(user_id)}\n"
                     "Баланс пока не открыт.\n"
-                    "Займи место за столом: /join"
+                    "Нажми кнопку «Сесть» под сообщением бота"
                 )
             return (
                 "♠ ASTRA POKER ROOM\n"
@@ -456,7 +527,7 @@ class PokerCommands:
                     "♠ ASTRA POKER ROOM\n"
                     "🏆 КЛУБ ПОКЕРА · TOP 10\n\n"
                     "Пока нет игроков с зарегистрированными фишками.\n"
-                    "Займи место за столом: /join"
+                    "Нажми кнопку «Сесть» под сообщением бота"
                 )
             ids = [uid for uid, _ in ranking]
             try:
@@ -554,9 +625,12 @@ class PokerCommands:
                 self.last_public_queued = True
                 return self._deliver_and_report(table)
             elif cmd == "next":
-                if user_id not in table.players:
-                    raise ValueError("Only seated players may advance the game")
-                table.reset()
+                if table.stage == "complete":
+                    table.reset()
+                elif table.stage == "waiting":
+                    return "⏳ Новая раздача запускается автоматически после готовности игроков."
+                else:
+                    raise ValueError("Hand in progress")
             elif cmd == "newsession":
                 if user_id != table.owner_id:
                     raise ValueError("Only the table owner may reset the session")
@@ -580,13 +654,18 @@ class PokerCommands:
                 except Exception:
                     names = {}
                 response = format_action_update(before_action, table, user_id, cmd, amount, names)
+            # The watchdog publishes one combined settlement + next-hand invitation.
+            # Do not enqueue an intermediate COMPLETE message.
+            completed = table.stage == "complete"
             saved = self.store.save(
                 self.room_id, table, revision, event_id=event_id,
-                public_message=response,
+                public_message=None if completed else response,
             )
             if saved is None:
                 return None
-            self.last_public_queued = True
+            self.last_public_queued = not completed
+            if completed:
+                return None
         except (ValueError, KeyError) as exc:
             return f"⚠️ {localize_error(exc)}"
         return response

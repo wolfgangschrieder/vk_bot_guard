@@ -47,6 +47,7 @@ class Table:
     ejected_balances: dict = field(default_factory=dict)
     delivery_failures: int = 0
     delivery_retry_at: float = 0.0
+    next_hand_deadline: float = 0.0
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -164,6 +165,7 @@ class Table:
         self.current_bet = max(p.street_bet for p in ps)
         self.min_raise = self.big_blind
         self.stage = "preflop"
+        self.next_hand_deadline = 0.0
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
         # Delivery gate: no action or automatic showdown before all hole cards arrive.
         self.turn_started_at = time() if self.turn else 0.0
@@ -367,6 +369,7 @@ class Table:
             p.ready = False
             p.hole = ()
         self.stage = "waiting"
+        self.next_hand_deadline = 0.0
         self.turn = 0
         self.turn_started_at = 0.0
         self.current_bet = 0
@@ -423,6 +426,7 @@ class Table:
             p.hole = ()
             p.ready = False
         self.stage = "waiting"
+        self.next_hand_deadline = time() + 180
         self.showdown_report = {}
         self.small_blind = 10
         self.big_blind = 20
