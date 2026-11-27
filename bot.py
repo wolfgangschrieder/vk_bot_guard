@@ -3189,7 +3189,7 @@ def handle_new_message(vk, conn, message) -> None:
             text = message_text(message)
             response = poker_handle_admin_balance(vk, from_id, text)
             if response is None:
-                kick_target = resolve_target_user_id(vk, text) if re.match(r"^/кик(?:\\s|$)", text.strip(), re.I) else None
+                kick_target = resolve_target_user_id(vk, text) if re.match(r"^/кик(?:\s|$)", text.strip(), re.I) else None
                 response = POKER_COMMANDS.handle(
                     from_id, text, f"{peer_id}:{identity}", target_user_id=kick_target
                 )
