@@ -156,27 +156,50 @@ class PokerCommands:
         return format_table(table, names)
 
     def _deliver_and_report(self, table):
-        before_total, before_delivered = self.store.private_delivery_status(
-            self.room_id, table.hand_number
-        )
         try:
             self.private_delivery.deliver_pending(
                 self.store, self.room_id, table.hand_number
             )
         except Exception:
             return "⏳ Раздача сохранена, доставка карт не завершена. Игра приостановлена."
-        total, delivered = self.store.private_delivery_status(
-            self.room_id, table.hand_number
-        )
+        total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
         if total != len(table.players) or delivered != total:
             return "⏳ Ожидаем доставки карт."
-        if before_delivered < total and table.turn:
-            revision, persisted = self.store.load(self.room_id)
-            if persisted is not None and persisted.hand_number == table.hand_number:
-                persisted.turn_started_at = time()
-                self.store.save(self.room_id, persisted, revision)
-                table.turn_started_at = persisted.turn_started_at
         return self._format_table(table)
+
+    def recover_delivery(self, now=None):
+        """Retry persisted private outbox; cancel safely after repeated failures."""
+        now = time() if now is None else now
+        revision, table = self.store.load(self.room_id)
+        if table is None or table.stage not in ("preflop", "flop", "turn", "river"):
+            return None
+        total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
+        if total == len(table.players) and delivered == total:
+            return None
+        if now < table.delivery_retry_at:
+            return None
+        if total != len(table.players):
+            table.delivery_failures = 3
+        else:
+            try:
+                self.private_delivery.deliver_pending(self.store, self.room_id, table.hand_number)
+            except Exception:
+                pass
+            total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
+            if delivered == total:
+                table.delivery_failures = 0
+                table.delivery_retry_at = 0.0
+                self.store.save(self.room_id, table, revision)
+                return "✅ Все закрытые карты доставлены. Игра продолжается."
+            table.delivery_failures += 1
+        if table.delivery_failures >= 3:
+            message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Используйте /ready и /start."
+            self.store.cancel_undelivered_hand(self.room_id, table, revision, message)
+            self.last_public_queued = True
+            return message
+        table.delivery_retry_at = now + 30
+        self.store.save(self.room_id, table, revision)
+        return None
 
     def process_expired_turn(self, now=None):
         """Apply and persist at most one expired action for this room.
@@ -191,6 +214,12 @@ class PokerCommands:
             self.room_id, table.hand_number
         )
         if total != len(table.players) or delivered != total:
+            return None
+        # Never penalize a player while their turn announcement is still queued.
+        if self.store.has_pending_public(self.room_id):
+            if table.turn and table.turn_started_at:
+                table.turn_started_at = 0.0
+                self.store.save(self.room_id, table, revision)
             return None
         # Legacy snapshots may not have a timestamp; initialize the clock
         # without immediately penalizing a player after a restart.
@@ -239,7 +268,7 @@ class PokerCommands:
                     self.room_id, table.hand_number
                 )
                 if total == len(table.players) and delivered < total:
-                    return self._deliver_and_report(table)
+                    return "⏳ Доставка карт выполняется автоматически. Игра приостановлена."
                 if total != len(table.players):
                     return "⚠️ Неполная очередь карт. Игра приостановлена."
             return self._format_table(table)
