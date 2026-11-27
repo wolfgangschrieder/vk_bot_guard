@@ -9,7 +9,7 @@ from .private_cards import format_hole_cards, display_card
 
 HELP = (
     "♠ ASTRA POKER ROOM\n"
-    "/poker — стол, /join — занять место, /leave — выйти, "
+    "/poker — стол, /клуб — TOP 10 по фишкам, /join — занять место, /leave — выйти, "
     "/кик @username — владелец может исключить игрока между раздачами, "
     "/ready — готов, /unready — отменить готовность, "
     "/start — начать раздачу, /table — состояние, "
@@ -225,7 +225,7 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик", "/клуб",
     }
     if cmd not in supported:
         return None
@@ -426,6 +426,35 @@ class PokerCommands:
         cmd, amount = parsed
         if cmd == "pokerhelp":
             return HELP
+        if cmd == "клуб":
+            ranking = self.store.top_wallets(10)
+            if not ranking:
+                return (
+                    "♠ ASTRA POKER ROOM\n"
+                    "🏆 КЛУБ ПОКЕРА · TOP 10\n\n"
+                    "Пока нет игроков с зарегистрированными фишками.\n"
+                    "Займи место за столом: /join"
+                )
+            ids = [uid for uid, _ in ranking]
+            try:
+                names = self.get_names(ids) if self.get_names else {}
+            except Exception:
+                names = {}
+            names = names or {}
+            lines = [
+                "♠ ASTRA POKER ROOM",
+                "🏆 КЛУБ ПОКЕРА · TOP 10",
+                "━━━━━━━━━━━━━━━━",
+                "💎 Рейтинг игроков по количеству фишек",
+                "",
+            ]
+            medals = ("🥇", "🥈", "🥉")
+            for index, (uid, chips) in enumerate(ranking):
+                name = str(names.get(uid) or f"ID {uid}").replace("|", " ").replace("]", " ")
+                rank = medals[index] if index < 3 else f"{index + 1:02d}."
+                lines.append(f"{rank} [id{uid}|{name}] — {chips:,} 🪙".replace(",", " "))
+            lines.extend(("", "━━━━━━━━━━━━━━━━", "♠ Твой путь в TOP 10 начинается за столом."))
+            return "\n".join(lines)
         revision, table = self.store.load(self.room_id)
         if table is None:
             table = Table()
