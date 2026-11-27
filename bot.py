@@ -3649,6 +3649,95 @@ def acquire_instance_lock():
     return handle
 
 
+def poker_inline_keyboard():
+    """Inline controls in the public poker chat, based on current table state."""
+    def btn(label, command, color="secondary"):
+        return {
+            "action": {"type": "callback", "label": label,
+                       "payload": json.dumps({"astra_poker": command}, ensure_ascii=False)},
+            "color": color,
+        }
+
+    _, table = POKER_COMMANDS.store.load(config.POKER_CHAT_PEER_ID)
+    stage = table.stage if table is not None else "waiting"
+    rows = []
+    if stage in ("preflop", "flop", "turn", "river"):
+        rows.append([btn("❌ Фолд", "/fold", "negative"),
+                     btn("✅ Чек", "/check", "positive"),
+                     btn("💰 Колл", "/call", "primary")])
+        if table.turn in table.players:
+            actor = table.players[table.turn]
+            minimum = table.current_bet + table.min_raise
+            maximum = actor.street_bet + actor.stack
+            targets = [minimum, minimum + table.min_raise, minimum + 3 * table.min_raise]
+            valid = sorted(set(value for value in targets if value <= maximum))
+            raise_buttons = [btn(f"📈 {value}", f"/raise {value}") for value in valid[:3]]
+            raise_buttons.append(btn("🔥 Олл-ин", "/allin", "negative"))
+            rows.append(raise_buttons)
+        else:
+            rows.append([btn("🔥 Олл-ин", "/allin", "negative")])
+    else:
+        rows.append([btn("➕ Сесть", "/join", "positive"),
+                     btn("✅ Готов", "/ready", "primary"),
+                     btn("↩️ Не готов", "/unready")])
+        rows.append([btn("▶️ Начать", "/start", "positive"),
+                     btn("🔄 Следующая", "/next"), btn("🚪 Выйти", "/leave", "negative")])
+    rows.append([btn("♠ Стол", "/table"), btn("🪙 Фишки", "/фишки"),
+                 btn("🏆 Клуб", "/клуб")])
+    return json.dumps({"inline": True, "buttons": rows}, ensure_ascii=False)
+
+
+def poker_handle_button(vk, conn, event):
+    """Handle a VK callback in the public poker conversation only."""
+    obj = event_object(event)
+    peer_id = event_field(obj, "peer_id")
+    if peer_id != config.POKER_CHAT_PEER_ID or POKER_COMMANDS is None:
+        return
+    user_id = event_field(obj, "user_id")
+    event_id = event_field(obj, "event_id")
+    payload = event_field(obj, "payload", {})
+    try:
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        command = payload.get("astra_poker") if isinstance(payload, dict) else None
+        allowed = {"/join", "/ready", "/unready", "/start", "/next",
+                   "/leave", "/fold", "/check", "/call", "/allin",
+                   "/table", "/фишки", "/клуб"}
+        is_raise = (isinstance(command, str) and
+                    re.fullmatch(r"/raise [1-9][0-9]{0,11}", command) is not None)
+        if not isinstance(user_id, int) or user_id <= 0 or (command not in allowed and not is_raise):
+            notice = "Недопустимое действие"
+        else:
+            with POKER_LOCK:
+                if not poker_is_allowed(conn, user_id):
+                    notice = "Доступ к покеру ограничен"
+                else:
+                    response = POKER_COMMANDS.handle(
+                        user_id, command, f"callback:{peer_id}:{event_id}"
+                    )
+                    if response and POKER_COMMANDS.last_public_queued:
+                        poker_flush_public(vk)
+                        notice = "Действие выполнено"
+                    elif response and response.startswith("⚠️"):
+                        notice = response[:120]
+                    elif response:
+                        # Read-only actions return a response without storing it.
+                        poker_queue_public(vk, response)
+                        notice = "Готово"
+                    else:
+                        notice = "Уже обработано"
+    except Exception:
+        log.exception("Poker callback failed")
+        notice = "Ошибка обработки кнопки"
+    try:
+        vk.messages.sendMessageEventAnswer(
+            event_id=event_id, user_id=user_id, peer_id=peer_id,
+            event_data=json.dumps({"type": "show_snackbar", "text": notice}, ensure_ascii=False),
+        )
+    except Exception:
+        log.exception("Poker callback answer failed")
+
+
 def poker_queue_public(vk, message):
     """Persist chat response before attempting VK delivery."""
     from secrets import randbelow
@@ -3670,6 +3759,7 @@ def poker_flush_public(vk):
                 peer_id=config.POKER_CHAT_PEER_ID,
                 random_id=random_id,
                 message=message,
+                keyboard=poker_inline_keyboard(),
             )
         except Exception:
             log.exception("Poker public message delivery failed; will retry")
@@ -3799,6 +3889,8 @@ def run_forever() -> None:
                     if message is not None:
                         handle_new_message(vk, conn, message)
 
+                elif str(getattr(event, "type", "")).lower() == "message_event":
+                    poker_handle_button(vk, conn, event)
                 elif str(getattr(event, "type", "")) == "chat_update":
                     handle_chat_update(vk, event, conn)
                 elif str(getattr(event, "type", "")) in DONUT_EVENT_TYPES:
