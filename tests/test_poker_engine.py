@@ -157,6 +157,9 @@ class TableTests(unittest.TestCase):
         table.ready(1)
         table.ready(2)
         table.start()
+        self.assertEqual(table.stage, "preflop")
+        self.assertEqual(len(table.board), 0)
+        table.next_street()  # Only after the delivery layer confirms all hole cards.
         self.assertEqual(table.stage, "complete")
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), 10010)
