@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,41 @@ from poker.storage import PokerStore
 
 
 class StorageTests(unittest.TestCase):
+    def test_watchdog_thread_can_expire_unready_players(self):
+        from poker.commands import PokerCommands
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            table = Table()
+            table.join(101, stack=16000)
+            table.join(202, stack=0)
+            table.players[101].joined_at = 1000.0
+            table.players[202].joined_at = 1000.0
+            store.save(2000000005, table, 0)
+            commands = PokerCommands(store, 2000000005)
+            result = []
+            errors = []
+
+            def watchdog():
+                try:
+                    result.append(commands.process_expired_lobby(now=1301.0))
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=watchdog)
+            worker.start()
+            worker.join(timeout=5)
+            self.assertFalse(worker.is_alive(), "Watchdog deadlocked")
+            self.assertFalse(errors, errors)
+            self.assertEqual(len(result), 1)
+            self.assertIn("5 минут", result[0])
+            revision, after = store.load(2000000005)
+            self.assertEqual(revision, 2)
+            self.assertEqual(after.players, {})
+            self.assertEqual(after.owner_id, 0)
+            self.assertEqual(store.wallet(101), 16000)
+            store.close()
+
+
     def test_restart_and_duplicate_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "poker.db"
