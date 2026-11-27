@@ -2,6 +2,7 @@
 from secrets import randbelow
 from time import time
 from .engine import Table
+from .evaluator import evaluate_seven
 from .private_cards import format_hole_cards, display_card
 
 
@@ -54,16 +55,55 @@ def localize_error(message):
     return ERROR_MESSAGES.get(str(message), str(message))
 
 
-def format_table(table, names=None):
+HAND_NAMES = (
+    "Старшая карта", "Пара", "Две пары", "Сет", "Стрит",
+    "Флеш", "Фулл-хаус", "Каре", "Стрит-флеш",
+)
+
+STREET_NAMES = {
+    "waiting": "ОЖИДАНИЕ", "preflop": "ПРЕФЛОП",
+    "flop": "ФЛОП", "turn": "ТЁРН", "river": "РИВЕР",
+    "complete": "ЗАВЕРШЕНА",
+}
+
+
+def _pot_breakdown(table):
+    """Return main/side pot sizes from contributions, without revealing hands."""
+    levels = sorted({p.committed for p in table.players.values() if p.committed > 0})
+    pots = []
+    previous = 0
+    for level in levels:
+        count = sum(p.committed >= level for p in table.players.values())
+        pots.append((level - previous) * count)
+        previous = level
+    return pots
+
+
+def format_table(table, names=None, now=None):
     names = names or {}
+
     def player_link(user_id):
         label = str(names.get(user_id) or f"ID {user_id}").replace("|", " ").replace("]", " ")
         return f"[id{user_id}|{label}]"
 
     if table is None:
         return "♠ Стол ещё не создан. Напишите /poker."
-    lines = [f"♠ ASTRA POKER | {table.stage.upper()} | Раздача #{table.hand_number}"]
-    for p in table.seated():
+    stage = STREET_NAMES.get(table.stage, table.stage.upper())
+    lines = [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"]
+    seated = table.seated()
+    active = table.stage in ("preflop", "flop", "turn", "river")
+    if active or table.stage == "complete":
+        dealer = next((p for p in seated if p.seat == table.dealer), None)
+        if dealer:
+            sb = dealer if len(seated) == 2 else table.next_after(dealer.seat, seated)
+            bb = table.next_after(sb.seat, seated)
+            lines.append(
+                f"🎲 Дилер: {player_link(dealer.user_id)} | "
+                f"SB: {player_link(sb.user_id)} ({table.small_blind}) | "
+                f"BB: {player_link(bb.user_id)} ({table.big_blind})"
+            )
+    lines.append("👥 Игроки:")
+    for p in seated:
         flags = []
         if p.user_id == table.owner_id:
             flags.append("👑 владелец")
@@ -87,21 +127,33 @@ def format_table(table, names=None):
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
             lines.append("🏆 Итоги раздачи:")
             for uid, chips in winners:
-                lines.append(f"• {player_link(uid)} получил {chips} фишек")
+                detail = ""
+                player = table.players.get(uid)
+                if len(table.board) == 5 and player and len(player.hole) == 2:
+                    category = evaluate_seven(tuple(player.hole) + tuple(table.board))[0]
+                    detail = f" — {HAND_NAMES[category]}"
+                lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
         if table.board:
             lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
         lines.append("Следующая раздача: /next → /ready → /start")
     else:
-        lines.append(f"Банк: {sum(p.committed for p in table.players.values())}")
+        total = sum(p.committed for p in table.players.values())
+        lines.append(f"💰 Банк: {total} фишек")
+        pots = _pot_breakdown(table)
+        if len(pots) > 1:
+            lines.append(f"Основной банк: {pots[0]} | Побочные: " + ", ".join(str(p) for p in pots[1:]))
         if table.board:
             lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
-        if table.stage in ("preflop", "flop", "turn", "river"):
+        if active:
             lines.append(f"Ставка раунда: {table.current_bet}")
             if table.turn:
                 acting = table.players[table.turn]
                 to_call = max(0, table.current_bet - acting.street_bet)
                 lines.append(f"▶ {player_link(table.turn)}, к уравниванию: {to_call} фишек")
                 lines.append(f"Минимальное повышение: {table.min_raise} фишек")
+                if table.turn_started_at:
+                    remaining = max(0, int(table.turn_started_at + table.turn_timeout_seconds - (time() if now is None else now)))
+                    lines.append(f"⏱ Осталось на ход: {remaining} сек.")
     return "\n".join(lines)
 
 
