@@ -61,11 +61,11 @@ class CommandTests(unittest.TestCase):
             table.players[uid].committed = amount
         table.showdown()
         message = format_table(table)
-        self.assertIn("ВСКРЫТИЕ КАРТ", message)
+        self.assertIn("SHOWDOWN", message)
         self.assertIn("Стрит", message)
-        self.assertIn("Основной банк: 303", message)
-        self.assertIn("Побочный банк #1: 200", message)
-        self.assertIn("РЕЗУЛЬТАТЫ РАЗДАЧИ", message)
+        self.assertIn("MAIN POT 303", message)
+        self.assertIn("SIDE POT #1 200", message)
+        self.assertIn("🏆 RESULTS", message)
 
     def test_lobby_watchdog_persists_ejections_and_announcement(self):
         from poker.engine import Table
@@ -148,7 +148,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Минимальное повышение: 20 фишек", during)
         table.act(table.turn, "fold")
         finished = format_table(table)
-        self.assertIn("🏆 Итоги раздачи:", finished)
+        self.assertIn("🏆 RESULTS", finished)
         self.assertIn("получил 30 фишек", finished)
         self.assertIn("/next → /ready → /start", finished)
         self.assertNotIn("Закрытые карты", finished)
