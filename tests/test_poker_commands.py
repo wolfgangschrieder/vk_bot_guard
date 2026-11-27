@@ -283,6 +283,12 @@ class CommandTests(unittest.TestCase):
     def test_parser(self):
         self.assertEqual(parse_command("/raise 500"), ("raise", 500))
         self.assertEqual(parse_command("/кик @kenaya"), ("kick", "@kenaya"))
+        self.assertEqual(parse_command("/кик [id1122341522|Блондин Блондинчик]"), ("kick", "[id1122341522|Блондин Блондинчик]"))
+        self.assertEqual(parse_command("/кик @id1122341522"), ("kick", "@id1122341522"))
+        self.assertEqual(parse_command("/КИК [id202|Джони Старший]"), ("kick", "[id202|Джони Старший]"))
+        with self.assertRaises(ValueError):
+            parse_command("/кик [id202|Джони Старший] лишнее")
+
         self.assertIsNone(parse_command("обычное сообщение"))
         with self.assertRaises(ValueError):
             parse_command("/raise -5")
@@ -294,6 +300,9 @@ class CommandTests(unittest.TestCase):
             for uid in (101, 202, 303):
                 bot.handle(uid, "/join", f"join-{uid}")
             self.assertIn("только владелец", bot.handle(202, "/кик @id303", "unauth", target_user_id=303))
+            self.assertIn("исключён", bot.handle(101, "/кик [id202|Игрок Два]", "vk-mention", target_user_id=202))
+            self.assertNotIn(202, store.load(2000000999)[1].players)
+            bot.handle(202, "/join", "rejoin-202")
             self.assertIn("самого себя", bot.handle(101, "/кик @id101", "self", target_user_id=101))
             self.assertIn("не сидит", bot.handle(101, "/кик @id404", "missing", target_user_id=404))
             self.assertIn("не найден", bot.handle(101, "/кик @missing", "unresolved"))
