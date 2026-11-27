@@ -7,6 +7,46 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_club_leaderboard_top_ten_sorted_and_persistent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "poker.db"
+            store = PokerStore(db)
+            with store.conn:
+                store.conn.executemany(
+                    "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?)",
+                    [(uid, (uid % 3) * 1000 + uid) for uid in range(1, 14)]
+                )
+            names = lambda ids: {uid: f"Игрок {uid}" for uid in ids}
+            bot = PokerCommands(store, 2000000999, get_names=names)
+            message = bot.handle(99, "/клуб", "club-1")
+            expected = store.top_wallets(10)
+            self.assertEqual(len(expected), 10)
+            self.assertIn("🥇", message)
+            self.assertIn("🥈", message)
+            self.assertIn("🥉", message)
+            self.assertEqual(message.count("🪙"), 10)
+            self.assertLess(message.index(f"[id{expected[0][0]}|"),
+                            message.index(f"[id{expected[1][0]}|"))
+            self.assertNotIn(f"[id{store.top_wallets(13)[-1][0]}|", message)
+            self.assertEqual(store.load(2000000999), (0, None))
+            store.close()
+            reopened = PokerStore(db)
+            self.assertEqual(reopened.top_wallets(10), expected)
+            reopened.close()
+
+    def test_club_leaderboard_empty_and_name_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, get_names=lambda ids: {})
+            self.assertIn("Пока нет игроков", bot.handle(99, "/клуб", "empty"))
+            with store.conn:
+                store.conn.execute(
+                    "INSERT INTO poker_wallets(user_id,chips) VALUES (?,?)", (123, 0)
+                )
+            self.assertIn("[id123|ID 123] — 0 🪙", bot.handle(99, "/клуб", "one"))
+            self.assertEqual(parse_command("/клуб"), ("клуб", None))
+            store.close()
+
     def test_waiting_lobby_has_no_hand_number_or_pot(self):
         from poker.commands import format_table
         from poker.engine import Table
