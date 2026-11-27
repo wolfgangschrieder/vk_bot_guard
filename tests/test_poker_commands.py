@@ -7,6 +7,22 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_waiting_lobby_has_no_hand_number_or_pot(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+        table = Table()
+        table.hand_number = 2
+        table.join(101, stack=0)
+        table.join(202, stack=16000)
+        message = format_table(table, {101: "Гуру", 202: "Джони"})
+        self.assertIn("Стол создан", message)
+        self.assertIn("Ожидание готовности всех игроков", message)
+        self.assertIn("WAITING", message)
+        self.assertIn("Место 1:", message)
+        self.assertNotIn("Раздача #2", message)
+        self.assertNotIn("Банк:", message)
+        self.assertNotIn("💰", message)
+
     def test_compact_action_update_and_english_stage(self):
         from poker.commands import format_action_update, format_table
         from poker.engine import Table
