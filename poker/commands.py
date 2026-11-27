@@ -391,14 +391,16 @@ class PokerCommands:
             table.turn_started_at = time() if now is None else now
             self.store.save(self.room_id, table, revision)
             return None
+        before_timeout = deepcopy(table)
         result = table.expire_turn(now)
         if result is None:
             return None
         user_id, action = result
+        names = {user_id: self._player_name(user_id)}
         response = (
             f"⏱ {self._player_name(user_id)} не сделал ход за "
-            f"{table.turn_timeout_seconds} секунд. Карты сброшены, игрок исключён из-за стола.\n"
-            + self._format_table(table)
+            f"{table.turn_timeout_seconds} секунд. FOLD; исключение после раздачи.\n"
+            + format_action_update(before_timeout, table, user_id, action, names=names, now=now)
         )
         self.store.save(self.room_id, table, revision, public_message=response)
         self.last_public_queued = True
