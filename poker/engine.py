@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from secrets import SystemRandom
 from time import time
 
-from .evaluator import DECK, settle_pots
+from .evaluator import DECK, settle_pots, determine_winners
 
 
 @dataclass
@@ -38,6 +38,7 @@ class Table:
     board: list = field(default_factory=list)
     hand_number: int = 0
     payouts: dict = field(default_factory=dict)
+    showdown_report: dict = field(default_factory=dict)
     last_dealer: int = 0
     turn_started_at: float = 0.0
     turn_timeout_seconds: int = 120
@@ -126,6 +127,7 @@ class Table:
         SystemRandom().shuffle(self.deck)
         self.board = []
         self.payouts = {}
+        self.showdown_report = {}
         self.pending_ejections.clear()
         self.ejected_balances.clear()
         self.delivery_failures = 0
@@ -236,6 +238,7 @@ class Table:
             amount = sum(p.committed for p in self.players.values())
             winner.stack += amount
             self.payouts = {winner.user_id: amount}
+            self.showdown_report = {}
             self.stage = "complete"
             self.turn = 0
             self.turn_started_at = 0.0
@@ -275,11 +278,36 @@ class Table:
                 self.showdown()
                 return
 
+    def _build_showdown_report(self, contributions, hands, order):
+        """Capture the public showdown and pot awards before timed-out seats leave."""
+        seat_order = [p.user_id for p in order]
+        levels = sorted({amount for amount in contributions.values() if amount > 0})
+        pots = []
+        previous = 0
+        for level in levels:
+            participants = [uid for uid, amount in contributions.items() if amount >= level]
+            amount = (level - previous) * len(participants)
+            contenders = {uid: hands[uid] for uid in participants if uid in hands}
+            winners = determine_winners(contenders, self.board)
+            share, odd = divmod(amount, len(winners))
+            awards = {uid: share for uid in winners}
+            for uid in seat_order:
+                if odd and uid in awards:
+                    awards[uid] += 1
+                    odd -= 1
+            pots.append({"amount": amount, "awards": awards})
+            previous = level
+        return {
+            "hands": {uid: list(cards) for uid, cards in hands.items()},
+            "pots": pots,
+        }
+
     def showdown(self):
         contributions = {p.user_id: p.committed for p in self.players.values()}
         hands = {p.user_id: p.hole for p in self.live()}
         order = sorted(self.seated(), key=lambda p: (p.seat - self.dealer - 1) % 9)
         self.payouts = settle_pots(contributions, hands, self.board, [p.user_id for p in order])
+        self.showdown_report = self._build_showdown_report(contributions, hands, order)
         for user_id, chips in self.payouts.items():
             self.players[user_id].stack += chips
         self.stage = "complete"
@@ -309,6 +337,7 @@ class Table:
         self.board = []
         self.deck = []
         self.payouts = {}
+        self.showdown_report = {}
         self.pending_ejections.clear()
         self.delivery_failures = 0
         self.delivery_retry_at = 0.0
@@ -356,9 +385,9 @@ class Table:
             p.hole = ()
             p.ready = False
         self.stage = "waiting"
+        self.showdown_report = {}
         self.small_blind = 10
         self.big_blind = 20
-        self.min_raise = 20
         self.board = []
         self.deck = []
         self.turn = 0

@@ -7,6 +7,28 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_showdown_ui_shows_hands_and_each_pot(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+        table = Table()
+        for uid in (101, 202, 303):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        table.board = ["Ah", "Kd", "Qc", "Js", "2h"]
+        table.players[101].hole = ("Tc", "3d")
+        table.players[202].hole = ("Td", "4c")
+        table.players[303].hole = ("9c", "9d")
+        for uid, amount in ((101, 101), (202, 201), (303, 201)):
+            table.players[uid].committed = amount
+        table.showdown()
+        message = format_table(table)
+        self.assertIn("ВСКРЫТИЕ КАРТ", message)
+        self.assertIn("Стрит", message)
+        self.assertIn("Основной банк: 303", message)
+        self.assertIn("Побочный банк #1: 200", message)
+        self.assertIn("Итоговые выплаты", message)
+
     def test_ui_dealer_blinds_timer_and_showdown_hand(self):
         from poker.commands import format_table
         from poker.engine import Table
