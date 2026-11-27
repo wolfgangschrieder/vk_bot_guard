@@ -90,7 +90,9 @@ def format_table(table, names=None, now=None):
     if table is None:
         return "♠ Стол ещё не создан. Напишите /poker."
     stage = STREET_NAMES.get(table.stage, table.stage.upper())
-    lines = [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"]
+    lines = (["♠ ASTRA POKER | Стол создан · WAITING", "⏳ Ожидание готовности всех игроков"]
+             if table.stage == "waiting"
+             else [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"])
     seated = table.seated()
     active = table.stage in ("preflop", "flop", "turn", "river")
     if active or table.stage == "complete":
@@ -154,8 +156,8 @@ def format_table(table, names=None, now=None):
                     detail = f" — {HAND_NAMES[evaluate_seven(tuple(player.hole) + tuple(table.board))[0]]}"
                 lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
         lines.append("Следующая раздача: /next → /ready → /start")
-    else:
-        total = sum(p.committed for p in table.players.values()) if active else 0
+    elif active:
+        total = sum(p.committed for p in table.players.values())
         lines.append(f"💰 Банк: {total} фишек")
         pots = _pot_breakdown(table)
         if len(pots) > 1 and any(p.all_in for p in table.players.values()):
