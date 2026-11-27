@@ -299,6 +299,17 @@ class PokerCommands:
             return None
         total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
         if total == len(table.players) and delivered == total:
+            # Crash recovery: the last DM may have been acknowledged before
+            # the engine's automatic runout was persisted.
+            if table.stage == "preflop" and not table.board and len(table.actionable()) <= 1:
+                actionable = table.actionable()
+                if not actionable or actionable[0].street_bet >= table.current_bet:
+                    table.next_street()
+                    table.turn_started_at = now if table.turn else 0.0
+                    self.store.save(self.room_id, table, revision,
+                                    public_message="🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
+                    self.last_public_queued = True
+                    return None
             return None
         if now < table.delivery_retry_at:
             return None
