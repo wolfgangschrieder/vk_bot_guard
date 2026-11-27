@@ -281,12 +281,14 @@ class PokerCommands:
         )
         if total != len(table.players) or delivered != total:
             return "⏳ Ожидаем доставки карт."
-        if before_delivered < total and table.turn:
+        if before_delivered < total:
             revision, persisted = self.store.load(self.room_id)
             if persisted is not None and persisted.hand_number == table.hand_number:
-                persisted.turn_started_at = time()
+                if not persisted.turn:
+                    persisted.next_street()
+                persisted.turn_started_at = time() if persisted.turn else 0.0
                 self.store.save(self.room_id, persisted, revision)
-                table.turn_started_at = persisted.turn_started_at
+                table = persisted
         return self._format_table(table)
 
     def recover_delivery(self, now=None):
@@ -311,8 +313,11 @@ class PokerCommands:
             if delivered == total:
                 table.delivery_failures = 0
                 table.delivery_retry_at = 0.0
+                if not table.turn:
+                    table.next_street()
+                table.turn_started_at = now if table.turn else 0.0
                 self.store.save(self.room_id, table, revision)
-                return "✅ Все закрытые карты доставлены. Игра продолжается."
+                return "✅ Все закрытые карты доставлены. Игра продолжается.\n" + self._format_table(table)
             table.delivery_failures += 1
         if table.delivery_failures >= 3:
             message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Используйте /ready и /start."
@@ -337,7 +342,7 @@ class PokerCommands:
         if expired:
             users = ", ".join(self._player_name(uid) for uid in expired)
             message = (
-                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\\n\\n"
+                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\n\n"
                 + self._format_table(table)
             )
             saved = self.store.save(self.room_id, table, revision, public_message=message)
@@ -381,7 +386,7 @@ class PokerCommands:
         user_id, action = result
         response = (
             f"⏱ {self._player_name(user_id)} не сделал ход за "
-            f"{table.turn_timeout_seconds} секунд. Карты сброшены, игрок исключён из-за стола.\\n"
+            f"{table.turn_timeout_seconds} секунд. Карты сброшены, игрок исключён из-за стола.\n"
             + self._format_table(table)
         )
         self.store.save(self.room_id, table, revision, public_message=response)
