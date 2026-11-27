@@ -39,6 +39,36 @@ class TableTests(unittest.TestCase):
         table.act(1, "fold")
         self.assertEqual(table.showdown_report, {})
 
+    def test_lobby_unready_timeout_preserves_ready_players_and_chips(self):
+        table = Table()
+        table.join(1, stack=0)
+        table.join(2, stack=500)
+        table.join(3, stack=1000)
+        for player in table.players.values():
+            player.joined_at = 1000
+        table.ready(2)
+        self.assertEqual(table.expire_unready(now=1299), [])
+        self.assertEqual(table.expire_unready(now=1300), [1, 3])
+        self.assertEqual(list(table.players), [2])
+        self.assertEqual(table.owner_id, 2)
+        self.assertEqual(table.players[2].stack, 500)
+
+    def test_lobby_timeout_never_removes_during_active_hand(self):
+        table = self.make_table()
+        for player in table.players.values():
+            player.joined_at = 100
+        self.assertEqual(table.expire_unready(now=1000), [])
+        self.assertEqual(len(table.players), 2)
+
+    def test_legacy_lobby_seat_gets_full_grace_period(self):
+        table = Table()
+        table.join(1)
+        table.players[1].joined_at = 0
+        self.assertEqual(table.expire_unready(now=5000), [])
+        self.assertEqual(table.players[1].joined_at, 5000)
+        self.assertEqual(table.expire_unready(now=5299), [])
+        self.assertEqual(table.expire_unready(now=5300), [1])
+
     def test_ready_gate(self):
         table = Table()
         table.join(1)
