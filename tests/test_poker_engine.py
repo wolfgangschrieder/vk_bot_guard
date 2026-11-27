@@ -164,6 +164,33 @@ class TableTests(unittest.TestCase):
         self.assertEqual(len(table.board), 5)
         self.assertEqual(sum(p.stack for p in table.players.values()), 10010)
 
+    def test_uncalled_showdown_raise_refunded_before_side_pots(self):
+        table = Table()
+        for uid in (1, 2, 3):
+            table.join(uid)
+        table.board = ["Ah", "Kd", "Qc", "Js", "2h"]
+        for uid, hole in ((1, ("Tc", "3d")), (2, ("9c", "9d")), (3, ("8c", "8d"))):
+            table.players[uid].hole = hole
+        for uid, amount in ((1, 300), (2, 100), (3, 100)):
+            table.players[uid].committed = amount
+            table.players[uid].stack -= amount
+        before = sum(p.stack + p.committed for p in table.players.values())
+        table.showdown()
+        self.assertEqual(table.players[1].committed, 100)
+        self.assertEqual(table.players[1].stack, 10200)
+        self.assertEqual(table.showdown_report["pots"][0]["amount"], 300)
+        self.assertEqual(sum(p.stack for p in table.players.values()), before)
+
+    def test_folded_player_cannot_hold_unmatched_showdown_bet(self):
+        table = Table()
+        table.join(1)
+        table.join(2)
+        table.players[1].committed = 200
+        table.players[1].folded = True
+        table.players[2].committed = 100
+        with self.assertRaisesRegex(ValueError, "Folded player"):
+            table._refund_uncalled_bet()
+
     def test_new_session_preserves_all_stacks(self):
         table = self.make_table()
         table.act(1, "fold")
