@@ -43,6 +43,7 @@ class Table:
     turn_timeout_seconds: int = 120
     pending_ejections: list = field(default_factory=list)
     ejected_balances: dict = field(default_factory=dict)
+    delivery_failures: int = 0
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -126,6 +127,7 @@ class Table:
         self.payouts = {}
         self.pending_ejections.clear()
         self.ejected_balances.clear()
+        self.delivery_failures = 0
         self.hand_number += 1
         self.dealer = self.next_after(self.last_dealer, ps).seat
         self.last_dealer = self.dealer
@@ -283,6 +285,31 @@ class Table:
         self.turn_started_at = 0.0
         self._finalize_ejections()
 
+    def cancel_undelivered_hand(self):
+        """Refund blinds before any player acts; retain hand ID for outbox uniqueness."""
+        if self.stage not in ("preflop", "flop", "turn", "river"):
+            raise ValueError("No active hand")
+        if any(p.acted for p in self.players.values()) or self.board:
+            raise ValueError("Cannot cancel a played hand")
+        for p in self.players.values():
+            p.stack += p.committed
+            p.committed = 0
+            p.street_bet = 0
+            p.folded = False
+            p.all_in = False
+            p.acted = False
+            p.ready = False
+            p.hole = ()
+        self.stage = "waiting"
+        self.turn = 0
+        self.turn_started_at = 0.0
+        self.current_bet = 0
+        self.board = []
+        self.deck = []
+        self.payouts = {}
+        self.pending_ejections.clear()
+        self.delivery_failures = 0
+
     def new_session(self):
         """Start a new match with fresh virtual stacks, never during a hand."""
         if self.stage not in ("waiting", "complete"):
@@ -309,6 +336,7 @@ class Table:
         self.payouts = {}
         self.pending_ejections.clear()
         self.ejected_balances.clear()
+        self.delivery_failures = 0
         # Keep hand numbers monotonic: private-card outbox keys must never repeat.
         self.dealer = 0
         self.last_dealer = 0
