@@ -2,7 +2,7 @@
 from secrets import randbelow
 from time import time
 from .engine import Table
-from .private_cards import format_hole_cards
+from .private_cards import format_hole_cards, display_card
 
 
 HELP = (
@@ -49,7 +49,12 @@ def localize_error(message):
     return ERROR_MESSAGES.get(str(message), str(message))
 
 
-def format_table(table):
+def format_table(table, names=None):
+    names = names or {}
+    def player_link(user_id):
+        label = str(names.get(user_id) or f"ID {user_id}").replace("|", " ").replace("]", " ")
+        return f"[id{user_id}|{label}]"
+
     if table is None:
         return "♠ Стол ещё не создан. Напишите /poker."
     lines = [f"♠ ASTRA POKER | {table.stage.upper()} | Раздача #{table.hand_number}"]
@@ -66,7 +71,7 @@ def format_table(table):
         if table.turn == p.user_id:
             flags.append("▶ ход")
         lines.append(
-            f"Место {p.seat}: [id{p.user_id}|Игрок] — {p.stack} фишек"
+            f"Место {p.seat}: {player_link(p.user_id)} — {p.stack} фишек"
             + (f" ({', '.join(flags)})" if flags else "")
         )
     if table.stage == "complete":
@@ -75,20 +80,20 @@ def format_table(table):
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat))
             lines.append("🏆 Итоги раздачи:")
             for uid, chips in winners:
-                lines.append(f"• [id{uid}|Игрок] получил {chips} фишек")
+                lines.append(f"• {player_link(uid)} получил {chips} фишек")
         if table.board:
-            lines.append("Общие карты: " + " ".join(table.board))
+            lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
         lines.append("Следующая раздача: /next → /ready → /start")
     else:
         lines.append(f"Банк: {sum(p.committed for p in table.players.values())}")
         if table.board:
-            lines.append("Общие карты: " + " ".join(table.board))
+            lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
         if table.stage in ("preflop", "flop", "turn", "river"):
             lines.append(f"Ставка раунда: {table.current_bet}")
             if table.turn:
                 acting = table.players[table.turn]
                 to_call = max(0, table.current_bet - acting.street_bet)
-                lines.append(f"▶ [id{table.turn}|Игрок], к уравниванию: {to_call} фишек")
+                lines.append(f"▶ {player_link(table.turn)}, к уравниванию: {to_call} фишек")
                 lines.append(f"Минимальное повышение: {table.min_raise} фишек")
     return "\n".join(lines)
 
@@ -114,12 +119,30 @@ def parse_command(text):
 
 
 class PokerCommands:
-    def __init__(self, store, room_id, private_delivery=None, initial_chips=None):
+    def __init__(self, store, room_id, private_delivery=None, initial_chips=None, get_names=None):
         self.store = store
         self.room_id = room_id
         self.private_delivery = private_delivery
         self.initial_chips = initial_chips
+        self.get_names = get_names
         self.last_public_queued = False
+
+    def _player_name(self, user_id):
+        try:
+            names = self.get_names([user_id]) if self.get_names else {}
+        except Exception:
+            names = {}
+        label = str((names or {}).get(user_id) or f"ID {user_id}").replace("|", " ").replace("]", " ")
+        return f"[id{user_id}|{label}]"
+
+    def _format_table(self, table):
+        names = {}
+        if table is not None and self.get_names is not None:
+            try:
+                names = self.get_names([p.user_id for p in table.seated()]) or {}
+            except Exception:
+                names = {}
+        return format_table(table, names)
 
     def _deliver_and_report(self, table):
         before_total, before_delivered = self.store.private_delivery_status(
@@ -142,7 +165,7 @@ class PokerCommands:
                 persisted.turn_started_at = time()
                 self.store.save(self.room_id, persisted, revision)
                 table.turn_started_at = persisted.turn_started_at
-        return format_table(table)
+        return self._format_table(table)
 
     def process_expired_turn(self, now=None):
         """Apply and persist at most one expired action for this room.
@@ -170,9 +193,9 @@ class PokerCommands:
             return None
         user_id, action = result
         response = (
-            f"⏱ [id{user_id}|Игрок] не сделал ход за "
+            f"⏱ {self._player_name(user_id)} не сделал ход за "
             f"{table.turn_timeout_seconds} секунд: {action.upper()}.\\n"
-            + format_table(table)
+            + self._format_table(table)
         )
         self.store.save(self.room_id, table, revision, public_message=response)
         self.last_public_queued = True
@@ -208,7 +231,7 @@ class PokerCommands:
                     return self._deliver_and_report(table)
                 if total != len(table.players):
                     return "⚠️ Неполная очередь карт. Игра приостановлена."
-            return format_table(table)
+            return self._format_table(table)
         try:
             if cmd == "join":
                 if self.private_delivery is not None:
@@ -279,7 +302,7 @@ class PokerCommands:
                 table.act(user_id, cmd, amount)
             else:
                 return HELP
-            response = format_table(table)
+            response = self._format_table(table)
             saved = self.store.save(
                 self.room_id, table, revision, event_id=event_id,
                 public_message=response,
@@ -289,4 +312,4 @@ class PokerCommands:
             self.last_public_queued = True
         except (ValueError, KeyError) as exc:
             return f"⚠️ {localize_error(exc)}"
-        return format_table(table)
+        return self._format_table(table)
