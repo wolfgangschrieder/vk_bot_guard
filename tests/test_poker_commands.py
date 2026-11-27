@@ -7,6 +7,44 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_compact_action_update_and_english_stage(self):
+        from poker.commands import format_action_update, format_table
+        from poker.engine import Table
+        import copy
+        table = Table()
+        for uid in (101, 202, 303):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        before = copy.deepcopy(table)
+        actor = table.turn
+        table.act(actor, "call")
+        message = format_action_update(before, table, actor, "call", names={actor: "Артём"})
+        self.assertIn("CALL", message)
+        self.assertIn("Артём", message)
+        self.assertIn("Банк:", message)
+        self.assertIn("Полный стол: /table", message)
+        self.assertNotIn("Место 1:", message)
+        self.assertIn("PREFLOP", format_table(table))
+        self.assertNotIn("ПРЕФЛОП", format_table(table))
+
+    def test_fold_win_has_single_results_heading(self):
+        from poker.commands import format_action_update
+        from poker.engine import Table
+        import copy
+        table = Table()
+        for uid in (101, 202):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        before = copy.deepcopy(table)
+        actor = table.turn
+        table.act(actor, "fold")
+        message = format_action_update(before, table, actor, "fold")
+        self.assertIn("FOLD", message)
+        self.assertEqual(message.count("🏆 Победа без вскрытия"), 1)
+        self.assertNotIn("Итоговые выплаты:", message)
+
     def test_showdown_ui_shows_hands_and_each_pot(self):
         from poker.commands import format_table
         from poker.engine import Table
@@ -23,11 +61,11 @@ class CommandTests(unittest.TestCase):
             table.players[uid].committed = amount
         table.showdown()
         message = format_table(table)
-        self.assertIn("ВСКРЫТИЕ КАРТ", message)
+        self.assertIn("SHOWDOWN", message)
         self.assertIn("Стрит", message)
-        self.assertIn("Основной банк: 303", message)
-        self.assertIn("Побочный банк #1: 200", message)
-        self.assertIn("Итоговые выплаты", message)
+        self.assertIn("MAIN POT 303", message)
+        self.assertIn("SIDE POT #1 200", message)
+        self.assertIn("🏆 RESULTS", message)
 
     def test_lobby_watchdog_persists_ejections_and_announcement(self):
         from poker.engine import Table
@@ -62,7 +100,7 @@ class CommandTests(unittest.TestCase):
             table.ready(uid)
         table.start()
         text = format_table(table, now=table.turn_started_at + 20)
-        self.assertIn("ПРЕФЛОП", text)
+        self.assertIn("PREFLOP", text)
         self.assertIn("Дилер:", text)
         self.assertIn("SB:", text)
         self.assertIn("BB:", text)
@@ -76,7 +114,7 @@ class CommandTests(unittest.TestCase):
         table.payouts = {101: 40, 202: 0}
         result = format_table(table)
         self.assertIn("Стрит-флеш", result)
-        self.assertIn("ЗАВЕРШЕНА", result)
+        self.assertIn("COMPLETE", result)
 
     def test_ui_provisional_side_pots_only_with_all_in(self):
         from poker.commands import format_table
@@ -110,7 +148,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("Минимальное повышение: 20 фишек", during)
         table.act(table.turn, "fold")
         finished = format_table(table)
-        self.assertIn("🏆 Итоги раздачи:", finished)
+        self.assertIn("🏆 RESULTS", finished)
         self.assertIn("получил 30 фишек", finished)
         self.assertIn("/next → /ready → /start", finished)
         self.assertNotIn("Закрытые карты", finished)

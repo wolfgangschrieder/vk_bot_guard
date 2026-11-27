@@ -1,4 +1,5 @@
 """VK-neutral command dispatcher for ASTRA Poker Room."""
+from copy import deepcopy
 from secrets import randbelow
 from time import time
 from .engine import Table
@@ -61,9 +62,9 @@ HAND_NAMES = (
 )
 
 STREET_NAMES = {
-    "waiting": "ОЖИДАНИЕ", "preflop": "ПРЕФЛОП",
-    "flop": "ФЛОП", "turn": "ТЁРН", "river": "РИВЕР",
-    "complete": "ЗАВЕРШЕНА",
+    "waiting": "WAITING", "preflop": "PREFLOP",
+    "flop": "FLOP", "turn": "TURN", "river": "RIVER",
+    "complete": "COMPLETE",
 }
 
 
@@ -89,7 +90,7 @@ def format_table(table, names=None, now=None):
     if table is None:
         return "♠ Стол ещё не создан. Напишите /poker."
     stage = STREET_NAMES.get(table.stage, table.stage.upper())
-    lines = [f"♠ ASTRA POKER | {table.stage.upper()} · {stage} | Раздача #{table.hand_number}"]
+    lines = [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"]
     seated = table.seated()
     active = table.stage in ("preflop", "flop", "turn", "river")
     if active or table.stage == "complete":
@@ -126,25 +127,26 @@ def format_table(table, names=None, now=None):
         if table.board:
             lines.append("🃏 Карты стола: " + " ".join(display_card(card) for card in table.board))
         if report.get("hands"):
-            lines.append("🎭 ВСКРЫТИЕ КАРТ")
+            lines.append("🎭 SHOWDOWN")
             for uid, hole in report["hands"].items():
                 if len(hole) == 2 and len(table.board) == 5:
                     category = evaluate_seven(tuple(hole) + tuple(table.board))[0]
                     cards = " ".join(display_card(card) for card in hole)
                     lines.append(f"• {player_link(uid)}: {cards} — {HAND_NAMES[category]}")
-            lines.append("💰 РАСПРЕДЕЛЕНИЕ БАНКОВ")
-            for index, pot in enumerate(report.get("pots", [])):
-                label = "Основной банк" if index == 0 else f"Побочный банк #{index}"
-                lines.append(f"{label}: {pot['amount']} фишек")
-                for uid, chips in pot["awards"].items():
-                    lines.append(f"  🏆 {player_link(uid)} +{chips}")
-        elif table.payouts:
-            lines.append("🏆 Победа без вскрытия карт" if not table.board else "🏆 Итоги раздачи:")
+            if report.get("pots"):
+                lines.append("💰 POTS")
+                for index, pot in enumerate(report["pots"]):
+                    label = "MAIN POT" if index == 0 else f"SIDE POT #{index}"
+                    awards = ", ".join(
+                        f"{player_link(uid)} +{chips}" for uid, chips in pot["awards"].items()
+                    )
+                    lines.append(f"• {label} {pot['amount']}: {awards}")
+        elif table.payouts and not table.board:
+            lines.append("🏆 Победа без вскрытия карт")
         if table.payouts:
-            lines.append("🏆 Итоги раздачи:")
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
-            lines.append("🏆 Итоговые выплаты:")
+            lines.append("🏆 RESULTS")
             for uid, chips in winners:
                 detail = ""
                 player = table.players.get(uid)
@@ -171,6 +173,47 @@ def format_table(table, names=None, now=None):
                     remaining = max(0, int(table.turn_started_at + table.turn_timeout_seconds - (time() if now is None else now)))
                     lines.append(f"⏱ Осталось на ход: {remaining} сек.")
     return "\n".join(lines)
+
+
+def format_action_update(before, after, user_id, action, amount=None, names=None, now=None):
+    """One compact VK message per action; /table remains the full roster."""
+    names = names or {}
+    label = str(names.get(user_id) or f"ID {user_id}").replace("|", " ").replace("]", " ")
+    actor = f"[id{user_id}|{label}]"
+    previous = before.players[user_id]
+    current = after.players.get(user_id)
+    if action == "fold":
+        headline = f"🃏 {actor} — FOLD"
+    elif action == "check":
+        headline = f"✋ {actor} — CHECK"
+    elif action == "call":
+        paid = previous.stack - (current.stack if current else previous.stack)
+        headline = f"💰 {actor} — CALL {paid}"
+    elif action == "raise":
+        headline = f"📈 {actor} — RAISE до {amount}"
+    else:
+        headline = f"🔥 {actor} — ALL-IN {previous.stack}"
+    if after.stage == "complete":
+        return headline + "\n\n" + format_table(after, names, now)
+    lines = [headline]
+    if before.stage != after.stage:
+        lines.append(f"🃏 {after.stage.upper()}" + (
+            " | " + " ".join(display_card(card) for card in after.board)
+            if after.board else ""
+        ))
+    lines.append(f"💰 Банк: {sum(p.committed for p in after.players.values())} фишек")
+    if after.turn:
+        next_label = str(names.get(after.turn) or f"ID {after.turn}").replace("|", " ").replace("]", " ")
+        next_player = after.players[after.turn]
+        owed = max(0, after.current_bet - next_player.street_bet)
+        lines.append(f"▶ Ход: [id{after.turn}|{next_label}] | CALL {owed}")
+        if after.turn_started_at:
+            remaining = max(0, int(after.turn_started_at + after.turn_timeout_seconds - (time() if now is None else now)))
+            lines.append(f"⏱ {remaining} сек.")
+    lines.append("📋 Полный стол: /table")
+    return "\n".join(lines)
+
+
 
 
 def parse_command(text):
@@ -454,10 +497,17 @@ class PokerCommands:
                 )
                 if total != len(table.players) or delivered != total:
                     return "⏳ Доставка закрытых карт ещё не завершена."
+                before_action = deepcopy(table)
                 table.act(user_id, cmd, amount)
             else:
                 return HELP
             response = self._format_table(table)
+            if cmd in ("fold", "check", "call", "raise", "allin"):
+                try:
+                    names = self.get_names([p.user_id for p in table.seated()] + [user_id]) if self.get_names else {}
+                except Exception:
+                    names = {}
+                response = format_action_update(before_action, table, user_id, cmd, amount, names)
             saved = self.store.save(
                 self.room_id, table, revision, event_id=event_id,
                 public_message=response,
@@ -467,4 +517,4 @@ class PokerCommands:
             self.last_public_queued = True
         except (ValueError, KeyError) as exc:
             return f"⚠️ {localize_error(exc)}"
-        return self._format_table(table)
+        return response
