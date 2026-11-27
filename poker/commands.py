@@ -96,7 +96,7 @@ def format_table(table, names=None, now=None):
              else [f"♠ ASTRA POKER | {stage} | Раздача #{table.hand_number}"])
     seated = table.seated()
     active = table.stage in ("preflop", "flop", "turn", "river")
-    if active or table.stage == "complete":
+    if active:
         dealer = next((p for p in seated if p.seat == table.dealer), None)
         if dealer:
             sb = dealer if len(seated) == 2 else table.next_after(dealer.seat, seated)
@@ -106,8 +106,9 @@ def format_table(table, names=None, now=None):
                 f"SB: {player_link(sb.user_id)} ({table.small_blind}) | "
                 f"BB: {player_link(bb.user_id)} ({table.big_blind})"
             )
-    lines.append("👥 Игроки:")
-    for p in seated:
+    if table.stage != "complete":
+        lines.append("👥 Игроки:")
+    for p in ([] if table.stage == "complete" else seated):
         flags = []
         if p.user_id == table.owner_id:
             flags.append("👑 владелец")
@@ -131,17 +132,18 @@ def format_table(table, names=None, now=None):
             lines.append("🃏 Карты стола: " + " ".join(display_card(card) for card in table.board))
         if report.get("hands"):
             lines.append("🎭 SHOWDOWN")
-            for uid, hole in report["hands"].items():
+            for raw_uid, hole in report["hands"].items():
+                uid = int(raw_uid)
                 if len(hole) == 2 and len(table.board) == 5:
                     category = evaluate_seven(tuple(hole) + tuple(table.board))[0]
                     cards = " ".join(display_card(card) for card in hole)
                     lines.append(f"• {player_link(uid)}: {cards} — {HAND_NAMES[category]}")
             if report.get("pots"):
-                lines.append("💰 POTS")
+                lines.append("💰 Банк")
                 for index, pot in enumerate(report["pots"]):
                     label = "MAIN POT" if index == 0 else f"SIDE POT #{index}"
                     awards = ", ".join(
-                        f"{player_link(uid)} +{chips}" for uid, chips in pot["awards"].items()
+                        f"{player_link(int(uid))} +{chips}" for uid, chips in pot["awards"].items()
                     )
                     lines.append(f"• {label} {pot['amount']}: {awards}")
         elif table.payouts and not table.board:
@@ -149,14 +151,14 @@ def format_table(table, names=None, now=None):
         if table.payouts:
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
-            lines.append("🏆 RESULTS")
+            lines.append("🏆 Результаты")
             for uid, chips in winners:
                 detail = ""
                 player = table.players.get(uid)
                 if not report.get("hands") and len(table.live()) > 1 and player and len(table.board) == 5 and len(player.hole) == 2:
                     detail = f" — {HAND_NAMES[evaluate_seven(tuple(player.hole) + tuple(table.board))[0]]}"
                 lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
-        lines.append("Следующая раздача: /next → /ready → /start")
+
     elif active:
         total = sum(p.committed for p in table.players.values())
         lines.append(f"💰 Банк: {total} фишек")
@@ -315,7 +317,8 @@ class PokerCommands:
                     table.next_street()
                     table.turn_started_at = now if table.turn else 0.0
                     self.store.save(self.room_id, table, revision,
-                                    public_message="🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
+                                    public_message=None if table.stage == "complete" else
+                                    "🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
                     self.last_public_queued = True
                     return None
             return None
@@ -476,9 +479,11 @@ class PokerCommands:
             f"{table.turn_timeout_seconds} секунд. FOLD; исключение после раздачи.\n"
             + format_action_update(before_timeout, table, user_id, action, names=names, now=now)
         )
-        self.store.save(self.room_id, table, revision, public_message=response)
-        self.last_public_queued = True
-        return response
+        completed = table.stage == "complete"
+        self.store.save(self.room_id, table, revision,
+                        public_message=None if completed else response)
+        self.last_public_queued = not completed
+        return None if completed else response
 
     def handle(self, user_id, text, event_id, target_user_id=None):
         """Return a chat reply, or None for a non-poker message.
@@ -649,13 +654,18 @@ class PokerCommands:
                 except Exception:
                     names = {}
                 response = format_action_update(before_action, table, user_id, cmd, amount, names)
+            # The watchdog publishes one combined settlement + next-hand invitation.
+            # Do not enqueue an intermediate COMPLETE message.
+            completed = table.stage == "complete"
             saved = self.store.save(
                 self.room_id, table, revision, event_id=event_id,
-                public_message=response,
+                public_message=None if completed else response,
             )
             if saved is None:
                 return None
-            self.last_public_queued = True
+            self.last_public_queued = not completed
+            if completed:
+                return None
         except (ValueError, KeyError) as exc:
             return f"⚠️ {localize_error(exc)}"
         return response
