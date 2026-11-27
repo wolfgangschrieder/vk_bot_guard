@@ -141,6 +141,7 @@ def format_table(table, names=None, now=None):
         elif table.payouts:
             lines.append("🏆 Победа без вскрытия карт" if not table.board else "🏆 Итоги раздачи:")
         if table.payouts:
+            lines.append("🏆 Итоги раздачи:")
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
             lines.append("🏆 Итоговые выплаты:")
