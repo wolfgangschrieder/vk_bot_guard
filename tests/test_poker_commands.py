@@ -406,6 +406,56 @@ class CommandTests(unittest.TestCase):
             self.assertIn("WAITING", bot.handle(202, "/newsession", "new-owner"))
             store.close()
 
+    def test_short_blind_showdown_waits_for_private_delivery(self):
+        class Delivery:
+            def can_message(self, uid):
+                return True
+            def deliver_pending(self, store, room, hand):
+                for uid, _, _ in store.pending_private_cards(room, hand):
+                    store.mark_private_delivered(room, hand, uid)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, private_delivery=Delivery())
+            for uid in (101, 202):
+                bot.handle(uid, "/join", f"join-{uid}")
+            revision, table = store.load(2000000999)
+            table.players[202].stack = 10
+            store.save(2000000999, table, revision)
+            for uid in (101, 202):
+                bot.handle(uid, "/ready", f"ready-{uid}")
+            bot.handle(101, "/start", "short-start")
+            _, finished = store.load(2000000999)
+            self.assertEqual(finished.stage, "complete")
+            self.assertEqual(len(finished.board), 5)
+            self.assertEqual(sum(p.stack for p in finished.players.values()), 10010)
+            self.assertEqual(store.private_delivery_status(2000000999, 1), (2, 2))
+            store.close()
+
+    def test_restart_after_last_private_delivery_ack_runs_out_short_blind(self):
+        from poker.engine import Table
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "poker.db"
+            store = PokerStore(db)
+            table = Table()
+            for uid in (101, 202):
+                table.join(uid)
+                table.ready(uid)
+            table.players[202].stack = 10
+            table.start()
+            messages = {uid: (uid + 10000, "private cards") for uid in table.players}
+            store.save_hand_with_private_cards(2000000999, table, 0, messages)
+            for uid in table.players:
+                store.mark_private_delivered(2000000999, table.hand_number, uid)
+            store.close()
+            reopened = PokerStore(db)
+            bot = PokerCommands(reopened, 2000000999)
+            self.assertIsNone(bot.recover_delivery(now=1000))
+            _, completed = reopened.load(2000000999)
+            self.assertEqual(completed.stage, "complete")
+            self.assertEqual(sum(p.stack for p in completed.players.values()), 10010)
+            self.assertIsNone(bot.recover_delivery(now=1001))
+            reopened.close()
+
     def test_private_delivery_restarts_turn_clock_after_delay(self):
         from unittest.mock import patch
         class Delivery:

@@ -165,10 +165,8 @@ class Table:
         self.min_raise = self.big_blind
         self.stage = "preflop"
         self.turn = self.next_after(bb.seat, self.actionable()).user_id if self.actionable() else 0
+        # Delivery gate: no action or automatic showdown before all hole cards arrive.
         self.turn_started_at = time() if self.turn else 0.0
-        actionable = self.actionable()
-        if not actionable or (len(actionable) == 1 and actionable[0].street_bet >= self.current_bet):
-            self.next_street()
 
     def act(self, user_id, action, amount=None):
         if self.stage not in ("preflop", "flop", "turn", "river") or self.turn != user_id:
@@ -219,7 +217,7 @@ class Table:
         self.progress(user_id)
 
     def expire_turn(self, now=None):
-        """Apply a deterministic timeout: check for free, otherwise fold.
+        """Apply a deterministic timeout: fold and eject after hand completion.
 
         The caller must persist the resulting table before publishing anything.
         Returns (user_id, action), or None if no turn has expired.
@@ -322,7 +320,25 @@ class Table:
             "pots": pots,
         }
 
+    def _refund_uncalled_bet(self):
+        """Return any unmatched top contribution before constructing showdown pots."""
+        if len(self.players) < 2:
+            return 0
+        ranked = sorted(self.players.values(), key=lambda p: p.committed, reverse=True)
+        leader, runner_up = ranked[:2]
+        excess = leader.committed - runner_up.committed
+        if excess <= 0:
+            return 0
+        if leader.folded:
+            raise ValueError("Folded player has an unmatched contribution")
+        leader.committed -= excess
+        leader.street_bet = max(0, leader.street_bet - excess)
+        leader.stack += excess
+        leader.all_in = leader.stack == 0
+        return excess
+
     def showdown(self):
+        self._refund_uncalled_bet()
         contributions = {p.user_id: p.committed for p in self.players.values()}
         hands = {p.user_id: p.hole for p in self.live()}
         order = sorted(self.seated(), key=lambda p: (p.seat - self.dealer - 1) % 9)
@@ -388,7 +404,9 @@ class Table:
         self.payouts = {}
         self.pending_ejections.clear()
         self.ejected_balances.clear()
+        self.showdown_report = {}
         self.delivery_failures = 0
+        self.delivery_retry_at = 0.0
         # Keep hand numbers monotonic: private-card outbox keys must never repeat.
         self.dealer = 0
         self.last_dealer = 0

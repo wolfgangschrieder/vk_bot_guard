@@ -281,12 +281,14 @@ class PokerCommands:
         )
         if total != len(table.players) or delivered != total:
             return "⏳ Ожидаем доставки карт."
-        if before_delivered < total and table.turn:
+        if before_delivered < total:
             revision, persisted = self.store.load(self.room_id)
             if persisted is not None and persisted.hand_number == table.hand_number:
-                persisted.turn_started_at = time()
+                if len(persisted.actionable()) <= 1 and (not persisted.actionable() or persisted.actionable()[0].street_bet >= persisted.current_bet):
+                    persisted.next_street()
+                persisted.turn_started_at = time() if persisted.turn else 0.0
                 self.store.save(self.room_id, persisted, revision)
-                table.turn_started_at = persisted.turn_started_at
+                table = persisted
         return self._format_table(table)
 
     def recover_delivery(self, now=None):
@@ -297,6 +299,17 @@ class PokerCommands:
             return None
         total, delivered = self.store.private_delivery_status(self.room_id, table.hand_number)
         if total == len(table.players) and delivered == total:
+            # Crash recovery: the last DM may have been acknowledged before
+            # the engine's automatic runout was persisted.
+            if table.stage == "preflop" and not table.board and len(table.actionable()) <= 1:
+                actionable = table.actionable()
+                if not actionable or actionable[0].street_bet >= table.current_bet:
+                    table.next_street()
+                    table.turn_started_at = now if table.turn else 0.0
+                    self.store.save(self.room_id, table, revision,
+                                    public_message="🃏 SHOWDOWN после доставки карт.\n" + self._format_table(table))
+                    self.last_public_queued = True
+                    return None
             return None
         if now < table.delivery_retry_at:
             return None
@@ -311,8 +324,11 @@ class PokerCommands:
             if delivered == total:
                 table.delivery_failures = 0
                 table.delivery_retry_at = 0.0
+                if len(table.actionable()) <= 1 and (not table.actionable() or table.actionable()[0].street_bet >= table.current_bet):
+                    table.next_street()
+                table.turn_started_at = now if table.turn else 0.0
                 self.store.save(self.room_id, table, revision)
-                return "✅ Все закрытые карты доставлены. Игра продолжается."
+                return "✅ Все закрытые карты доставлены. Игра продолжается.\n" + self._format_table(table)
             table.delivery_failures += 1
         if table.delivery_failures >= 3:
             message = "⚠️ Раздача отменена: закрытые карты не доставлены. Все ставки возвращены. Используйте /ready и /start."
@@ -337,7 +353,7 @@ class PokerCommands:
         if expired:
             users = ", ".join(self._player_name(uid) for uid in expired)
             message = (
-                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\\n\\n"
+                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\n\n"
                 + self._format_table(table)
             )
             saved = self.store.save(self.room_id, table, revision, public_message=message)
@@ -375,14 +391,16 @@ class PokerCommands:
             table.turn_started_at = time() if now is None else now
             self.store.save(self.room_id, table, revision)
             return None
+        before_timeout = deepcopy(table)
         result = table.expire_turn(now)
         if result is None:
             return None
         user_id, action = result
+        names = {user_id: self._player_name(user_id)}
         response = (
             f"⏱ {self._player_name(user_id)} не сделал ход за "
-            f"{table.turn_timeout_seconds} секунд. Карты сброшены, игрок исключён из-за стола.\\n"
-            + self._format_table(table)
+            f"{table.turn_timeout_seconds} секунд. FOLD; исключение после раздачи.\n"
+            + format_action_update(before_timeout, table, user_id, action, names=names, now=now)
         )
         self.store.save(self.room_id, table, revision, public_message=response)
         self.last_public_queued = True

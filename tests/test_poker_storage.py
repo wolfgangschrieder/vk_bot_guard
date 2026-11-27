@@ -185,5 +185,30 @@ class StorageTests(unittest.TestCase):
             store.close()
 
 
+    def test_ejected_balance_ids_are_integers_after_restart(self):
+        from poker.storage import serialize, deserialize
+        table = Table()
+        table.ejected_balances = {101: 900}
+        restored = deserialize(serialize(table))
+        self.assertEqual(restored.ejected_balances, {101: 900})
+        self.assertTrue(all(isinstance(uid, int) for uid in restored.ejected_balances))
+
+    def test_chip_conservation_rejects_corrupted_settlement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "integrity.db")
+            table = Table()
+            for uid in (101, 202):
+                table.join(uid)
+                table.ready(uid)
+            table.start()
+            revision = store.save(77, table, 0)
+            table.players[101].stack += 100
+            table.stage = "complete"
+            with self.assertRaisesRegex(ValueError, "conservation"):
+                store.save(77, table, revision)
+            self.assertEqual(store.load(77)[0], revision)
+            store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

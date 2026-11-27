@@ -24,6 +24,7 @@ def deserialize(payload):
         for uid, data in players.items()
     }
     table.payouts = {int(uid): amount for uid, amount in table.payouts.items()}
+    table.ejected_balances = {int(uid): amount for uid, amount in table.ejected_balances.items()}
     if table.players and table.owner_id not in table.players:
         table.owner_id = table.seated()[0].user_id
     return table
@@ -185,6 +186,8 @@ class PokerStore:
             revision = current[0] if current else 0
             if revision != expected_revision:
                 raise ValueError("Stale poker state revision")
+            previous_table = self.load(room_id)[1]
+            self.check_chip_conservation(table, previous_table)
             self.conn.execute(
                 "INSERT INTO poker_state(room_id, revision, snapshot) VALUES (?, ?, ?) "
                 "ON CONFLICT(room_id) DO UPDATE SET "
@@ -280,7 +283,12 @@ class PokerStore:
         if previous_table.stage not in ("preflop", "flop", "turn", "river"):
             return
         before = sum(p.stack + p.committed for p in previous_table.players.values())
-        after = sum(p.stack + p.committed for p in table.players.values())
+        # Settled pots have already been credited to stacks, while committed
+        # remains as historical hand metadata until /next.
+        if table.stage == "complete":
+            after = sum(p.stack for p in table.players.values())
+        else:
+            after = sum(p.stack + p.committed for p in table.players.values())
         after += sum(table.ejected_balances.values())
         if before != after:
             raise ValueError("Poker chip conservation violated")
