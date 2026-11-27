@@ -122,19 +122,30 @@ def format_table(table, names=None, now=None):
             + (f" ({', '.join(flags)})" if flags else "")
         )
     if table.stage == "complete":
+        report = getattr(table, "showdown_report", {}) or {}
+        if table.board:
+            lines.append("🃏 Карты стола: " + " ".join(display_card(card) for card in table.board))
+        if report.get("hands"):
+            lines.append("🎭 ВСКРЫТИЕ КАРТ")
+            for uid, hole in report["hands"].items():
+                if len(hole) == 2 and len(table.board) == 5:
+                    category = evaluate_seven(tuple(hole) + tuple(table.board))[0]
+                    cards = " ".join(display_card(card) for card in hole)
+                    lines.append(f"• {player_link(uid)}: {cards} — {HAND_NAMES[category]}")
+            lines.append("💰 РАСПРЕДЕЛЕНИЕ БАНКОВ")
+            for index, pot in enumerate(report.get("pots", [])):
+                label = "Основной банк" if index == 0 else f"Побочный банк #{index}"
+                lines.append(f"{label}: {pot['amount']} фишек")
+                for uid, chips in pot["awards"].items():
+                    lines.append(f"  🏆 {player_link(uid)} +{chips}")
+        elif table.payouts:
+            lines.append("🏆 Победа без вскрытия карт" if not table.board else "🏆 Итоги раздачи:")
         if table.payouts:
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
-            lines.append("🏆 Итоги раздачи:")
+            lines.append("🏆 Итоговые выплаты:")
             for uid, chips in winners:
-                detail = ""
-                player = table.players.get(uid)
-                if len(table.board) == 5 and player and len(player.hole) == 2:
-                    category = evaluate_seven(tuple(player.hole) + tuple(table.board))[0]
-                    detail = f" — {HAND_NAMES[category]}"
-                lines.append(f"• {player_link(uid)} получил {chips} фишек{detail}")
-        if table.board:
-            lines.append("Карты стола: " + " ".join(display_card(card) for card in table.board))
+                lines.append(f"• {player_link(uid)} получил {chips} фишек")
         lines.append("Следующая раздача: /next → /ready → /start")
     else:
         total = sum(p.committed for p in table.players.values()) if active else 0
