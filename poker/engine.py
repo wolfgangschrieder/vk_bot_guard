@@ -44,6 +44,7 @@ class Table:
     pending_ejections: list = field(default_factory=list)
     ejected_balances: dict = field(default_factory=dict)
     delivery_failures: int = 0
+    delivery_retry_at: float = 0.0
 
     def __post_init__(self):
         if not 0 < self.small_blind < self.big_blind <= self.starting_stack:
@@ -128,6 +129,7 @@ class Table:
         self.pending_ejections.clear()
         self.ejected_balances.clear()
         self.delivery_failures = 0
+        self.delivery_retry_at = 0.0
         self.hand_number += 1
         self.dealer = self.next_after(self.last_dealer, ps).seat
         self.last_dealer = self.dealer
@@ -309,6 +311,7 @@ class Table:
         self.payouts = {}
         self.pending_ejections.clear()
         self.delivery_failures = 0
+        self.delivery_retry_at = 0.0
 
     def new_session(self):
         """Start a new match with fresh virtual stacks, never during a hand."""
