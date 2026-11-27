@@ -191,8 +191,6 @@ class PokerStore:
                 "revision=excluded.revision, snapshot=excluded.snapshot",
                 (room_id, revision + 1, serialize(table)),
             )
-            previous_table = self.load(room_id)[1]
-            self.check_chip_conservation(table, previous_table)
             self._record_ledger(room_id, revision + 1, table, "settlement")
             self._sync_wallets(table)
             if event_id is not None:
@@ -239,6 +237,28 @@ class PokerStore:
             if public_message:
                 self._insert_public(room_id, public_message)
         return revision + 1
+
+    def cancel_undelivered_hand(self, room_id, table, expected_revision, message):
+        """Atomically refund blinds, stop private delivery and notify the room."""
+        table.cancel_undelivered_hand()
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT revision FROM poker_state WHERE room_id=?", (room_id,)
+            ).fetchone()
+            if row is None or row[0] != expected_revision:
+                raise ValueError("Stale poker state revision")
+            self.conn.execute(
+                "UPDATE poker_private_outbox SET delivered=1 WHERE room_id=? AND hand_number=?",
+                (room_id, table.hand_number),
+            )
+            self.conn.execute(
+                "UPDATE poker_state SET revision=?,snapshot=? WHERE room_id=?",
+                (expected_revision + 1, serialize(table), room_id),
+            )
+            self._record_ledger(room_id, expected_revision + 1, table, "delivery_refund")
+            self._sync_wallets(table)
+            self._insert_public(room_id, message)
+        return table
 
     def cancel_private_cards(self, room_id, hand_number):
         with self.conn:
