@@ -1,5 +1,5 @@
-import re
 """VK-neutral command dispatcher for ASTRA Poker Room."""
+import re
 from copy import deepcopy
 from secrets import randbelow
 from time import time
