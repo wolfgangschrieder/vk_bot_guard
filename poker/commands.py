@@ -1,4 +1,5 @@
 """VK-neutral command dispatcher for ASTRA Poker Room."""
+from copy import deepcopy
 from secrets import randbelow
 from time import time
 from .engine import Table
@@ -213,10 +214,14 @@ def format_action_update(before, after, user_id, action, amount=None, names=None
     return "\n".join(lines)
 
 
-def format_action(table, user_id, cmd, amount, before):
+def format_action(table, user_id, cmd, amount, before, names=None):
     """Short public action line plus a concise, current turn summary."""
     player = before.players[user_id]
-    name = f"[id{user_id}|ID {user_id}]"
+    names = names or {}
+    def link(uid):
+        label = str(names.get(uid) or f"ID {uid}").replace("|", " ").replace("]", " ")
+        return f"[id{uid}|{label}]"
+    name = link(user_id)
     if cmd == "fold":
         verb = "FOLD"
     elif cmd == "check":
@@ -230,7 +235,7 @@ def format_action(table, user_id, cmd, amount, before):
         verb = f"ALL-IN {player.stack}"
     lines = [f"🎯 {name} — {verb}"]
     if table.stage == "complete":
-        return "\n".join(lines) + "\n\n" + format_table(table)
+        return "\n".join(lines) + "\n\n" + format_table(table, names)
     if table.stage != before.stage:
         lines.append(f"🃏 {table.stage.upper()}: " + " ".join(display_card(card) for card in table.board))
     total = sum(p.committed for p in table.players.values())
@@ -238,7 +243,7 @@ def format_action(table, user_id, cmd, amount, before):
     if table.turn:
         actor = table.players[table.turn]
         due = max(0, table.current_bet - actor.street_bet)
-        lines.append(f"▶ [id{actor.user_id}|ID {actor.user_id}] · CALL {due} · /table — полный стол")
+        lines.append(f"▶ {link(actor.user_id)} · CALL {due} · /table — полный стол")
     return "\n".join(lines)
 
 
@@ -313,7 +318,7 @@ class PokerCommands:
                 persisted.turn_started_at = time()
                 self.store.save(self.room_id, persisted, revision)
                 table.turn_started_at = persisted.turn_started_at
-        return self._format_table(table)
+        return response
 
     def recover_delivery(self, now=None):
         """Retry persisted private outbox; cancel safely after repeated failures."""
@@ -524,6 +529,7 @@ class PokerCommands:
                 if total != len(table.players) or delivered != total:
                     return "⏳ Доставка закрытых карт ещё не завершена."
                 before_action = self.store.load(self.room_id)[1]
+                before_action = deepcopy(table)
                 table.act(user_id, cmd, amount)
             else:
                 return HELP
