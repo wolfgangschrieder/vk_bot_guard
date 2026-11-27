@@ -7,6 +7,49 @@ from poker.storage import PokerStore
 
 
 class CommandTests(unittest.TestCase):
+    def test_ui_dealer_blinds_timer_and_showdown_hand(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+        table = Table()
+        for uid in (101, 202):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        text = format_table(table, now=table.turn_started_at + 20)
+        self.assertIn("ПРЕФЛОП", text)
+        self.assertIn("Дилер:", text)
+        self.assertIn("SB:", text)
+        self.assertIn("BB:", text)
+        self.assertIn("Осталось на ход: 100 сек.", text)
+        self.assertNotIn("Побочные:", text)
+        table.stage = "complete"
+        table.turn = 0
+        table.board = ["Ah", "Kh", "Qh", "Jh", "2c"]
+        table.players[101].hole = ("Th", "3d")
+        table.players[202].hole = ("9c", "9d")
+        table.payouts = {101: 40, 202: 0}
+        result = format_table(table)
+        self.assertIn("Стрит-флеш", result)
+        self.assertIn("ЗАВЕРШЕНА", result)
+
+    def test_ui_provisional_side_pots_only_with_all_in(self):
+        from poker.commands import format_table
+        from poker.engine import Table
+        table = Table()
+        for uid in (101, 202, 303):
+            table.join(uid)
+            table.ready(uid)
+        table.start()
+        table.players[101].committed = 100
+        table.players[202].committed = 200
+        table.players[303].committed = 200
+        table.players[101].all_in = True
+        text = format_table(table)
+        self.assertIn("основной 300", text)
+        self.assertIn("дополнительные: 200", text)
+        table.players[101].all_in = False
+        self.assertNotIn("Предварительные банки", format_table(table))
+
     def test_table_shows_turn_cost_and_completed_payouts(self):
         from poker.commands import format_table
         from poker.engine import Table
