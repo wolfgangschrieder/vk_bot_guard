@@ -347,11 +347,77 @@ class PokerCommands:
         self.store.save(self.room_id, table, revision)
         return None
 
+    def process_next_hand(self, now=None):
+        """Persist completed results, collect readiness for 180s, and auto-deal."""
+        now = time() if now is None else now
+        self.last_public_queued = False
+        revision, table = self.store.load(self.room_id)
+        if table is None:
+            return None
+        if table.stage == "complete":
+            result = self._format_table(table)
+            table.reset()
+            message = (result + "\n\n♠ НОВАЯ РАЗДАЧА\n"
+                       "Все участники нажмите «✅ Готов». Время: 3 минуты.\n"
+                       "Неготовые игроки будут исключены из-за стола.")
+            if self.store.save(self.room_id, table, revision, public_message=message) is None:
+                return None
+            self.last_public_queued = True
+            return message
+        if table.stage != "waiting" or not table.next_hand_deadline:
+            return None
+        if self.store.has_pending_public(self.room_id):
+            return None
+        ready = [p for p in table.seated() if p.ready and p.stack > 0]
+        all_ready = len(ready) >= 2 and len(ready) == len(table.players)
+        expired = now >= table.next_hand_deadline
+        if not all_ready and not expired:
+            return None
+        if expired:
+            removed = [p.user_id for p in table.seated() if not p.ready or p.stack <= 0]
+            for uid in removed:
+                table.leave(uid)
+        if len(table.players) < 2:
+            table.next_hand_deadline = 0.0
+            message = ("⏳ Время готовности истекло. Ожидаем минимум двух игроков.\n\n"
+                       + self._format_table(table))
+            if self.store.save(self.room_id, table, revision, public_message=message) is None:
+                return None
+            self.last_public_queued = True
+            return message
+        if self.private_delivery is None:
+            return None
+        for player in table.seated():
+            try:
+                if not self.private_delivery.can_message(player.user_id):
+                    # Do not silently start a hand if any player cannot receive cards.
+                    return None
+            except Exception:
+                return None
+        table.start()
+        messages = {
+            p.user_id: (randbelow(2147483647) + 1,
+                        format_hole_cards(p.hole, table.hand_number))
+            for p in table.seated()
+        }
+        message = (f"🃏 Раздача #{table.hand_number} начинается автоматически!\n"
+                   "Закрытые карты отправляются в личные сообщения.\n\n"
+                   + self._format_table(table))
+        saved = self.store.save_hand_with_private_cards(
+            self.room_id, table, revision, messages, public_message=message)
+        if saved is None:
+            return None
+        self.last_public_queued = True
+        self._deliver_and_report(table)
+        return message
+
     def process_expired_lobby(self, now=None):
         """Remove five-minute unready seats, including the owner if inactive."""
         self.last_public_queued = False
         revision, table = self.store.load(self.room_id)
         if table is None or table.stage != "waiting":
+            return None
+        if table.next_hand_deadline:
             return None
         before = [(p.user_id, p.joined_at) for p in table.seated()]
         expired = table.expire_unready(now)
@@ -554,9 +620,12 @@ class PokerCommands:
                 self.last_public_queued = True
                 return self._deliver_and_report(table)
             elif cmd == "next":
-                if user_id not in table.players:
-                    raise ValueError("Only seated players may advance the game")
-                table.reset()
+                if table.stage == "complete":
+                    table.reset()
+                elif table.stage == "waiting":
+                    return "⏳ Новая раздача запускается автоматически после готовности игроков."
+                else:
+                    raise ValueError("Hand in progress")
             elif cmd == "newsession":
                 if user_id != table.owner_id:
                     raise ValueError("Only the table owner may reset the session")
