@@ -159,7 +159,7 @@ class CommandTests(unittest.TestCase):
             bot.handle(101, "/join", "join101")
             bot.handle(202, "/join", "join202")
             for command in ("/start", "/next", "/newsession"):
-                self.assertIn("только игрок за столом",
+                self.assertIn("только владелец стола" if command == "/newsession" else "только игрок за столом",
                               bot.handle(999, command, "other" + command))
             self.assertEqual(store.load(2000000999)[1].stage, "waiting")
             store.close()
