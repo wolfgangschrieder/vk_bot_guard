@@ -126,23 +126,26 @@ def format_table(table, names=None, now=None):
         if table.board:
             lines.append("🃏 Карты стола: " + " ".join(display_card(card) for card in table.board))
         if report.get("hands"):
-            lines.append("🎭 ВСКРЫТИЕ КАРТ")
+            lines.append("🎭 SHOWDOWN")
             for uid, hole in report["hands"].items():
                 if len(hole) == 2 and len(table.board) == 5:
                     category = evaluate_seven(tuple(hole) + tuple(table.board))[0]
                     cards = " ".join(display_card(card) for card in hole)
                     lines.append(f"• {player_link(uid)}: {cards} — {HAND_NAMES[category]}")
-            lines.append("💰 РАСПРЕДЕЛЕНИЕ БАНКОВ")
-            for index, pot in enumerate(report.get("pots", [])):
-                label = "Основной банк" if index == 0 else f"Побочный банк #{index}"
-                lines.append(f"{label}: {pot['amount']} фишек")
-                for uid, chips in pot["awards"].items():
-                    lines.append(f"  🏆 {player_link(uid)} +{chips}")
+            if report.get("pots"):
+                lines.append("💰 POTS")
+                for index, pot in enumerate(report["pots"]):
+                    label = "MAIN POT" if index == 0 else f"SIDE POT #{index}"
+                    awards = ", ".join(
+                        f"{player_link(uid)} +{chips}" for uid, chips in pot["awards"].items()
+                    )
+                    lines.append(f"• {label} {pot['amount']}: {awards}")
+        elif table.payouts and not table.board:
+            lines.append("🏆 Победа без вскрытия карт")
         if table.payouts:
-            lines.append("🏆 РЕЗУЛЬТАТЫ РАЗДАЧИ" if report.get("hands") else "🏆 Победа без вскрытия" if not table.board else "🏆 РЕЗУЛЬТАТЫ РАЗДАЧИ")
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
             winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
-
+            lines.append("🏆 RESULTS")
             for uid, chips in winners:
                 detail = ""
                 player = table.players.get(uid)
@@ -207,6 +210,35 @@ def format_action_update(before, after, user_id, action, amount=None, names=None
             remaining = max(0, int(after.turn_started_at + after.turn_timeout_seconds - (time() if now is None else now)))
             lines.append(f"⏱ {remaining} сек.")
     lines.append("📋 Полный стол: /table")
+    return "\n".join(lines)
+
+
+def format_action(table, user_id, cmd, amount, before):
+    """Short public action line plus a concise, current turn summary."""
+    player = before.players[user_id]
+    name = f"[id{user_id}|ID {user_id}]"
+    if cmd == "fold":
+        verb = "FOLD"
+    elif cmd == "check":
+        verb = "CHECK"
+    elif cmd == "call":
+        paid = min(player.stack, max(0, before.current_bet - player.street_bet))
+        verb = f"CALL {paid}"
+    elif cmd == "raise":
+        verb = f"RAISE TO {amount}"
+    else:
+        verb = f"ALL-IN {player.stack}"
+    lines = [f"🎯 {name} — {verb}"]
+    if table.stage == "complete":
+        return "\n".join(lines) + "\n\n" + format_table(table)
+    if table.stage != before.stage:
+        lines.append(f"🃏 {table.stage.upper()}: " + " ".join(display_card(card) for card in table.board))
+    total = sum(p.committed for p in table.players.values())
+    lines.append(f"💰 POT {total}")
+    if table.turn:
+        actor = table.players[table.turn]
+        due = max(0, table.current_bet - actor.street_bet)
+        lines.append(f"▶ [id{actor.user_id}|ID {actor.user_id}] · CALL {due} · /table — полный стол")
     return "\n".join(lines)
 
 
