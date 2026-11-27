@@ -287,7 +287,7 @@ class PokerCommands:
                 persisted.turn_started_at = time()
                 self.store.save(self.room_id, persisted, revision)
                 table.turn_started_at = persisted.turn_started_at
-        return response
+        return self._format_table(table)
 
     def recover_delivery(self, now=None):
         """Retry persisted private outbox; cancel safely after repeated failures."""
