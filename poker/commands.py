@@ -214,37 +214,6 @@ def format_action_update(before, after, user_id, action, amount=None, names=None
     return "\n".join(lines)
 
 
-def format_action(table, user_id, cmd, amount, before, names=None):
-    """Short public action line plus a concise, current turn summary."""
-    player = before.players[user_id]
-    names = names or {}
-    def link(uid):
-        label = str(names.get(uid) or f"ID {uid}").replace("|", " ").replace("]", " ")
-        return f"[id{uid}|{label}]"
-    name = link(user_id)
-    if cmd == "fold":
-        verb = "FOLD"
-    elif cmd == "check":
-        verb = "CHECK"
-    elif cmd == "call":
-        paid = min(player.stack, max(0, before.current_bet - player.street_bet))
-        verb = f"CALL {paid}"
-    elif cmd == "raise":
-        verb = f"RAISE TO {amount}"
-    else:
-        verb = f"ALL-IN {player.stack}"
-    lines = [f"🎯 {name} — {verb}"]
-    if table.stage == "complete":
-        return "\n".join(lines) + "\n\n" + format_table(table, names)
-    if table.stage != before.stage:
-        lines.append(f"🃏 {table.stage.upper()}: " + " ".join(display_card(card) for card in table.board))
-    total = sum(p.committed for p in table.players.values())
-    lines.append(f"💰 POT {total}")
-    if table.turn:
-        actor = table.players[table.turn]
-        due = max(0, table.current_bet - actor.street_bet)
-        lines.append(f"▶ {link(actor.user_id)} · CALL {due} · /table — полный стол")
-    return "\n".join(lines)
 
 
 def parse_command(text):
@@ -528,7 +497,6 @@ class PokerCommands:
                 )
                 if total != len(table.players) or delivered != total:
                     return "⏳ Доставка закрытых карт ещё не завершена."
-                before_action = self.store.load(self.room_id)[1]
                 before_action = deepcopy(table)
                 table.act(user_id, cmd, amount)
             else:
