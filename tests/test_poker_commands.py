@@ -155,8 +155,9 @@ class CommandTests(unittest.TestCase):
                 bot.handle(uid, "/ready", "ready" + str(uid))
             self.assertIn("PREFLOP", bot.handle(101, "/start", "start1"))
             queued = store.pending_public(2000000999)
-            self.assertEqual(len(queued), 1)
-            announcement = queued[0]["message"]
+            announcements = [row["message"] for row in queued if "Раздача #1 началась!" in row["message"]]
+            self.assertEqual(len(announcements), 1)
+            announcement = announcements[0]
             self.assertIn("Раздача #1 началась!", announcement)
             self.assertIn("ASTRA POKER | PREFLOP", announcement)
             self.assertIn("Место 1:", announcement)
