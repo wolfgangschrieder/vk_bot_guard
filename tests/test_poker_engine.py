@@ -152,9 +152,10 @@ class TableTests(unittest.TestCase):
         self.assertEqual(table.turn_started_at, 0.0)
 
     def test_timeout_folds_even_when_check_is_free_and_ejects_at_completion(self):
-        table = self.make_table()
-        table.act(table.turn, "call")
-        table.act(table.turn, "check")
+        table = self.make_table(3)
+        for _ in range(3):
+            owed = table.current_bet - table.players[table.turn].street_bet
+            table.act(table.turn, "call" if owed else "check")
         self.assertEqual(table.stage, "flop")
         first = table.turn
         table.expire_turn(table.turn_started_at + 120)
