@@ -9,7 +9,7 @@ from .private_cards import format_hole_cards, display_card
 
 HELP = (
     "♠ ASTRA POKER ROOM\n"
-    "/poker — стол, /клуб — TOP 10 по фишкам, /join — занять место, /leave — выйти, "
+    "/poker — стол, /клуб — TOP 10 по фишкам, /фишки — мой баланс, /join — занять место, /leave — выйти, "
     "/кик @username — владелец может исключить игрока между раздачами, "
     "/ready — готов, /unready — отменить готовность, "
     "/start — начать раздачу, /table — состояние, "
@@ -225,7 +225,7 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик", "/клуб",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик", "/клуб", "/фишки",
     }
     if cmd not in supported:
         return None
@@ -426,6 +426,23 @@ class PokerCommands:
         cmd, amount = parsed
         if cmd == "pokerhelp":
             return HELP
+        if cmd == "фишки":
+            balance = self.store.wallet(user_id)
+            if balance is None:
+                return (
+                    "♠ ASTRA POKER ROOM\n"
+                    "🪙 МОИ ФИШКИ\n\n"
+                    f"👤 {self._player_name(user_id)}\n"
+                    "Баланс пока не открыт.\n"
+                    "Займи место за столом: /join"
+                )
+            return (
+                "♠ ASTRA POKER ROOM\n"
+                "🪙 МОИ ФИШКИ\n\n"
+                f"👤 {self._player_name(user_id)}\n"
+                f"💰 Баланс: {balance:,} фишек".replace(",", " ") +
+                "\n\n♠ Во время раздачи показан последний сохранённый баланс."
+            )
         if cmd == "клуб":
             ranking = self.store.top_wallets(10)
             if not ranking:
