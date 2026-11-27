@@ -70,6 +70,14 @@ class PokerStore:
             "admin_id INTEGER NOT NULL, chips INTEGER NOT NULL, created_at INTEGER NOT NULL)"
         )
         self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS poker_chip_ledger ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, room_id INTEGER NOT NULL, "
+            "revision INTEGER NOT NULL, hand_number INTEGER NOT NULL, "
+            "user_id INTEGER NOT NULL, delta INTEGER NOT NULL, "
+            "balance INTEGER NOT NULL, reason TEXT NOT NULL, "
+            "UNIQUE(room_id,revision,user_id))"
+        )
+        self.conn.execute(
             "CREATE TABLE IF NOT EXISTS poker_room_restrictions ("
             "user_id INTEGER PRIMARY KEY, expires_at INTEGER NOT NULL)"
         )
@@ -81,7 +89,7 @@ class PokerStore:
         ).fetchone()
         return int(row[0]) if row else None
 
-    def _sync_wallets(self, table):
+    def _sync_wallets(self, table, room_id=None, revision=None, reason="settlement"):
         # A live hand has outstanding bets; only settle wallet values at safe stages.
         if table.stage not in ("waiting", "complete"):
             return
@@ -97,6 +105,21 @@ class PokerStore:
                 "ON CONFLICT(user_id) DO UPDATE SET chips=excluded.chips",
                 (player.user_id, player.stack),
             )
+
+    def _record_ledger(self, room_id, revision, table, reason):
+        if table.stage not in ("waiting", "complete"):
+            return
+        balances = dict(table.ejected_balances)
+        balances.update({uid: p.stack for uid, p in table.players.items()})
+        for uid, balance in balances.items():
+            previous = self.wallet(uid)
+            delta = balance - (previous if previous is not None else 0)
+            if delta:
+                self.conn.execute(
+                    "INSERT INTO poker_chip_ledger(room_id,revision,hand_number,user_id,delta,balance,reason) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (room_id, revision, table.hand_number, uid, delta, balance, reason),
+                )
 
     def admin_top_up(self, room_id, user_id, chips, admin_id, now):
         """Only replenish an existing zero-chip account; update table atomically."""
@@ -168,6 +191,9 @@ class PokerStore:
                 "revision=excluded.revision, snapshot=excluded.snapshot",
                 (room_id, revision + 1, serialize(table)),
             )
+            previous_table = self.load(room_id)[1]
+            self.check_chip_conservation(table, previous_table)
+            self._record_ledger(room_id, revision + 1, table, "settlement")
             self._sync_wallets(table)
             if event_id is not None:
                 self.conn.execute(
@@ -213,6 +239,31 @@ class PokerStore:
             if public_message:
                 self._insert_public(room_id, public_message)
         return revision + 1
+
+    def cancel_private_cards(self, room_id, hand_number):
+        with self.conn:
+            self.conn.execute(
+                "UPDATE poker_private_outbox SET delivered=1 WHERE room_id=? AND hand_number=?",
+                (room_id, hand_number),
+            )
+
+    def has_pending_public(self, room_id):
+        return bool(self.conn.execute(
+            "SELECT 1 FROM poker_public_outbox WHERE room_id=? AND delivered=0 LIMIT 1",
+            (room_id,),
+        ).fetchone())
+
+    def check_chip_conservation(self, table, previous_table):
+        """Assert no virtual chips disappear across a hand settlement."""
+        if previous_table is None:
+            return
+        if previous_table.stage not in ("preflop", "flop", "turn", "river"):
+            return
+        before = sum(p.stack + p.committed for p in previous_table.players.values())
+        after = sum(p.stack + p.committed for p in table.players.values())
+        after += sum(table.ejected_balances.values())
+        if before != after:
+            raise ValueError("Poker chip conservation violated")
 
     def enqueue_private_cards(self, room_id, hand_number, messages):
         """Persist private messages in a standalone transaction."""
