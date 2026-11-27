@@ -17,6 +17,38 @@ HELP = (
 )
 
 
+ERROR_MESSAGES = {
+    "Need at least two ready players": (
+        "Для начала игры необходимо минимум 2 участника с положительным балансом фишек.\n"
+        "Каждый игрок должен занять место командой /join и подтвердить готовность командой /ready.\n"
+        "Когда все будут готовы, используйте /start.\n"
+        "Если за столом больше двух игроков, готовность требуется от каждого."
+    ),
+    "Not your turn": "Сейчас ход другого игрока.",
+    "Cannot check": "Нельзя пропустить ход: сначала нужно уравнять ставку или сбросить карты.",
+    "Nothing to call": "Уравнивать нечего: используйте /check или сделайте ставку.",
+    "Raise too small": "Повышение ставки слишком маленькое.",
+    "Raise below minimum": "Повышение ниже минимально допустимого.",
+    "Invalid bet": "Некорректный размер ставки или недостаточно фишек.",
+    "Cannot join": "Нельзя занять место: вы уже за столом, идёт раздача или все 9 мест заняты.",
+    "Hand in progress": "Дождитесь завершения текущей раздачи.",
+    "Hand not complete": "Текущая раздача ещё не завершена.",
+    "Only the table owner may reset the session": "Новую сессию может начать только владелец стола.",
+    "Only seated players may start a hand": "Начать раздачу может только игрок за столом.",
+    "Only seated players may advance the game": "Следующую раздачу может запустить только игрок за столом.",
+    "Betting not reopened": "Повторное повышение ставки пока недоступно.",
+    "Cannot raise without another player able to respond": "Нельзя повышать ставку, когда никто из соперников не может ответить.",
+    "Invalid chip balance": "Некорректный баланс фишек.",
+    "Unknown action": "Неизвестное игровое действие.",
+    "Cannot reset chips during an active hand": "Нельзя начать новую сессию во время раздачи.",
+    "Invalid blinds or starting stack": "Некорректные блайнды или стартовый баланс.",
+}
+
+
+def localize_error(message):
+    return ERROR_MESSAGES.get(str(message), str(message))
+
+
 def format_table(table):
     if table is None:
         return "♠ Стол ещё не создан. Напишите /poker."
@@ -256,5 +288,5 @@ class PokerCommands:
                 return None
             self.last_public_queued = True
         except (ValueError, KeyError) as exc:
-            return f"⚠️ {exc}"
+            return f"⚠️ {localize_error(exc)}"
         return format_table(table)
