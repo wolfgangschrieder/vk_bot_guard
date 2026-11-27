@@ -12,6 +12,7 @@ class Player:
     seat: int
     stack: int
     ready: bool = False
+    joined_at: float = 0.0
     folded: bool = False
     all_in: bool = False
     committed: int = 0
@@ -72,7 +73,7 @@ class Table:
             stack = self.starting_stack
         if type(stack) is not int or stack < 0:
             raise ValueError('Invalid chip balance')
-        self.players[user_id] = Player(user_id, seat, stack)
+        self.players[user_id] = Player(user_id, seat, stack, joined_at=time())
         if not self.owner_id:
             self.owner_id = user_id
         return seat
@@ -101,6 +102,25 @@ class Table:
         if self.stage != "waiting":
             raise ValueError("Hand in progress")
         self.players[user_id].ready = bool(value)
+
+    def expire_unready(self, now=None, timeout_seconds=300):
+        """Evict only unready lobby seats after five minutes; never during a hand."""
+        if self.stage != "waiting":
+            return []
+        now = time() if now is None else now
+        expired = []
+        for player in self.seated():
+            if player.ready:
+                continue
+            if not player.joined_at:
+                # Legacy snapshots: grant a full grace period after upgrade.
+                player.joined_at = now
+                continue
+            if now - player.joined_at >= timeout_seconds:
+                expired.append(player.user_id)
+        for uid in expired:
+            self.leave(uid)
+        return expired
 
     def commit(self, player, amount):
         paid = min(amount, player.stack)

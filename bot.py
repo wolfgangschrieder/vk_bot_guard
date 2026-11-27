@@ -3683,6 +3683,9 @@ def poker_turn_watchdog(vk):
                 recovery = POKER_COMMANDS.recover_delivery()
                 if recovery and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, recovery)
+                lobby_response = POKER_COMMANDS.process_expired_lobby()
+                if lobby_response and not POKER_COMMANDS.last_public_queued:
+                    poker_queue_public(vk, lobby_response)
                 response = POKER_COMMANDS.process_expired_turn()
                 if response and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, response)

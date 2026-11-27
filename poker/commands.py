@@ -280,6 +280,31 @@ class PokerCommands:
         self.store.save(self.room_id, table, revision)
         return None
 
+    def process_expired_lobby(self, now=None):
+        """Remove five-minute unready seats, including the owner if inactive."""
+        self.last_public_queued = False
+        revision, table = self.store.load(self.room_id)
+        if table is None or table.stage != "waiting":
+            return None
+        before = [(p.user_id, p.joined_at) for p in table.seated()]
+        expired = table.expire_unready(now)
+        after = [(p.user_id, p.joined_at) for p in table.seated()]
+        if before == after:
+            return None
+        if expired:
+            users = ", ".join(self._player_name(uid) for uid in expired)
+            message = (
+                f"⏳ Прошло 5 минут без /ready. Игроки удалены из-за стола: {users}.\\n\\n"
+                + self._format_table(table)
+            )
+            saved = self.store.save(self.room_id, table, revision, public_message=message)
+            if saved is not None:
+                self.last_public_queued = True
+            return message if saved is not None else None
+        # Persist grace-period timestamps for seats created by older versions.
+        self.store.save(self.room_id, table, revision)
+        return None
+
     def process_expired_turn(self, now=None):
         """Apply and persist at most one expired action for this room.
 
