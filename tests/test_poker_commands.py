@@ -26,6 +26,26 @@ class CommandTests(unittest.TestCase):
         self.assertIn("/next → /ready → /start", finished)
         self.assertNotIn("Закрытые карты", finished)
 
+    def test_start_requires_every_seated_player_ready(self):
+        class Delivery:
+            def can_message(self, uid):
+                return True
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999, private_delivery=Delivery())
+            for uid in (101, 202, 303):
+                bot.handle(uid, "/join", f"join-{uid}")
+            bot.handle(101, "/ready", "ready-101")
+            bot.handle(202, "/ready", "ready-202")
+            message = bot.handle(101, "/start", "start-unready")
+            self.assertIn("минимум 2 участника", message)
+            self.assertIn("/join", message)
+            self.assertIn("/ready", message)
+            self.assertIn("/start", message)
+            self.assertIn("от каждого", message)
+            self.assertEqual(store.load(2000000999)[1].stage, "waiting")
+            store.close()
+
     def test_parser(self):
         self.assertEqual(parse_command("/raise 500"), ("raise", 500))
         self.assertIsNone(parse_command("обычное сообщение"))
@@ -139,7 +159,7 @@ class CommandTests(unittest.TestCase):
             bot.handle(101, "/join", "join101")
             bot.handle(202, "/join", "join202")
             for command in ("/start", "/next", "/newsession"):
-                self.assertIn("Only",
+                self.assertIn("только игрок за столом",
                               bot.handle(999, command, "other" + command))
             self.assertEqual(store.load(2000000999)[1].stage, "waiting")
             store.close()
@@ -151,7 +171,7 @@ class CommandTests(unittest.TestCase):
             bot.handle(101, "/join", "j1")
             bot.handle(202, "/join", "j2")
             self.assertEqual(store.load(2000000999)[1].owner_id, 101)
-            self.assertIn("Only the table owner",
+            self.assertIn("только владелец стола",
                           bot.handle(202, "/newsession", "denied"))
             self.assertIn("WAITING", bot.handle(101, "/newsession", "allowed"))
             bot.handle(101, "/leave", "left")
