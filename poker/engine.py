@@ -320,7 +320,25 @@ class Table:
             "pots": pots,
         }
 
+    def _refund_uncalled_bet(self):
+        """Return any unmatched top contribution before constructing showdown pots."""
+        if len(self.players) < 2:
+            return 0
+        ranked = sorted(self.players.values(), key=lambda p: p.committed, reverse=True)
+        leader, runner_up = ranked[:2]
+        excess = leader.committed - runner_up.committed
+        if excess <= 0:
+            return 0
+        if leader.folded:
+            raise ValueError("Folded player has an unmatched contribution")
+        leader.committed -= excess
+        leader.street_bet = max(0, leader.street_bet - excess)
+        leader.stack += excess
+        leader.all_in = leader.stack == 0
+        return excess
+
     def showdown(self):
+        self._refund_uncalled_bet()
         contributions = {p.user_id: p.committed for p in self.players.values()}
         hands = {p.user_id: p.hole for p in self.live()}
         order = sorted(self.seated(), key=lambda p: (p.seat - self.dealer - 1) % 9)
