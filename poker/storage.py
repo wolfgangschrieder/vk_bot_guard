@@ -34,7 +34,8 @@ class PokerStore:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path), timeout=10)
+        # Shared by poker handler and watchdog under POKER_LOCK.
+        self.conn = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.execute(

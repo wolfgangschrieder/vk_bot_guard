@@ -3123,14 +3123,19 @@ def poker_reconcile_members(vk, conn):
             break
 
 
-def poker_membership_watchdog(vk, conn):
-    while True:
-        try:
-            with POKER_LOCK:
-                poker_reconcile_members(vk, conn)
-        except Exception:
-            log.exception("Poker room membership scan failed")
-        time.sleep(60)
+def poker_membership_watchdog(vk):
+    # Use a dedicated moderation database connection in this worker.
+    conn = db.connect()
+    try:
+        while True:
+            try:
+                with POKER_LOCK:
+                    poker_reconcile_members(vk, conn)
+            except Exception:
+                log.exception("Poker room membership scan failed")
+            time.sleep(60)
+    finally:
+        conn.close()
 
 
 def poker_handle_admin_balance(vk, from_id, text):
@@ -3736,7 +3741,7 @@ def run_forever() -> None:
             name="poker-turn-watchdog", daemon=True,
         ).start()
         threading.Thread(
-            target=poker_membership_watchdog, args=(vk, conn),
+            target=poker_membership_watchdog, args=(vk,),
             name="poker-membership-watchdog", daemon=True,
         ).start()
 
