@@ -298,6 +298,9 @@ class CommandTests(unittest.TestCase):
             table = store.load(2000000999)[1]
             self.assertEqual(table.turn_started_at, 2000000000.0)
             self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
+            for job_id, _, _ in store.pending_public(2000000999):
+                store.mark_public_delivered(job_id)
+            self.assertIsNone(bot.process_expired_turn(now=2000000119.0))
             self.assertIsNotNone(bot.process_expired_turn(now=2000000120.0))
             store.close()
 
