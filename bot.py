@@ -3778,6 +3778,9 @@ def poker_turn_watchdog(vk):
                 recovery = POKER_COMMANDS.recover_delivery()
                 if recovery and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, recovery)
+                next_response = POKER_COMMANDS.process_next_hand()
+                if next_response and not POKER_COMMANDS.last_public_queued:
+                    poker_queue_public(vk, next_response)
                 lobby_response = POKER_COMMANDS.process_expired_lobby()
                 if lobby_response and not POKER_COMMANDS.last_public_queued:
                     poker_queue_public(vk, lobby_response)
@@ -3889,7 +3892,8 @@ def run_forever() -> None:
                     if message is not None:
                         handle_new_message(vk, conn, message)
 
-                elif str(getattr(event, "type", "")).lower() == "message_event":
+                elif (getattr(event, "type", None) == VkBotEventType.MESSAGE_EVENT or
+                      str(getattr(event, "type", "")).lower() in ("message_event", "vkbot eventtype.message_event")):
                     poker_handle_button(vk, conn, event)
                 elif str(getattr(event, "type", "")) == "chat_update":
                     handle_chat_update(vk, event, conn)
