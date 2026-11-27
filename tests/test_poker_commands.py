@@ -70,9 +70,45 @@ class CommandTests(unittest.TestCase):
 
     def test_parser(self):
         self.assertEqual(parse_command("/raise 500"), ("raise", 500))
+        self.assertEqual(parse_command("/кик @kenaya"), ("kick", "@kenaya"))
         self.assertIsNone(parse_command("обычное сообщение"))
         with self.assertRaises(ValueError):
             parse_command("/raise -5")
+
+    def test_owner_kick_only_between_hands_and_preserves_wallet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PokerStore(Path(tmp) / "poker.db")
+            bot = PokerCommands(store, 2000000999)
+            for uid in (101, 202, 303):
+                bot.handle(uid, "/join", f"join-{uid}")
+            self.assertIn("только владелец", bot.handle(202, "/кик @id303", "unauth", target_user_id=303))
+            self.assertIn("самого себя", bot.handle(101, "/кик @id101", "self", target_user_id=101))
+            self.assertIn("не сидит", bot.handle(101, "/кик @id404", "missing", target_user_id=404))
+            self.assertIn("не найден", bot.handle(101, "/кик @missing", "unresolved"))
+            for uid in (101, 202, 303):
+                bot.handle(uid, "/ready", f"ready-{uid}")
+            class Delivery:
+                def can_message(self, uid):
+                    return True
+                def deliver_pending(self, store, room, hand):
+                    for uid, rid, msg in store.pending_private_cards(room, hand):
+                        store.mark_private_delivered(room, hand, uid)
+            bot.private_delivery = Delivery()
+            bot.handle(101, "/start", "start")
+            self.assertIn("во время раздачи", bot.handle(101, "/кик @id303", "inhand", target_user_id=303))
+            table = store.load(2000000999)[1]
+            while table.stage != "complete":
+                bot.handle(table.turn, "/fold", f"fold-{table.turn}-{table.stage}")
+                table = store.load(2000000999)[1]
+            balance = store.wallet(303)
+            result = bot.handle(101, "/кик @id303", "kick303", target_user_id=303)
+            self.assertIn("исключён", result)
+            self.assertNotIn(303, store.load(2000000999)[1].players)
+            self.assertEqual(store.wallet(303), balance)
+            self.assertIsNone(bot.handle(101, "/кик @id303", "kick303", target_user_id=303))
+            self.assertIn("WAITING", bot.handle(101, "/next", "next"))
+            self.assertIn("Место 3", bot.handle(303, "/join", "rejoin"))
+            store.close()
 
     def test_lobby_and_deduplication(self):
         with tempfile.TemporaryDirectory() as tmp:

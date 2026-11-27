@@ -8,6 +8,7 @@ from .private_cards import format_hole_cards, display_card
 HELP = (
     "♠ ASTRA POKER ROOM\n"
     "/poker — стол, /join — занять место, /leave — выйти, "
+    "/кик @username — владелец может исключить игрока между раздачами, "
     "/ready — готов, /unready — отменить готовность, "
     "/start — начать раздачу, /table — состояние, "
     "/next — следующая раздача, /newsession — новая сессия без сброса фишек, "
@@ -42,6 +43,10 @@ ERROR_MESSAGES = {
     "Unknown action": "Неизвестное игровое действие.",
     "Cannot reset chips during an active hand": "Нельзя начать новую сессию во время раздачи.",
     "Invalid blinds or starting stack": "Некорректные блайнды или стартовый баланс.",
+    "Only the table owner may kick players": "Исключать игроков может только владелец стола.",
+    "Cannot kick during a hand": "Нельзя исключать игроков во время раздачи. Дождитесь её завершения.",
+    "Owner cannot kick themselves": "Владелец не может исключить самого себя. Используйте /leave.",
+    "Player is not seated": "Этот пользователь не сидит за покерным столом.",
 }
 
 
@@ -79,7 +84,7 @@ def format_table(table, names=None):
     if table.stage == "complete":
         if table.payouts:
             winners = [(uid, chips) for uid, chips in table.payouts.items() if chips > 0]
-            winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat))
+            winners.sort(key=lambda entry: (-entry[1], table.players[entry[0]].seat if entry[0] in table.players else 99))
             lines.append("🏆 Итоги раздачи:")
             for uid, chips in winners:
                 lines.append(f"• {player_link(uid)} получил {chips} фишек")
@@ -107,10 +112,14 @@ def parse_command(text):
     cmd = parts[0]
     supported = {
         "/poker", "/pokerhelp", "/join", "/leave", "/ready", "/unready",
-        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin",
+        "/start", "/table", "/next", "/newsession", "/fold", "/check", "/call", "/raise", "/allin", "/кик",
     }
     if cmd not in supported:
         return None
+    if cmd == "/кик":
+        if len(parts) != 2 or not parts[1].startswith("@"):
+            raise ValueError("Используйте /кик @username")
+        return ("kick", parts[1])
     if cmd == "/raise":
         if len(parts) != 2 or not parts[1].isdecimal():
             raise ValueError("Используйте /raise СУММА, например /raise 500")
@@ -203,7 +212,7 @@ class PokerCommands:
         self.last_public_queued = True
         return response
 
-    def handle(self, user_id, text, event_id):
+    def handle(self, user_id, text, event_id, target_user_id=None):
         """Return a chat reply, or None for a non-poker message.
 
         Caller MUST serialize invocations per room. Do not publish a reply
@@ -250,6 +259,16 @@ class PokerCommands:
                 if type(balance) is not int or balance < 0:
                     raise ValueError("Некорректный начальный баланс")
                 table.join(user_id, stack=balance)
+            elif cmd == "kick":
+                if not target_user_id:
+                    return "⚠️ Пользователь не найден. Используйте /кик @username."
+                table.kick(user_id, target_user_id)
+                response = f"🚪 {self._player_name(target_user_id)} исключён из-за стола владельцем.\n\n" + self._format_table(table)
+                saved = self.store.save(self.room_id, table, revision, event_id=event_id, public_message=response)
+                if saved is None:
+                    return None
+                self.last_public_queued = True
+                return response
             elif cmd == "leave":
                 table.leave(user_id)
             elif cmd in ("ready", "unready"):
