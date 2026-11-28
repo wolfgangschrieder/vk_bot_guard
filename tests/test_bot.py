@@ -429,7 +429,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('после 00:00 по Москве', sent[0])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM chat_duels').fetchone()[0], 0)
 
-    def test_fourth_daily_duel_invitation_is_deleted_without_reply(self):
+    def test_sixth_daily_duel_invitation_is_deleted_without_reply(self):
         for attempt in range(5):
             target_id = attempt + 2
             bot.handle_new_message(
