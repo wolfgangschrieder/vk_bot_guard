@@ -102,6 +102,8 @@ class Table:
     def ready(self, user_id, value=True):
         if self.stage != "waiting":
             raise ValueError("Hand in progress")
+        if value and self.players[user_id].stack <= 0:
+            raise ValueError("No chips to play")
         self.players[user_id].ready = bool(value)
 
     def expire_unready(self, now=None, timeout_seconds=300):
@@ -133,6 +135,10 @@ class Table:
     def start(self):
         if self.stage != "waiting":
             raise ValueError("Hand in progress")
+        # Zero-stack seats cannot participate and must not block funded players.
+        for player in list(self.seated()):
+            if player.stack <= 0:
+                self.leave(player.user_id)
         ps = self.seated()
         if len(ps) < 2 or any(not p.ready or p.stack <= 0 for p in ps):
             raise ValueError("Need at least two ready players")
