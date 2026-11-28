@@ -703,7 +703,7 @@ def publish_donut_promo(vk, peer_id: int | None = None) -> int:
         "🌙 Общайся ночью без ограничений по типам сообщений.\n"
         "🎵 Отправляй сколько угодно аудиозаписей.\n"
         "👤 Просматривай профили: 5 своих и 5 чужих в день.\n"
-        "🎭 Оценивай характеристики 5 участников в день.\n"
+        "🎭 Давай по 1 характеристике 5 разным участникам в день.\n"
         "⭐ Меняй репутацию 3 участникам в день.\n"
         "💍 Предлагай свадьбу кому угодно.\n\n"
         "Всего 100 ₽/месяц.\n"
@@ -2627,7 +2627,7 @@ def handle_characteristic_command(vk, conn, from_id: int, text: str, now: int,
         premium_daily_limit=config.CHARACTERISTIC_DAILY_LIMIT_PREMIUM,
         now=now,
     )
-    if result in {"daily_limit", "weekly_limit", "target_week_limit"}:
+    if result in {"daily_limit", "weekly_limit", "target_week_limit", "target_day_limit"}:
         if command_message is not None:
             delete_message(vk, command_message)
         return True
