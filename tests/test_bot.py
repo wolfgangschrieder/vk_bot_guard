@@ -855,6 +855,15 @@ class BotTests(unittest.TestCase):
         self.assertIn('💀 Токсик: +1', profile)
         self.assertIn('🧠 Интеллект: -1', profile)
 
+    def test_airhead_characteristic_command_updates_profile(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/воздухан + @id2', uid=99, mid=1))
+
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'воздухан': 1})
+        self.assertIn('💨 «Воздухан»', self.queued('send')[0]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=98, mid=2))
+        self.assertIn('💨 Воздухан: +1', self.queued('send')[-1]['message'])
+
     def test_regular_user_can_assign_one_characteristic_per_week(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/гений + @id2', uid=1, mid=1))
         bot.handle_new_message(self.vk, self.conn, self.message('/токсик - @id3', uid=1, mid=2))
