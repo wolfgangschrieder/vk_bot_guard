@@ -304,10 +304,10 @@ class BotTests(unittest.TestCase):
         db.create_marriage_proposal(self.conn, 3, 4, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
         db.accept_marriage_proposal(self.conn, 3, 4, self.now + 1)
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id4', uid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id4', uid=1))
         self.assertIsNotNone(db.get_marriage(self.conn, 1))
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=1, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id2', uid=1, mid=2))
         self.assertIsNone(db.get_marriage(self.conn, 1))
         self.assertIsNone(db.get_marriage(self.conn, 2))
         self.assertIn('больше не пара', self.queued('send')[-1]['message'])
@@ -316,7 +316,7 @@ class BotTests(unittest.TestCase):
         db.create_marriage_proposal(self.conn, 1, 2, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
         db.accept_marriage_proposal(self.conn, 1, 2, self.now + 1)
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id2', uid=99))
 
         self.assertIsNone(db.get_marriage(self.conn, 1))
         self.assertIsNone(db.get_marriage(self.conn, 2))
