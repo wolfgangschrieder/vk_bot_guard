@@ -203,7 +203,7 @@ class BotTests(unittest.TestCase):
     def test_marriage_proposal_requires_target_acceptance_and_appears_in_profile_and_pairs(self):
         self.grant_donut(1)
         self.grant_donut(2)
-        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба + @id2', uid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/свадьба @id2', uid=1))
         proposal = self.queued('send')[-1]['message']
         self.assertIn('предлагает', proposal)
         self.assertIn('/да @id1', proposal)
@@ -304,10 +304,10 @@ class BotTests(unittest.TestCase):
         db.create_marriage_proposal(self.conn, 3, 4, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
         db.accept_marriage_proposal(self.conn, 3, 4, self.now + 1)
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id4', uid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id4', uid=1))
         self.assertIsNotNone(db.get_marriage(self.conn, 1))
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=1, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id2', uid=1, mid=2))
         self.assertIsNone(db.get_marriage(self.conn, 1))
         self.assertIsNone(db.get_marriage(self.conn, 2))
         self.assertIn('больше не пара', self.queued('send')[-1]['message'])
@@ -316,7 +316,7 @@ class BotTests(unittest.TestCase):
         db.create_marriage_proposal(self.conn, 1, 2, self.now, config.MARRIAGE_PROPOSAL_SECONDS)
         db.accept_marriage_proposal(self.conn, 1, 2, self.now + 1)
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/развод + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/развод @id2', uid=99))
 
         self.assertIsNone(db.get_marriage(self.conn, 1))
         self.assertIsNone(db.get_marriage(self.conn, 2))
@@ -372,7 +372,7 @@ class BotTests(unittest.TestCase):
 
     def test_duel_closes_with_rep_loss_day_mute_and_temporary_title(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/дуэль + @id2', uid=1, mid=1))
+                               self.message('/дуэль @id2', uid=1, mid=1))
         challenge = self.queued('send')[0]['message']
         self.assertIn('/принять', challenge)
         self.assertIn('командой /число 50', challenge)
@@ -411,7 +411,7 @@ class BotTests(unittest.TestCase):
         for expected in ('/дуэль @username', '/принять', '/число 42',
                          'до 5 вызовов', 'Шестой вызов удаляется молча'):
             self.assertIn(expected, payload['message'])
-        self.assertIn('/дуэль + @username', payload['message'])
+        self.assertIn('/дуэль @username', payload['message'])
         self.assertIn('ничья', payload['message'].casefold())
 
     def test_challenge_notifies_when_target_already_played_today(self):
@@ -421,7 +421,7 @@ class BotTests(unittest.TestCase):
         ))
         bot.handle_new_message(
             self.vk, self.conn,
-            self.message('/дуэль + @id2', uid=1, mid=1),
+            self.message('/дуэль @id2', uid=1, mid=1),
         )
         sent = [item['message'] for item in self.queued('send')]
         self.assertEqual(len(sent), 1)
@@ -429,12 +429,12 @@ class BotTests(unittest.TestCase):
         self.assertIn('после 00:00 по Москве', sent[0])
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM chat_duels').fetchone()[0], 0)
 
-    def test_fourth_daily_duel_invitation_is_deleted_without_reply(self):
+    def test_sixth_daily_duel_invitation_is_deleted_without_reply(self):
         for attempt in range(5):
             target_id = attempt + 2
             bot.handle_new_message(
                 self.vk, self.conn,
-                self.message(f'/дуэль + @id{target_id}', uid=1, mid=attempt + 1),
+                self.message(f'/дуэль @id{target_id}', uid=1, mid=attempt + 1),
             )
             duel_id = self.conn.execute(
                 "SELECT MAX(duel_id) FROM chat_duels"
@@ -446,7 +446,7 @@ class BotTests(unittest.TestCase):
 
         sent_before = len(self.queued('send'))
         bot.handle_new_message(
-            self.vk, self.conn, self.message('/дуэль + @id20', uid=1, mid=6)
+            self.vk, self.conn, self.message('/дуэль @id20', uid=1, mid=6)
         )
         self.assertEqual(len(self.queued('send')), sent_before)
         deleted_ids = [item['params'].get('message_ids') for item in self.queued('delete')]
@@ -470,7 +470,7 @@ class BotTests(unittest.TestCase):
 
     def test_duel_tie_has_no_penalty_mute_or_temporary_status(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/дуэль + @id2', uid=1, mid=1))
+                               self.message('/дуэль @id2', uid=1, mid=1))
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=50):
@@ -487,7 +487,7 @@ class BotTests(unittest.TestCase):
 
     def test_admin_loser_loses_reputation_but_is_not_muted_or_given_title(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/дуэль + @id2', uid=99, mid=1))
+                               self.message('/дуэль @id2', uid=99, mid=1))
         bot.handle_new_message(self.vk, self.conn,
                                self.message('/принять', uid=2, mid=2))
         with patch.object(bot.random, 'randint', return_value=100):
@@ -574,11 +574,11 @@ class BotTests(unittest.TestCase):
         self.assertTrue(db.scheduler_event_claimed(self.conn, 'rules-post:2026-11-18'))
 
     def test_court_is_admin_only_and_opens_for_ten_minutes(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=10))
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд @id2', uid=10))
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 1)
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99, mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд @id2', uid=99, mid=2))
         payload = self.queued('send')[0]
         self.assertIn('⚖️ СУД ЧАТА ОТКРЫТ', payload['message'])
         self.assertIn('На скамье подсудимых — [id2|Test User]', payload['message'])
@@ -592,7 +592,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(trial['expires_at'] - trial['started_at'], 300)
 
     def test_court_target_cannot_vote_and_tie_acquits(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд @id2', uid=99))
         start_sends = len(self.queued('send'))
         bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=2, mid=2))
         bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=3, mid=3))
@@ -612,7 +612,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('mute'), [])
 
     def test_court_majority_guilty_queues_one_hour_mute_and_lists_voters(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/суд + @id2', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/суд @id2', uid=99))
         bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=3, mid=2))
         bot.handle_new_message(self.vk, self.conn, self.message('/виновен', uid=4, mid=3))
         bot.handle_new_message(self.vk, self.conn, self.message('/оправдан', uid=5, mid=4))
@@ -633,12 +633,12 @@ class BotTests(unittest.TestCase):
 
     def test_nomination_is_admin_only_and_winning_is_saved_in_profile(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/номинация + @id2', uid=10))
+                               self.message('/номинация @id2', uid=10))
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 1)
 
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/номинация + @id2', uid=99, mid=2))
+                               self.message('/номинация @id2', uid=99, mid=2))
         start = self.queued('send')[0]['message']
         self.assertIn('👑 Народная номинация', start)
         self.assertIn('Сейчас чат решает, достоин ли', start)
@@ -678,7 +678,7 @@ class BotTests(unittest.TestCase):
 
     def test_nomination_tie_does_not_award_profile_record(self):
         bot.handle_new_message(self.vk, self.conn,
-                               self.message('/номинация + @id2', uid=99))
+                               self.message('/номинация @id2', uid=99))
         bot.handle_new_message(self.vk, self.conn, self.message('/достоин', uid=3, mid=2))
         bot.handle_new_message(self.vk, self.conn, self.message('/мимо', uid=4, mid=3))
 
@@ -854,6 +854,15 @@ class BotTests(unittest.TestCase):
         profile = self.queued('send')[-1]['message']
         self.assertIn('💀 Токсик: +1', profile)
         self.assertIn('🧠 Интеллект: -1', profile)
+
+    def test_airhead_characteristic_command_updates_profile(self):
+        bot.handle_new_message(self.vk, self.conn, self.message('/воздухан + @id2', uid=99, mid=1))
+
+        self.assertEqual(db.get_user_characteristics(self.conn, 2), {'воздухан': 1})
+        self.assertIn('💨 «Воздухан»', self.queued('send')[0]['message'])
+
+        bot.handle_new_message(self.vk, self.conn, self.message('/profile @id2', uid=98, mid=2))
+        self.assertIn('💨 Воздухан: +1', self.queued('send')[-1]['message'])
 
     def test_regular_user_can_assign_one_characteristic_per_week(self):
         bot.handle_new_message(self.vk, self.conn, self.message('/гений + @id2', uid=1, mid=1))

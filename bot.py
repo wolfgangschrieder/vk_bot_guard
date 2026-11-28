@@ -91,6 +91,22 @@ def menu_keyboard() -> dict:
     }
 
 
+POKER_CHAT_INVITE_URL = "https://vk.me/join/hXLPH_jpl_G/ElsooK5yqpNz2Yb8d3v6HEQ="
+
+
+def poker_promo_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": POKER_CHAT_INVITE_URL,
+                "label": "♠️ В покерный чат",
+            },
+        }]],
+    }
+
+
 def donut_subscription_keyboard() -> dict:
     return {
         "inline": True,
@@ -735,6 +751,27 @@ def publish_day_mute_donation_ad(vk, peer_id: int | None = None) -> int:
     )
 
 
+def handle_social_poker_promo_command(vk, text: str) -> bool:
+    """Advertise poker only in the social chat; available to all participants."""
+    if not re.fullmatch(r"/покер", text.strip(), re.IGNORECASE):
+        return False
+    message = (
+        "♠️ ASTRA POKER ROOM ОТКРЫТ!\n\n"
+        "🃏 В нашем чате с подпиской премиум теперь можно играть в настоящий Техасский Холдем!\n\n"
+        "💰 Собирай комбинации, выигрывай фишки и поднимайся в рейтинге клуба.\n\n"
+        "🎮 Всё управление — через кнопки.\n"
+        "⏱ На ход — 2 минуты.\n"
+        "🏆 Лучшие игроки попадают в TOP-10.\n\n"
+        "Как начать?\n"
+        "Зайди в покерный чат, нажми «Сесть», затем «Готов». "
+        "Карты придут в личные сообщения от бота.\n\n"
+        "♠️ Увидимся за столом!"
+    )
+    send_bot_message(vk, message, peer_id=config.CHAT_PEER_ID,
+                     keyboard=poker_promo_keyboard())
+    return True
+
+
 def handle_donut_promo_command(vk, from_id: int, text: str,
                                command_message=None) -> bool:
     if not re.fullmatch(r"/реклама", text.strip(), re.IGNORECASE):
@@ -1335,11 +1372,11 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
     stripped = text.strip()
     command = stripped.casefold()
 
-    marriage_match = re.fullmatch(r"/свадьба(?:\s+(.+))?", stripped, re.IGNORECASE)
+    marriage_match = re.fullmatch(r"/свадьба(?:\s+(?:\+\s*)?(.+))?", stripped, re.IGNORECASE)
     if marriage_match:
         target_text = marriage_match.group(1)
         if not target_text:
-            send_bot_message(vk, "💍 Использование: /свадьба + @username", temporary=True)
+            send_bot_message(vk, "💍 Использование: /свадьба @username", temporary=True)
             return True
         target_id = resolve_target_user_id(vk, target_text)
         if target_id <= 0:
@@ -1454,11 +1491,11 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
         send_bot_message(vk, "\n".join(lines))
         return True
 
-    divorce_match = re.fullmatch(r"/развод(?:\s+\+?\s*(.+))?", stripped, re.IGNORECASE)
+    divorce_match = re.fullmatch(r"/развод(?:\s+(.+))?", stripped, re.IGNORECASE)
     if divorce_match:
         target_text = divorce_match.group(1)
         if not target_text:
-            send_bot_message(vk, "💔 Использование: /развод + @username супруга (админ может указать любого супруга)", temporary=True)
+            send_bot_message(vk, "💔 Использование: /развод @username супруга (админ может указать любого супруга)", temporary=True)
             return True
         target_id = resolve_target_user_id(vk, target_text)
         if target_id <= 0:
@@ -1551,7 +1588,7 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
     stripped = text.strip()
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
 
-    start_match = re.fullmatch(r"/суд\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    start_match = re.fullmatch(r"/суд\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if start_match:
         if from_id not in config.ADMIN_IDS:
             if command_message is not None:
@@ -1757,7 +1794,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         send_bot_message(
             vk,
             "⚔️ КАК ПРОХОДИТ ДУЭЛЬ\n\n"
-            "1. Вызови участника: /дуэль @username (также работает /дуэль + @username)\n"
+            "1. Вызови участника: /дуэль @username\n"
             "2. Он принимает вызов командой /принять в течение 5 минут.\n"
             "3. После старта оба отправляют своё число: /число 42. Можно выбрать любое "
             "число от 0 до 100, но числа соперников должны отличаться. На выбор — 5 минут.\n"
@@ -1772,7 +1809,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         )
         return True
 
-    challenge = re.fullmatch(r"/дуэль(?:\s*\+\s*|\s+)(.+)", stripped, re.IGNORECASE)
+    challenge = re.fullmatch(r"/дуэль\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if challenge:
         target_id = resolve_target_user_id(vk, challenge.group(1))
         if target_id <= 0 or target_id == int(from_id):
@@ -2030,7 +2067,7 @@ def handle_nomination_command(vk, conn, from_id: int, text: str, now: int,
                               command_message=None) -> bool:
     stripped = text.strip()
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
-    start_match = re.fullmatch(r"/номинация\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    start_match = re.fullmatch(r"/номинация\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if start_match:
         if from_id not in config.ADMIN_IDS:
             if command_message is not None:
@@ -2852,6 +2889,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
     if handle_commands_link_command(vk, conn, from_id, stripped, now, command_message):
+        return True
+    if handle_social_poker_promo_command(vk, stripped):
         return True
     if handle_donut_promo_command(vk, from_id, stripped, command_message):
         return True
