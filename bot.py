@@ -1372,11 +1372,11 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
     stripped = text.strip()
     command = stripped.casefold()
 
-    marriage_match = re.fullmatch(r"/свадьба(?:\s+(.+))?", stripped, re.IGNORECASE)
+    marriage_match = re.fullmatch(r"/свадьба(?:\s+(?:\+\s*)?(.+))?", stripped, re.IGNORECASE)
     if marriage_match:
         target_text = marriage_match.group(1)
         if not target_text:
-            send_bot_message(vk, "💍 Использование: /свадьба + @username", temporary=True)
+            send_bot_message(vk, "💍 Использование: /свадьба @username", temporary=True)
             return True
         target_id = resolve_target_user_id(vk, target_text)
         if target_id <= 0:
@@ -1588,7 +1588,7 @@ def handle_court_command(vk, conn, from_id: int, text: str, now: int,
     stripped = text.strip()
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
 
-    start_match = re.fullmatch(r"/суд\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    start_match = re.fullmatch(r"/суд\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if start_match:
         if from_id not in config.ADMIN_IDS:
             if command_message is not None:
@@ -1794,7 +1794,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         send_bot_message(
             vk,
             "⚔️ КАК ПРОХОДИТ ДУЭЛЬ\n\n"
-            "1. Вызови участника: /дуэль @username (также работает /дуэль + @username)\n"
+            "1. Вызови участника: /дуэль @username\n"
             "2. Он принимает вызов командой /принять в течение 5 минут.\n"
             "3. После старта оба отправляют своё число: /число 42. Можно выбрать любое "
             "число от 0 до 100, но числа соперников должны отличаться. На выбор — 5 минут.\n"
@@ -1809,7 +1809,7 @@ def handle_duel_command(vk, conn, from_id: int, text: str, now: int,
         )
         return True
 
-    challenge = re.fullmatch(r"/дуэль(?:\s*\+\s*|\s+)(.+)", stripped, re.IGNORECASE)
+    challenge = re.fullmatch(r"/дуэль\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if challenge:
         target_id = resolve_target_user_id(vk, challenge.group(1))
         if target_id <= 0 or target_id == int(from_id):
@@ -2067,7 +2067,7 @@ def handle_nomination_command(vk, conn, from_id: int, text: str, now: int,
                               command_message=None) -> bool:
     stripped = text.strip()
     peer_id = message_field(command_message, "peer_id", config.CHAT_PEER_ID)
-    start_match = re.fullmatch(r"/номинация\s*\+\s*(.+)", stripped, re.IGNORECASE)
+    start_match = re.fullmatch(r"/номинация\s+(?:\+\s*)?(.+)", stripped, re.IGNORECASE)
     if start_match:
         if from_id not in config.ADMIN_IDS:
             if command_message is not None:
