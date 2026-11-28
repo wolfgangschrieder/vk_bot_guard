@@ -101,10 +101,10 @@ def format_table(table, names=None, now=None):
         if dealer:
             sb = dealer if len(seated) == 2 else table.next_after(dealer.seat, seated)
             bb = table.next_after(sb.seat, seated)
+            lines.append(f"🎲 Дилер: {player_link(dealer.user_id)}")
             lines.append(
-                f"🎲 Дилер: {player_link(dealer.user_id)} | "
-                f"SB: {player_link(sb.user_id)} ({table.small_blind}) | "
-                f"BB: {player_link(bb.user_id)} ({table.big_blind})"
+                f"🟡 Малый блайнд: {player_link(sb.user_id)} — {table.small_blind} 🪙\n"
+                f"🔴 Большой блайнд: {player_link(bb.user_id)} — {table.big_blind} 🪙"
             )
     if table.stage != "complete":
         lines.append("👥 Игроки:")
@@ -172,54 +172,62 @@ def format_table(table, names=None, now=None):
             if table.turn:
                 acting = table.players[table.turn]
                 to_call = max(0, table.current_bet - acting.street_bet)
-                lines.append(f"▶ {player_link(table.turn)}, к уравниванию: {to_call} фишек")
-                lines.append(f"Минимальное повышение: {table.min_raise} фишек")
+                lines.append(f"▶️ Ход: {player_link(table.turn)}")
+                if to_call:
+                    lines.append(f"Нужно уравнять {to_call} 🪙, повысить ставку или сбросить карты.")
+                else:
+                    lines.append("Можно сделать чек или повысить ставку.")
+                lines.append(f"Минимальный шаг повышения: {table.min_raise} 🪙")
                 if table.turn_started_at:
                     remaining = max(0, int(table.turn_started_at + table.turn_timeout_seconds - (time() if now is None else now)))
-                    lines.append(f"⏱ Осталось на ход: {remaining} сек.")
+                    lines.append(f"⏱ На ход осталось: {remaining} сек.")
     return "\n".join(lines)
 
 
 def format_action_update(before, after, user_id, action, amount=None, names=None, now=None):
-    """One compact VK message per action; /table remains the full roster."""
+    """Short action feed with next-player instructions; full roster is on the table button."""
     names = names or {}
-    label = str(names.get(user_id) or f"ID {user_id}").replace("|", " ").replace("]", " ")
-    actor = f"[id{user_id}|{label}]"
+
+    def link(uid):
+        label = str(names.get(uid) or f"ID {uid}").replace("|", " ").replace("]", " ")
+        return f"[id{uid}|{label}]"
+
+    actor = link(user_id)
     previous = before.players[user_id]
     current = after.players.get(user_id)
     if action == "fold":
-        headline = f"🃏 {actor} — FOLD"
+        headline = f"❌ {actor} сбросил карты"
     elif action == "check":
-        headline = f"✋ {actor} — CHECK"
+        headline = f"✅ {actor} — чек"
     elif action == "call":
         paid = previous.stack - (current.stack if current else previous.stack)
-        headline = f"💰 {actor} — CALL {paid}"
+        headline = f"💰 {actor} уравнял ставку: {paid} 🪙"
     elif action == "raise":
-        headline = f"📈 {actor} — RAISE до {amount}"
+        headline = f"📈 {actor} повысил ставку до {amount} 🪙"
     else:
-        headline = f"🔥 {actor} — ALL-IN {previous.stack}"
+        headline = f"🔥 {actor} — олл-ин: {previous.stack} 🪙"
     if after.stage == "complete":
         return headline + "\n\n" + format_table(after, names, now)
     lines = [headline]
     if before.stage != after.stage:
-        lines.append(f"🃏 {after.stage.upper()}" + (
+        street = {"flop": "ФЛОП", "turn": "ТЁРН", "river": "РИВЕР"}.get(after.stage, after.stage.upper())
+        lines.append(f"🃏 {street}" + (
             " | " + " ".join(display_card(card) for card in after.board)
             if after.board else ""
         ))
-    lines.append(f"💰 Банк: {sum(p.committed for p in after.players.values())} фишек")
+    lines.append(f"💰 Банк: {sum(p.committed for p in after.players.values())} 🪙")
     if after.turn:
-        next_label = str(names.get(after.turn) or f"ID {after.turn}").replace("|", " ").replace("]", " ")
-        next_player = after.players[after.turn]
-        owed = max(0, after.current_bet - next_player.street_bet)
-        lines.append(f"▶ Ход: [id{after.turn}|{next_label}] | CALL {owed}")
+        player = after.players[after.turn]
+        owed = max(0, after.current_bet - player.street_bet)
+        lines.append(f"▶️ Ход: {link(after.turn)}")
+        if owed:
+            lines.append(f"Уравняй {owed} 🪙, повысь ставку или сбрось карты.")
+        else:
+            lines.append("Можно сделать чек или повысить ставку.")
         if after.turn_started_at:
             remaining = max(0, int(after.turn_started_at + after.turn_timeout_seconds - (time() if now is None else now)))
-            lines.append(f"⏱ {remaining} сек.")
-    lines.append("📋 Полный стол: /table")
+            lines.append(f"⏱ На ход осталось: {remaining} сек.")
     return "\n".join(lines)
-
-
-
 
 def parse_command(text):
     parts = text.strip().lower().split()
