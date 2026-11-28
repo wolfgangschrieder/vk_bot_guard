@@ -18,6 +18,8 @@ def serialize(table):
 def deserialize(payload):
     raw = json.loads(payload)
     players = raw.pop("players")
+    # Normalize old persisted 90-second hands to the current 120-second rule.
+    raw["turn_timeout_seconds"] = 120
     table = Table(**raw)
     table.players = {
         int(uid): Player(**{**data, "hole": tuple(data["hole"])})
