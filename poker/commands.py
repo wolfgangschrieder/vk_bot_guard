@@ -43,6 +43,7 @@ ERROR_MESSAGES = {
     "Betting not reopened": "Повторное повышение ставки пока недоступно.",
     "Cannot raise without another player able to respond": "Нельзя повышать ставку, когда никто из соперников не может ответить.",
     "Invalid chip balance": "Некорректный баланс фишек.",
+    "No chips to play": "У тебя 0 фишек. Получи фишки, чтобы участвовать в раздаче.",
     "Unknown action": "Неизвестное игровое действие.",
     "Cannot reset chips during an active hand": "Нельзя начать новую сессию во время раздачи.",
     "Invalid blinds or starting stack": "Некорректные блайнды или стартовый баланс.",
@@ -380,14 +381,17 @@ class PokerCommands:
         if self.store.has_pending_public(self.room_id):
             return None
         ready = [p for p in table.seated() if p.ready and p.stack > 0]
-        all_ready = len(ready) >= 2 and len(ready) == len(table.players)
+        # A seated zero-stack player must never hold the entire table hostage.
+        all_ready = len(ready) >= 2 and all(
+            p.ready for p in table.seated() if p.stack > 0
+        )
         expired = now >= table.next_hand_deadline
         if not all_ready and not expired:
             return None
-        if expired:
-            removed = [p.user_id for p in table.seated() if not p.ready or p.stack <= 0]
-            for uid in removed:
-                table.leave(uid)
+        removed = [p.user_id for p in table.seated()
+                   if p.stack <= 0 or (expired and not p.ready)]
+        for uid in removed:
+            table.leave(uid)
         if len(table.players) < 2:
             table.next_hand_deadline = 0.0
             message = ("⏳ Время готовности истекло. Ожидаем минимум двух игроков.\n\n"
