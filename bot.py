@@ -1491,11 +1491,11 @@ def handle_marriage_command(vk, conn, from_id: int, text: str, now: int) -> bool
         send_bot_message(vk, "\n".join(lines))
         return True
 
-    divorce_match = re.fullmatch(r"/развод(?:\s+\+?\s*(.+))?", stripped, re.IGNORECASE)
+    divorce_match = re.fullmatch(r"/развод(?:\s+(.+))?", stripped, re.IGNORECASE)
     if divorce_match:
         target_text = divorce_match.group(1)
         if not target_text:
-            send_bot_message(vk, "💔 Использование: /развод + @username супруга (админ может указать любого супруга)", temporary=True)
+            send_bot_message(vk, "💔 Использование: /развод @username супруга (админ может указать любого супруга)", temporary=True)
             return True
         target_id = resolve_target_user_id(vk, target_text)
         if target_id <= 0:
