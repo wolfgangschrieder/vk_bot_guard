@@ -1146,7 +1146,7 @@ def publish_period_hero(
         f"{HERO_EMOJIS[period_type]} {title}\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за период: {messages}\n\n"
-        f"Право Героя — один мут через /мут + @username."
+        f"Право Героя — один мут через /мут @username."
     )
     if send_bot_message(vk, text) <= 0:
         return False
@@ -2252,8 +2252,8 @@ def handle_admin_ban_command(vk, conn, from_id: int, text: str, now: int) -> boo
     if not match:
         send_bot_message(
             vk,
-            "Команды бана:\n/бан + @username — добавить в список и удалить из чата\n"
-            "/разбан + @username — снять бан\n/баны — список банов",
+            "Команды бана:\n/бан @username — добавить в список и удалить из чата\n"
+            "/разбан @username — снять бан\n/баны — список банов",
             temporary=True,
             delete_after_seconds=120,
         )
@@ -2365,7 +2365,7 @@ def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         "✨ /токсик + @username — добавить характеристику\n"
         "⭐ /rep @username — повысить репутацию\n"
         "⭐ /rep - @username — понизить репутацию\n"
-        "🦸 /мут + @username — мут Героя или право ранга\n\n"
+        "🦸 /мут @username — мут Героя или право ранга\n\n"
         "Нажми «Руководство», чтобы открыть статью с правилами и командами.",
         keyboard=menu_keyboard(),
         temporary=True,
