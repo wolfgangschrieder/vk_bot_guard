@@ -610,6 +610,8 @@ class PokerCommands:
                 if self.private_delivery is None:
                     return "Раздача пока отключена: личная доставка карт не настроена."
                 for player in table.seated():
+                    if player.stack <= 0:
+                        continue
                     try:
                         permitted = self.private_delivery.can_message(player.user_id)
                     except Exception:
