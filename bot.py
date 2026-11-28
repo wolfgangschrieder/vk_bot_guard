@@ -91,6 +91,22 @@ def menu_keyboard() -> dict:
     }
 
 
+POKER_CHAT_INVITE_URL = "https://vk.me/join/hXLPH_jpl_G/ElsooK5yqpNz2Yb8d3v6HEQ="
+
+
+def poker_promo_keyboard() -> dict:
+    return {
+        "inline": True,
+        "buttons": [[{
+            "action": {
+                "type": "open_link",
+                "link": POKER_CHAT_INVITE_URL,
+                "label": "♠️ В покерный чат",
+            },
+        }]],
+    }
+
+
 def donut_subscription_keyboard() -> dict:
     return {
         "inline": True,
@@ -733,6 +749,27 @@ def publish_day_mute_donation_ad(vk, peer_id: int | None = None) -> int:
     return send_bot_message(
         vk, message, peer_id=peer_id, keyboard=day_mute_donation_keyboard()
     )
+
+
+def handle_social_poker_promo_command(vk, text: str) -> bool:
+    """Advertise poker only in the social chat; available to all participants."""
+    if not re.fullmatch(r"/покер", text.strip(), re.IGNORECASE):
+        return False
+    message = (
+        "♠️ ASTRA POKER ROOM ОТКРЫТ!\n\n"
+        "🃏 В нашем чате с подпиской премиум теперь можно играть в настоящий Техасский Холдем!\n\n"
+        "💰 Собирай комбинации, выигрывай фишки и поднимайся в рейтинге клуба.\n\n"
+        "🎮 Всё управление — через кнопки.\n"
+        "⏱ На ход — 2 минуты.\n"
+        "🏆 Лучшие игроки попадают в TOP-10.\n\n"
+        "Как начать?\n"
+        "Зайди в покерный чат, нажми «Сесть», затем «Готов». "
+        "Карты придут в личные сообщения от бота.\n\n"
+        "♠️ Увидимся за столом!"
+    )
+    send_bot_message(vk, message, peer_id=config.CHAT_PEER_ID,
+                     keyboard=poker_promo_keyboard())
+    return True
 
 
 def handle_donut_promo_command(vk, from_id: int, text: str,
@@ -2852,6 +2889,8 @@ def handle_command(vk, conn, from_id: int, text: str, now: int,
     if handle_menu_command(vk, conn, from_id, stripped, now):
         return True
     if handle_commands_link_command(vk, conn, from_id, stripped, now, command_message):
+        return True
+    if handle_social_poker_promo_command(vk, stripped):
         return True
     if handle_donut_promo_command(vk, from_id, stripped, command_message):
         return True
