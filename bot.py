@@ -1076,7 +1076,7 @@ def publish_king(vk, conn, stat_date: date, *, announce=True) -> bool:
         f"🏆 ГЕРОЙ ДНЯ\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за день: {messages}\n\n"
-        f"Сегодня у Героя дня есть право выдать один мут через команду /мут + @username."
+        f"Сегодня у Героя дня есть право выдать один мут через команду /мут @username."
     )
     if hero_record:
         record_date, record_user_id, record_messages = hero_record
@@ -1146,7 +1146,7 @@ def publish_period_hero(
         f"{HERO_EMOJIS[period_type]} {title}\n\n"
         f"{mention(user_id, names.get(user_id))}\n"
         f"Сообщений за период: {messages}\n\n"
-        f"Право Героя — один мут через /мут + @username."
+        f"Право Героя — один мут через /мут @username."
     )
     if send_bot_message(vk, text) <= 0:
         return False
@@ -2248,12 +2248,12 @@ def handle_admin_ban_command(vk, conn, from_id: int, text: str, now: int) -> boo
         send_bot_message(vk, response, temporary=True, delete_after_seconds=120)
         return True
 
-    match = re.fullmatch(r"/(бан|разбан)\s+\+\s*(.+)", command, re.IGNORECASE)
+    match = re.fullmatch(r"/(бан|разбан)\s+(.+)", command, re.IGNORECASE)
     if not match:
         send_bot_message(
             vk,
-            "Команды бана:\n/бан + @username — добавить в список и удалить из чата\n"
-            "/разбан + @username — снять бан\n/баны — список банов",
+            "Команды бана:\n/бан @username — добавить в список и удалить из чата\n"
+            "/разбан @username — снять бан\n/баны — список банов",
             temporary=True,
             delete_after_seconds=120,
         )
@@ -2303,9 +2303,9 @@ def handle_manual_premium_command(vk, conn, from_id: int, text: str, now: int) -
         return True
 
     argument = (match.group(1) or "").strip()
-    target_match = re.fullmatch(r"\+\s+(.+)", argument)
+    target_match = re.fullmatch(r"(.+)", argument)
     if not target_match:
-        send_bot_message(vk, "Формат команды: /подписка + @username", temporary=True)
+        send_bot_message(vk, "Формат команды: /подписка @username", temporary=True)
         return True
 
     target_id = resolve_target_user_id(vk, target_match.group(1))
@@ -2365,7 +2365,7 @@ def handle_menu_command(vk, conn, from_id: int, text: str, now: int) -> bool:
         "✨ /токсик + @username — добавить характеристику\n"
         "⭐ /rep @username — повысить репутацию\n"
         "⭐ /rep - @username — понизить репутацию\n"
-        "🦸 /мут + @username — мут Героя или право ранга\n\n"
+        "🦸 /мут @username — мут Героя или право ранга\n\n"
         "Нажми «Руководство», чтобы открыть статью с правилами и командами.",
         keyboard=menu_keyboard(),
         temporary=True,

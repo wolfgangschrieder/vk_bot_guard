@@ -786,7 +786,7 @@ class BotTests(unittest.TestCase):
 
     def test_admin_can_grant_and_extend_one_month_premium_subscription(self):
         bot.handle_new_message(
-            self.vk, self.conn, self.message('/подписка + @id2', uid=99, mid=1)
+            self.vk, self.conn, self.message('/подписка @id2', uid=99, mid=1)
         )
         self.assertTrue(db.is_premium_user(self.conn, 2, now=self.now))
         notice = self.queued('send')[0]['message']
@@ -796,7 +796,7 @@ class BotTests(unittest.TestCase):
 
         expires_at = db.get_manual_premium_until(self.conn, 2)
         bot.handle_new_message(
-            self.vk, self.conn, self.message('/подписка + @id2', uid=99, mid=2)
+            self.vk, self.conn, self.message('/подписка @id2', uid=99, mid=2)
         )
         self.assertGreater(db.get_manual_premium_until(self.conn, 2), expires_at)
         self.assertIn('Премиум-подписка продлена', self.queued('send')[1]['message'])
@@ -809,7 +809,7 @@ class BotTests(unittest.TestCase):
 
     def test_non_admin_cannot_grant_premium(self):
         bot.handle_new_message(
-            self.vk, self.conn, self.message('/подписка + @id2', uid=1)
+            self.vk, self.conn, self.message('/подписка @id2', uid=1)
         )
         self.assertFalse(db.is_premium_user(self.conn, 2, now=self.now))
         self.assertIn(
@@ -1067,7 +1067,7 @@ class BotTests(unittest.TestCase):
         self.assertIn('мут нарушителя на 10 часов', notice)
 
     def test_nonhero_without_rank_right_has_mute_command_deleted_silently(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
         self.assertEqual(self.queued('send'), [])
         self.assertEqual(len(self.queued('delete')), 1)
         self.assertEqual(self.queued('mute'), [])
@@ -1077,7 +1077,7 @@ class BotTests(unittest.TestCase):
             "INSERT INTO daily_user_stats(stat_date, user_id, messages) VALUES ('2025-01-01', 1, 10000)"
         )
         self.conn.commit()
-        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
         mutes = self.queued('mute')
         self.assertEqual(len(mutes), 2)
         self.assertEqual([item['until'] - item['requested_at'] for item in mutes], [3600, 3600])
@@ -1086,7 +1086,7 @@ class BotTests(unittest.TestCase):
 
         bot.deliver_outbox(self.vk, self.conn, self.now)
         self.assertEqual(db.get_command_cooldown(self.conn, 1, 'rank_mute:Участник'), self.now)
-        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id3', mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id3', mid=2))
         self.assertEqual(len(self.queued('mute')), 2)
         self.assertTrue(any(
             'Вы уже использовали мут на этом ранге. Дождитесь повышения.' in item['message']
@@ -1119,12 +1119,12 @@ class BotTests(unittest.TestCase):
             "('2025-01-01', 1, 10000), ('2025-01-01', 2, 20000)"
         )
         self.conn.commit()
-        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id2'))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id2'))
         self.assertEqual(self.queued('mute'), [])
 
         today = datetime.fromtimestamp(self.now, config.CHAT_TZ).date()
         db.save_hero_title(self.conn, 'day', today.isoformat(), 3, 100)
-        bot.handle_new_message(self.vk, self.conn, self.message('/мут + @id3', mid=2))
+        bot.handle_new_message(self.vk, self.conn, self.message('/мут @id3', mid=2))
         self.assertEqual(self.queued('mute'), [])
         self.assertTrue(any('участника с более высоким рангом' in item['message']
                             for item in self.queued('send')))
@@ -1144,7 +1144,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(self.queued('send')[-1]['delay'], 120)
 
     def test_admin_ban_unban_and_list_commands(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/бан + @kenaya', uid=99))
+        bot.handle_new_message(self.vk, self.conn, self.message('/бан @kenaya', uid=99))
         self.assertTrue(db.is_chat_blacklisted(self.conn, 10))
         self.vk.messages.removeChatUser.assert_called_once_with(chat_id=2, user_id=10)
         self.assertIn('забанен и удалён из чата', self.queued('send')[-1]['message'])
@@ -1152,12 +1152,12 @@ class BotTests(unittest.TestCase):
         bot.handle_new_message(self.vk, self.conn, self.message('/баны', uid=99, mid=2))
         self.assertIn('@id10', self.queued('send')[-1]['message'])
 
-        bot.handle_new_message(self.vk, self.conn, self.message('/разбан + @kenaya', uid=99, mid=3))
+        bot.handle_new_message(self.vk, self.conn, self.message('/разбан @kenaya', uid=99, mid=3))
         self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
         self.assertIn('@id10 разбанен', self.queued('send')[-1]['message'])
 
     def test_ban_commands_are_admin_only(self):
-        bot.handle_new_message(self.vk, self.conn, self.message('/бан + @kenaya', uid=1))
+        bot.handle_new_message(self.vk, self.conn, self.message('/бан @kenaya', uid=1))
         self.assertFalse(db.is_chat_blacklisted(self.conn, 10))
         self.vk.messages.removeChatUser.assert_not_called()
         self.assertIn('только администраторам', self.queued('send')[0]['message'])
