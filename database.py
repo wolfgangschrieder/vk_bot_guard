@@ -1202,6 +1202,14 @@ def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
             return "self"
         if not is_admin:
             if is_premium:
+                # One characteristic per recipient per local day, regardless of trait or sign.
+                already_gave_today = conn.execute(
+                    "SELECT 1 FROM characteristic_gives "
+                    "WHERE giver_id = ? AND target_id = ? AND day_key = ? LIMIT 1",
+                    (giver_id, target_id, str(day_key)),
+                ).fetchone()
+                if already_gave_today:
+                    return "target_day_limit"
                 existing_pair = conn.execute(
                     "SELECT 1 FROM characteristic_gives "
                     "WHERE giver_id = ? AND target_id = ? AND trait_key = ? AND week_key = ? LIMIT 1",
@@ -1214,12 +1222,7 @@ def give_characteristic(conn: sqlite3.Connection, giver_id: int, target_id: int,
                     "WHERE giver_id = ? AND day_key = ?",
                     (giver_id, str(day_key)),
                 ).fetchone()[0]
-                already_gave_to_target_today = conn.execute(
-                    "SELECT 1 FROM characteristic_gives "
-                    "WHERE giver_id = ? AND target_id = ? AND day_key = ? LIMIT 1",
-                    (giver_id, target_id, str(day_key)),
-                ).fetchone()
-                if not already_gave_to_target_today and int(daily_count) >= int(premium_daily_limit):
+                if int(daily_count) >= int(premium_daily_limit):
                     return "daily_limit"
             else:
                 weekly_count = conn.execute(
